@@ -184,3 +184,29 @@ CREATE TABLE IF NOT EXISTS answer_bank (
   answer     TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- v4: crawl runs + logs (the Crawl Shell)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS crawl_runs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  type       TEXT NOT NULL DEFAULT 'find',     -- find | update | full
+  started_at TEXT NOT NULL,
+  ended_at   TEXT,
+  status     TEXT NOT NULL DEFAULT 'running',   -- running | done | error
+  received   INTEGER NOT NULL DEFAULT 0,
+  inserted   INTEGER NOT NULL DEFAULT 0,
+  updated    INTEGER NOT NULL DEFAULT 0,
+  scraped    INTEGER NOT NULL DEFAULT 0,
+  errors     INTEGER NOT NULL DEFAULT 0,
+  trigger    TEXT,                              -- manual | scheduler | cli
+  note       TEXT
+);
+CREATE TABLE IF NOT EXISTS crawl_logs (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id  INTEGER NOT NULL,
+  ts      TEXT NOT NULL,
+  kind    TEXT NOT NULL,   -- note | step | reasoning | result | error
+  text    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cl_run ON crawl_logs(run_id);

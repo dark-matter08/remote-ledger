@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { useState } from "react";
-import { Form, useNavigation } from "react-router";
+import { Form, redirect, useNavigation } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
 import { getSetting, setSetting } from "../sqlite.server";
 import { listRunners } from "../llm/runner.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
-import { runCrawl } from "../services/crawl.server";
+import { startCrawl } from "../services/crawl.server";
 
 const KEY_FIELDS = [
   { name: "anthropic_api_key", label: "Anthropic" },
@@ -69,8 +69,8 @@ export async function action({ request }: Route.ActionArgs) {
     return { ok: true, msg: "Key cleared." };
   }
   if (intent === "crawl-now") {
-    const r = await runCrawl();
-    return { ok: r.ok, msg: r.ok ? `Crawl done: ${r.inserted} new, ${r.updated} updated, ${r.scraped ?? 0} JDs scraped.` : `Crawl failed: ${r.message}` };
+    const id = startCrawl("find", "manual");
+    return redirect(`/crawl?run=${id}`); // watch it live in the Crawl Shell
   }
   if (intent === "save-runner") {
     save("default_runner");
@@ -212,7 +212,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           <h3>Your profile</h3>
           <p className="hint">Personalizes the job-search prompt and resume matching.</p>
           <div className="row2">
-            <div className="field"><label>Location</label><input type="text" name="profile_location" defaultValue={settings.profileLocation} placeholder="e.g. Yaoundé, Cameroon" /></div>
+            <div className="field"><label>Location</label><input type="text" name="profile_location" defaultValue={settings.profileLocation} placeholder="e.g. your city, country" /></div>
             <div className="field"><label>Target stack / keywords</label><input type="text" name="profile_stack" defaultValue={settings.profileStack} placeholder="e.g. TypeScript, Node, React, AWS" /></div>
           </div>
           <button className="btn" disabled={saving}>Save</button>

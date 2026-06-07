@@ -11,6 +11,7 @@ export default [
   route("analytics", "routes/analytics.tsx"),
   route("apply", "routes/apply.tsx"),
   route("apply/shot/:id", "routes/apply-shot.tsx"),
+  route("crawl", "routes/crawl.tsx"),
   route("expired", "routes/expired.tsx"),
   route("setup", "routes/setup.tsx"),
   route("clipper", "routes/clipper.tsx"),

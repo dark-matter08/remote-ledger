@@ -20,7 +20,7 @@ async function tick() {
     const due = !last || Date.now() - new Date(last).getTime() >= hours * 3600 * 1000;
     if (due) {
       console.log("[scheduler] crawl due — running");
-      const r = await runCrawl();
+      const r = await runCrawl("find", "scheduler");
       console.log("[scheduler] crawl done:", JSON.stringify(r));
     }
   } catch (e) {

@@ -105,14 +105,21 @@ export async function scrapeAndSave(jobId: string): Promise<Scraped & { saved: b
   return { ...r, saved: false };
 }
 
-// Batch: scrape JDs for active jobs that don't have one yet (used by the crawl).
-// Reuses one browser; bounded by `limit`; failures are skipped, never thrown.
-export async function scrapeMissingJds(limit = 12): Promise<{ scraped: number; failed: number }> {
+// Batch JD scrape. onlyMissing=true → jobs without a JD (find crawl); false → all
+// active jobs (update/refresh crawl). onLog gets a line per job for the Crawl Shell.
+export async function scrapeJds(opts: {
+  limit?: number;
+  onlyMissing?: boolean;
+  onLog?: (line: string) => void;
+}): Promise<{ scraped: number; failed: number }> {
+  const limit = opts.limit ?? 12;
+  const onLog = opts.onLog ?? (() => {});
+  const where = opts.onlyMissing
+    ? "active=1 AND (jd IS NULL OR length(jd) < 60)"
+    : "active=1";
   const rows = getDb()
-    .prepare(
-      "SELECT id, apply_url FROM jobs WHERE active=1 AND (jd IS NULL OR length(jd) < 60) ORDER BY fit_score DESC LIMIT ?"
-    )
-    .all(limit) as { id: string; apply_url: string }[];
+    .prepare(`SELECT id, company, apply_url FROM jobs WHERE ${where} ORDER BY fit_score DESC LIMIT ?`)
+    .all(limit) as { id: string; company: string; apply_url: string }[];
   if (!rows.length) return { scraped: 0, failed: 0 };
 
   let scraped = 0,
@@ -121,30 +128,32 @@ export async function scrapeMissingJds(limit = 12): Promise<{ scraped: number; f
   try {
     const { chromium } = await import("playwright");
     browser = await chromium.launch();
-    for (const row of rows) {
-      try {
-        let r = await scrapeWithBrowser(browser, row.apply_url);
-        if (!r.ok) r = await fetchFallback(row.apply_url);
-        if (r.ok && r.text) {
-          setJd(row.id, r.text);
-          addEvent(row.id, "jd_scraped", { chars: r.text.length });
-          scraped++;
-        } else failed++;
-      } catch {
-        failed++;
-      }
-    }
   } catch {
-    // browser unavailable — fall back to plain fetch for each
-    for (const row of rows) {
-      const r = await fetchFallback(row.apply_url);
+    /* fall back to fetch per row below */
+  }
+  for (const row of rows) {
+    try {
+      let r = browser ? await scrapeWithBrowser(browser, row.apply_url) : await fetchFallback(row.apply_url);
+      if (!r.ok) r = await fetchFallback(row.apply_url);
       if (r.ok && r.text) {
         setJd(row.id, r.text);
+        addEvent(row.id, "jd_scraped", { chars: r.text.length });
         scraped++;
-      } else failed++;
+        onLog(`scraped ${row.company} — ${r.text.length} chars`);
+      } else {
+        failed++;
+        onLog(`could not read ${row.company} (${r.error || "no text"})`);
+      }
+    } catch (e: any) {
+      failed++;
+      onLog(`error on ${row.company}: ${e.message}`);
     }
-  } finally {
-    if (browser) await browser.close().catch(() => {});
   }
+  if (browser) await browser.close().catch(() => {});
   return { scraped, failed };
+}
+
+// back-compat
+export async function scrapeMissingJds(limit = 12): Promise<{ scraped: number; failed: number }> {
+  return scrapeJds({ limit, onlyMissing: true });
 }

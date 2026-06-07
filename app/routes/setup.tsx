@@ -107,7 +107,7 @@ export default function Setup({ loaderData, actionData }: Route.ComponentProps) 
           <Form method="post">
             <input type="hidden" name="intent" value="save-profile" />
             <div className="row2">
-              <div className="field"><label>Location</label><input type="text" name="location" defaultValue={d.location} placeholder="e.g. Yaoundé, Cameroon" /></div>
+              <div className="field"><label>Location</label><input type="text" name="location" defaultValue={d.location} placeholder="e.g. your city, country (or Remote)" /></div>
               <div className="field"><label>Target stack / keywords</label><input type="text" name="stack" defaultValue={d.stack} placeholder="e.g. TypeScript, Node, React, AWS" /></div>
             </div>
             <button className="btn" disabled={busy}>Save target</button>

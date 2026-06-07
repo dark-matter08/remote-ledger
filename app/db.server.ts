@@ -458,3 +458,38 @@ export function answerPooledQuestion(id: number, answer: string): void {
     .prepare("UPDATE apply_questions SET answer=?, answered_at=? WHERE answer IS NULL AND lower(question)=lower(?)")
     .run(answer, new Date().toISOString(), row.question);
 }
+
+// --- crawl runs + logs (Crawl Shell) --------------------------------------
+
+export interface CrawlRun {
+  id: number; type: string; started_at: string; ended_at: string | null; status: string;
+  received: number; inserted: number; updated: number; scraped: number; errors: number;
+  trigger: string | null; note: string | null;
+}
+
+export function createCrawlRun(type: string, trigger = "manual"): number {
+  const info = getDb()
+    .prepare("INSERT INTO crawl_runs (type,started_at,status,trigger) VALUES (?,?,?,?)")
+    .run(type, new Date().toISOString(), "running", trigger);
+  return Number(info.lastInsertRowid);
+}
+export function updateCrawlRun(id: number, patch: Partial<CrawlRun>): void {
+  const f = Object.keys(patch);
+  if (!f.length) return;
+  getDb().prepare(`UPDATE crawl_runs SET ${f.map((k) => `${k}=@${k}`).join(", ")} WHERE id=@id`).run({ ...patch, id });
+}
+export function crawlLog(runId: number, kind: string, text: string): void {
+  getDb().prepare("INSERT INTO crawl_logs (run_id,ts,kind,text) VALUES (?,?,?,?)").run(runId, new Date().toISOString(), kind, text);
+}
+export function getCrawlRun(id: number): CrawlRun | null {
+  return (getDb().prepare("SELECT * FROM crawl_runs WHERE id=?").get(id) as CrawlRun) || null;
+}
+export function listCrawlRuns(limit = 25): CrawlRun[] {
+  return getDb().prepare("SELECT * FROM crawl_runs ORDER BY id DESC LIMIT ?").all(limit) as CrawlRun[];
+}
+export function activeCrawl(): CrawlRun | null {
+  return (getDb().prepare("SELECT * FROM crawl_runs WHERE status='running' ORDER BY id DESC LIMIT 1").get() as CrawlRun) || null;
+}
+export function crawlLogs(runId: number): { id: number; ts: string; kind: string; text: string }[] {
+  return getDb().prepare("SELECT id,ts,kind,text FROM crawl_logs WHERE run_id=? ORDER BY id").all(runId) as any[];
+}

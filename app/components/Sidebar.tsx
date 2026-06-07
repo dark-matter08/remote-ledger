@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Link } from "react-router";
 import {
   Newspaper,
+  TerminalSquare,
   KanbanSquare,
   Hourglass,
   BarChart3,
@@ -22,6 +23,7 @@ const GROUPS: { title: string; items: { to: string; label: string; Icon: LucideI
     title: "Track",
     items: [
       { to: "/", label: "Ledger", Icon: Newspaper, end: true },
+      { to: "/crawl", label: "Crawl Shell", Icon: TerminalSquare },
       { to: "/board", label: "Pipeline", Icon: KanbanSquare },
       { to: "/expired", label: "Expired", Icon: Hourglass },
       { to: "/analytics", label: "Analytics", Icon: BarChart3 },
@@ -54,7 +56,6 @@ export function Sidebar() {
     setTheme((localStorage.getItem("ledger-theme") as "night" | "paper") || "paper");
   }, []);
 
-  // live badge: poll for pooled questions the agent needs answered
   useEffect(() => {
     let alive = true;
     const tick = () =>
@@ -84,9 +85,6 @@ export function Sidebar() {
       <div className="sb-top">
         <Link to="/" className="sb-brand" title="The Remote & Ledger">❦</Link>
         <span className="sb-word">The Remote <span className="sb-amp">&amp;</span> Ledger</span>
-        <button className="sb-pin" onClick={togglePin} title={pinned ? "Unpin" : "Pin open"} aria-label="Toggle sidebar">
-          {pinned ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-        </button>
       </div>
 
       <nav className="sb-nav">
@@ -94,7 +92,13 @@ export function Sidebar() {
           <div key={g.title} className="sb-group">
             <div className="sb-group-title">{g.title}</div>
             {g.items.map(({ to, label, Icon, end }) => (
-              <NavLink key={to} to={to} end={end} title={to === "/apply" && pending > 0 ? `${label} — ${pending} question(s) need answers` : label} className={({ isActive }) => `sb-item ${isActive ? "active" : ""}`}>
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                title={to === "/apply" && pending > 0 ? `${label} — ${pending} question(s) need answers` : label}
+                className={({ isActive }) => `sb-item ${isActive ? "active" : ""}`}
+              >
                 <span className="sb-ico"><Icon size={18} strokeWidth={1.7} /></span>
                 <span className="sb-label">{label}</span>
                 {to === "/apply" && pending > 0 && <span className="sb-badge" />}
@@ -109,7 +113,10 @@ export function Sidebar() {
           <span className="sb-ico">{theme === "night" ? <Sun size={18} strokeWidth={1.7} /> : <Moon size={18} strokeWidth={1.7} />}</span>
           <span className="sb-label">{theme === "night" ? "Day Press" : "Night Press"}</span>
         </button>
-        <div className="sb-foot">Set in type · Est. MMXXVI</div>
+        <button className="sb-item" onClick={togglePin} title={pinned ? "Unpin sidebar" : "Pin sidebar open"}>
+          <span className="sb-ico">{pinned ? <PanelLeftClose size={18} strokeWidth={1.7} /> : <PanelLeftOpen size={18} strokeWidth={1.7} />}</span>
+          <span className="sb-label">{pinned ? "Unpin" : "Pin open"}</span>
+        </button>
       </div>
     </aside>
   );
