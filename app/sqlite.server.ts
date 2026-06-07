@@ -26,6 +26,13 @@ export function getDb(): Database.Database {
   db.exec(readFileSync(SCHEMA_PATH, "utf8"));
   // migrations for DBs created before a column existed
   ensureColumn(db, "jobs", "jd", "TEXT");
+  // reconcile runs orphaned by a previous process: this runs once per process at
+  // connection creation, before any new crawl/session can start, so it never
+  // touches a run that's live in THIS process.
+  try {
+    db.exec("UPDATE crawl_runs SET status='error', ended_at=datetime('now'), note='interrupted (restarted)' WHERE status='running'");
+    db.exec("UPDATE apply_sessions SET status='stopped', ended_at=datetime('now') WHERE status='running'");
+  } catch {}
   global.__ledgerDb = db;
   return db;
 }

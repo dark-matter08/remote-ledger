@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Form, Link, redirect, useNavigation, useRevalidator } from "react-router";
 import type { Route } from "./+types/crawl";
 import { Shell } from "../components/Shell";
-import { listCrawlRuns, activeCrawl, getCrawlRun, crawlLogs } from "../db.server";
+import { listCrawlRuns, activeCrawl, getCrawlRun, crawlLogs, updateCrawlRun, crawlLog } from "../db.server";
 import { startCrawl, isCrawlRunning, type CrawlType } from "../services/crawl.server";
 import { availableRunners } from "../llm/runner.server";
 
@@ -33,6 +33,14 @@ export async function action({ request }: Route.ActionArgs) {
     const type = (String(form.get("type") || "find") as CrawlType);
     const id = startCrawl(type, "manual");
     return redirect(`/crawl?run=${id}`);
+  }
+  if (form.get("intent") === "stop") {
+    const a = activeCrawl();
+    if (a) {
+      crawlLog(a.id, "error", "Stopped by user.");
+      updateCrawlRun(a.id, { status: "error", ended_at: new Date().toISOString(), note: "stopped by user" });
+    }
+    return redirect(`/crawl?run=${a?.id ?? ""}`);
   }
   return { ok: true };
 }
@@ -72,7 +80,7 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
       <div className="panel">
         <h3>Run a crawl {active && <span className="badge warn">running #{active.id}</span>}</h3>
         <p className="hint">Find pulls fresh roles from the web. Update re-scrapes descriptions for jobs already on file. Full does both.</p>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           {(["find", "update", "full"] as CrawlType[]).map((t) => (
             <Form method="post" key={t}>
               <input type="hidden" name="intent" value="start" />
@@ -82,6 +90,12 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
               </button>
             </Form>
           ))}
+          {active && (
+            <Form method="post" style={{ marginLeft: "auto" }}>
+              <input type="hidden" name="intent" value="stop" />
+              <button className="ghost-btn">■ Stop run #{active.id}</button>
+            </Form>
+          )}
         </div>
       </div>
 

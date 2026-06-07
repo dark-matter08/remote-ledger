@@ -4,7 +4,7 @@
 //   - API:  direct HTTP with a BYO key — exact usage returned.
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
-import type { AdapterResult, RunnerAdapter, RunnerInfo, RunRequest } from "./types";
+import type { AdapterResult, RunnerAdapter, RunnerInfo, RunRequest, Usage } from "./types";
 import { getSecret } from "../secrets.server";
 
 // --- shell helpers ---------------------------------------------------------
@@ -353,4 +353,65 @@ export const ADAPTERS: RunnerAdapter[] = [
 
 export function adapterById(id: string): RunnerAdapter | undefined {
   return ADAPTERS.find((a) => a.id === id);
+}
+
+// Streaming Claude Code call for the Crawl Shell: emits each agent event (tool
+// use, text) as it happens so the shell shows live reasoning instead of freezing
+// for minutes on a long web-research turn.
+export async function streamClaude(opts: {
+  prompt: string;
+  system?: string;
+  allowWeb?: boolean;
+  timeoutMs?: number;
+  onEvent: (ev: any) => void;
+}): Promise<{ text: string; usage: Partial<Usage> }> {
+  return new Promise((resolveP, reject) => {
+    const args = ["-p", "--output-format", "stream-json", "--verbose"];
+    if (opts.system) args.push("--append-system-prompt", opts.system);
+    if (opts.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
+    const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() } });
+    const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 600000);
+    let buf = "";
+    let result: any = null;
+    let text = "";
+    let err = "";
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      let idx: number;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let ev: any;
+        try { ev = JSON.parse(line); } catch { continue; }
+        try { opts.onEvent(ev); } catch {}
+        if (ev.type === "result") {
+          result = ev;
+          if (typeof ev.result === "string") text = ev.result;
+        }
+      }
+    });
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e) => { clearTimeout(timer); reject(e); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (result) {
+        const u = result.usage || {};
+        resolveP({
+          text,
+          usage: {
+            inTok: u.input_tokens ?? 0,
+            outTok: u.output_tokens ?? 0,
+            cachedTok: u.cache_read_input_tokens ?? 0,
+            costUsd: typeof result.total_cost_usd === "number" ? result.total_cost_usd : 0,
+            metered: false,
+          },
+        });
+      } else {
+        reject(new Error(`claude stream exited ${code}: ${err.slice(0, 200)}`));
+      }
+    });
+    child.stdin.write(opts.prompt);
+    child.stdin.end();
+  });
 }

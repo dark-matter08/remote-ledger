@@ -5,7 +5,8 @@
 // Works best with a CLI runner that has web access (e.g. Claude Code).
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runLLM, defaultRunnerId } from "../llm/runner.server";
+import { runLLM, defaultRunnerId, tryParseJson, logExternalCall } from "../llm/runner.server";
+import { streamClaude } from "../llm/adapters.server";
 import { getSetting } from "../sqlite.server";
 import {
   upsertJobs,
@@ -83,10 +84,40 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       const loc = getSetting("profile_location") || "remote";
       const stack = getSetting("profile_stack") || "software";
       L("reasoning", `Target: roles in "${loc}" matching "${stack}".`);
-      L("step", `Invoking runner: ${runner} (web search enabled)…`);
-      const r = await runLLM({ purpose: "job-research", prompt: buildPrompt(), allowWeb: true, json: true, maxTokens: 8000, temperature: 0.3 });
-      L("step", `Runner ${r.runner}/${r.model} returned ${r.text.length} chars in ${r.durationMs}ms.`);
-      const jobs = Array.isArray(r.json) ? r.json : r.json?.jobs || [];
+      const prompt = buildPrompt();
+
+      let text = "";
+      if (runner === "claude-cli") {
+        // stream so the shell shows each web search / step live
+        L("step", "Invoking Claude Code (streaming · web search enabled)…");
+        const t0 = Date.now();
+        const sr = await streamClaude({
+          prompt,
+          allowWeb: true,
+          onEvent: (ev: any) => {
+            if (ev.type === "assistant" && ev.message?.content) {
+              for (const c of ev.message.content) {
+                if (c.type === "tool_use") {
+                  const q = c.input?.query || c.input?.url || c.input?.prompt || "";
+                  L("step", `${c.name}${q ? `: ${String(q).slice(0, 110)}` : ""}`);
+                } else if (c.type === "text" && c.text?.trim()) {
+                  L("reasoning", c.text.trim().replace(/\s+/g, " ").slice(0, 180));
+                }
+              }
+            }
+          },
+        });
+        text = sr.text;
+        logExternalCall({ runner: "claude-cli", model: "claude", purpose: "job-research", usage: { inTok: sr.usage.inTok || 0, outTok: sr.usage.outTok || 0, cachedTok: sr.usage.cachedTok || 0, costUsd: sr.usage.costUsd || 0, metered: false }, durationMs: Date.now() - t0 });
+        L("step", `Claude finished in ${Math.round((Date.now() - t0) / 1000)}s.`);
+      } else {
+        L("step", `Invoking runner: ${runner}…`);
+        const r = await runLLM({ purpose: "job-research", prompt, allowWeb: true, json: true, maxTokens: 8000, temperature: 0.3 });
+        text = r.text;
+        L("step", `Runner ${r.runner}/${r.model} returned ${r.text.length} chars in ${r.durationMs}ms.`);
+      }
+      const parsed = tryParseJson(text);
+      const jobs = Array.isArray(parsed) ? parsed : parsed?.jobs || [];
       if (!Array.isArray(jobs) || jobs.length === 0) {
         L("error", "Could not parse any jobs from the runner output.");
         updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "no jobs parsed" });

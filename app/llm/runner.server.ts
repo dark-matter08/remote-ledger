@@ -236,3 +236,12 @@ export function usageSummary(): UsageSummary {
     budget: budgetState(),
   };
 }
+
+// Record a call that was executed outside runOne (e.g. the streaming crawl) so it
+// still shows up on the Usage page.
+export function logExternalCall(o: {
+  runner: string; model: string; purpose: string; jobId?: string;
+  usage: Usage; durationMs: number;
+}): void {
+  logCall({ runner: o.runner, model: o.model, purpose: o.purpose, jobId: o.jobId, usage: o.usage, durationMs: o.durationMs, status: "ok" });
+}
