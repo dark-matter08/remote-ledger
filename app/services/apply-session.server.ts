@@ -55,6 +55,24 @@ function selectJobs(rules: ApplyRules): { id: string; apply_url: string; company
 // Runs the whole session synchronously (bounded by rules.max). Returns the id.
 export async function runSession(mode: "draft" | "assist", rules: ApplyRules): Promise<number> {
   const sessionId = createSession(mode, rules);
+  await processSession(sessionId, mode, rules);
+  return sessionId;
+}
+
+// Fire-and-forget: create the session, return its id immediately, process in the
+// background so the UI's Start button returns at once and the monitor polls live.
+export function startSession(mode: "draft" | "assist", rules: ApplyRules): number {
+  const sessionId = createSession(mode, rules);
+  void processSession(sessionId, mode, rules).catch((e: any) => {
+    try {
+      addLog(sessionId, "error", { text: String(e?.message || e) });
+      updateSession(sessionId, { status: "error", ended_at: new Date().toISOString() });
+    } catch {}
+  });
+  return sessionId;
+}
+
+async function processSession(sessionId: number, mode: "draft" | "assist", rules: ApplyRules): Promise<void> {
   mkdirSync(SHOT_DIR, { recursive: true });
   const jobs = selectJobs(rules);
   updateSession(sessionId, { total: jobs.length });
@@ -64,7 +82,7 @@ export async function runSession(mode: "draft" | "assist", rules: ApplyRules): P
   if (!profile) {
     addLog(sessionId, "error", { text: "No base résumé. Upload one on the Résumés page." });
     updateSession(sessionId, { status: "error", ended_at: new Date().toISOString(), note: "no résumé" });
-    return sessionId;
+    return;
   }
 
   let browser: any;
@@ -148,5 +166,4 @@ export async function runSession(mode: "draft" | "assist", rules: ApplyRules): P
   if (browser) await browser.close().catch(() => {});
   updateSession(sessionId, { status: "done", ended_at: new Date().toISOString() });
   addLog(sessionId, "note", { text: `Session complete. ${processed} processed, ${needsInputTotal} question(s) need your input.` });
-  return sessionId;
 }

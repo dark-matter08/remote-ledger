@@ -16,4 +16,5 @@ export default [
   route("clipper", "routes/clipper.tsx"),
   route("api/crawl", "routes/api-crawl.tsx"),
   route("api/clip", "routes/api-clip.tsx"),
+  route("api/pending", "routes/api-pending.tsx"),
 ] satisfies RouteConfig;

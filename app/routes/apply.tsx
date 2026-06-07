@@ -1,4 +1,5 @@
-import { Form, Link, useNavigation } from "react-router";
+import { useEffect } from "react";
+import { Form, Link, redirect, useNavigation, useRevalidator } from "react-router";
 import type { Route } from "./+types/apply";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -12,7 +13,7 @@ import {
   answerPooledQuestion,
   answerBank,
 } from "../db.server";
-import { runSession, type ApplyRules } from "../services/apply-session.server";
+import { startSession, type ApplyRules } from "../services/apply-session.server";
 import { availableRunners } from "../llm/runner.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 
@@ -53,8 +54,8 @@ export async function action({ request }: Route.ActionArgs) {
       requireJd: !!form.get("requireJd"),
     };
     const mode = (String(form.get("mode") || "draft") as "draft" | "assist");
-    const id = await runSession(mode, rules);
-    return { ok: true, msg: `Session #${id} complete.`, sessionId: id };
+    const id = startSession(mode, rules); // returns immediately; runs in background
+    return redirect(`/apply?session=${id}`);
   }
   return { ok: true };
 }
@@ -71,6 +72,14 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
   const { ready, sessions, pool, bankCount, recentAnswers, active, activeJobs, activeLogs } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
+  const revalidator = useRevalidator();
+
+  // live monitor: while a session is running, poll for updates
+  useEffect(() => {
+    if (active?.status !== "running") return;
+    const t = setInterval(() => revalidator.revalidate(), 3500);
+    return () => clearInterval(t);
+  }, [active?.status, active?.id]);
 
   return (
     <Shell>
@@ -121,7 +130,7 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
             <label style={{ margin: 0 }}><input type="checkbox" name="requireJd" defaultChecked /> Capture full JD if missing</label>
           </div>
         </div>
-        <button className="btn" disabled={busy || !ready.hasRunner || !ready.hasProfile}>{busy ? "Running session…" : "▶ Start session"}</button>
+        <button className="btn" disabled={busy || !ready.hasRunner || !ready.hasProfile}>{busy ? "Starting…" : "▶ Start session"}</button>
       </Form>
 
       {/* question pool */}

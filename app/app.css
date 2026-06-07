@@ -555,8 +555,20 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 .sb-group + .sb-group { margin-top: 4px; }
 .sb-group-title { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.26em; text-transform: uppercase; color: var(--ink-faint); padding: 13px 12px 5px; white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
 .sidebar:hover .sb-group-title, .sidebar.pinned .sb-group-title { opacity: 1; }
+.sb-item { position: relative; }
 .sb-item:hover { transform: translateX(2px); }
 .sb-item.active { background: color-mix(in srgb, var(--vermillion) 13%, transparent); }
+.sb-badge {
+  position: absolute;
+  left: 28px;
+  top: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vermillion);
+  box-shadow: 0 0 0 1.5px var(--paper);
+  animation: blink 1.6s ease-in-out infinite;
+}
 .sb-foot { padding: 10px 13px 12px; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
 .sidebar:hover .sb-foot, .sidebar.pinned .sb-foot { opacity: 1; }
 

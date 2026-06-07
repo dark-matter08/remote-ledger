@@ -47,10 +47,24 @@ const GROUPS: { title: string; items: { to: string; label: string; Icon: LucideI
 export function Sidebar() {
   const [pinned, setPinned] = useState(false);
   const [theme, setTheme] = useState<"paper" | "night">("paper");
+  const [pending, setPending] = useState(0);
 
   useEffect(() => {
     setPinned(localStorage.getItem("ledger-sidebar") === "pinned");
     setTheme((localStorage.getItem("ledger-theme") as "night" | "paper") || "paper");
+  }, []);
+
+  // live badge: poll for pooled questions the agent needs answered
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      fetch("/api/pending")
+        .then((r) => r.json())
+        .then((d) => { if (alive) setPending(d.questions || 0); })
+        .catch(() => {});
+    tick();
+    const t = setInterval(tick, 12000);
+    return () => { alive = false; clearInterval(t); };
   }, []);
 
   function togglePin() {
@@ -80,9 +94,10 @@ export function Sidebar() {
           <div key={g.title} className="sb-group">
             <div className="sb-group-title">{g.title}</div>
             {g.items.map(({ to, label, Icon, end }) => (
-              <NavLink key={to} to={to} end={end} title={label} className={({ isActive }) => `sb-item ${isActive ? "active" : ""}`}>
+              <NavLink key={to} to={to} end={end} title={to === "/apply" && pending > 0 ? `${label} — ${pending} question(s) need answers` : label} className={({ isActive }) => `sb-item ${isActive ? "active" : ""}`}>
                 <span className="sb-ico"><Icon size={18} strokeWidth={1.7} /></span>
                 <span className="sb-label">{label}</span>
+                {to === "/apply" && pending > 0 && <span className="sb-badge" />}
               </NavLink>
             ))}
           </div>
