@@ -47,12 +47,22 @@ set your location. That's it.
   guard** + downloadable PDF, **cover letter**, **interview prep**, **auto-apply assist**
   (drafts an answer per form question + prefills the live form — you submit), stage +
   reminders, full **history**.
+- **Crawl Shell** (`/crawl`) — run Find / Update / Full crawls on demand, watch the
+  reasoning + scraping logs stream live in a terminal view, and replay any past run.
+- **Auto-Apply** (`/apply`) — manual, rule-based sessions that screenshot each posting,
+  draft an answer per form question, and **pool anything they can't answer** for you to
+  answer once (saved to a reusable context bank). Runs in the background; never submits.
 - **Pipeline** (`/board`) — drag jobs across stages (Saved → Offer).
+- **Expired** (`/expired`) — deadlines watched; expired roles leave the ledger automatically.
 - **Analytics** (`/analytics`) — funnel, conversion rates, by-source, reminders.
 - **Usage** (`/usage`) — every AI call's tokens + cost, by purpose / runner, monthly budget.
 - **Résumés** (`/resume`) — upload PDF → structured profile(s); multiple personas.
 - **Clipper** (`/clipper`) — bookmarklet + browser extension to save any job page.
 - **Settings** (`/settings`) — runners, BYO keys, prompt, scheduler, budget, profile.
+
+First run lands on a short **onboarding wizard** (`/setup`) that sets sensible defaults,
+connects a runner, takes your résumé, and asks for your location + target stack — the app
+ships with **no personal data baked in**.
 
 ## Bring your own AI (two ways)
 

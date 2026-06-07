@@ -1,9 +1,9 @@
-# Design System — The Remote Ledger
+# Design System — The Remote & Ledger
 
 ## Product Context
-- **What this is:** A personal, local-first job-hunt tracker. It crawls remote + Cameroon-eligible engineering roles every 4 hours into a local SQLite DB and renders them as a living broadsheet you work through (apply, mark status, filter, sort).
-- **Who it's for:** Nde Che Lucien — a Yaoundé-based fullstack + infrastructure engineer (TypeScript/Node/NestJS/React/React Native, Docker/Terraform/CI-CD, Python, AI/LLM).
-- **Space/industry:** Personal productivity / job search dashboard.
+- **What this is:** A local-first, open-source job-application copilot. It crawls remote roles into a local SQLite DB, tailors the user's résumé per job with their own AI, assists applications, and renders everything as a living broadsheet (apply, mark stage, filter, sort).
+- **Who it's for:** Anyone job-hunting for remote roles who wants to run their own tooling locally with their own AI keys. The location and target stack are set by the user in Settings — the product ships with no personal data baked in.
+- **Space/industry:** Personal productivity / job-search tooling.
 - **Project type:** Local web app (React Router 7 framework mode, SSR, SQLite).
 - **Memorable thing:** "My job hunt, printed like a newspaper." The hunt should feel like a hand-set classified ledger you can't wait to read the next edition of.
 

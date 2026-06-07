@@ -9,8 +9,8 @@ import { QUICK_STAGES, STAGE_LABEL, type Job, type Stage, type Category } from "
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: "The Remote Ledger" },
-    { name: "description", content: "Remote & Cameroon-eligible engineering roles, set in type." },
+    { title: "The Remote & Ledger" },
+    { name: "description", content: "Remote-eligible roles, tailored and tracked — set in type." },
   ];
 }
 
