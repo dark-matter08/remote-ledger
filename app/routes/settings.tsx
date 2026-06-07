@@ -42,6 +42,7 @@ export async function loader() {
       schedulerEnabled: getSetting("scheduler_enabled") !== "false",
       scrapeJds: getSetting("scrape_jds") !== "false",
       scrapeLimit: getSetting("scrape_limit") || "12",
+      crawlTimeout: getSetting("crawl_timeout_min") || "15",
       searchPrompt: getSetting("search_prompt") || defaultPrompt(),
       defaultStyle: getSetting("default_resume_style") || "letterpress",
       profileLocation: getSetting("profile_location") || "",
@@ -83,6 +84,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "save-scheduler") {
     save("scheduler_interval_hours");
     save("scrape_limit");
+    save("crawl_timeout_min");
     setSetting("scheduler_enabled", form.get("scheduler_enabled") ? "true" : "false");
     setSetting("scrape_jds", form.get("scrape_jds") ? "true" : "false");
     return { ok: true, msg: "Scheduler settings saved." };
@@ -198,6 +200,10 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           <div className="row2">
             <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><label style={{ margin: 0 }}><input type="checkbox" name="scrape_jds" defaultChecked={settings.scrapeJds} /> Scrape full JDs on crawl</label></div>
             <div className="field"><label>Max postings to scrape per crawl</label><input type="number" min="0" name="scrape_limit" defaultValue={settings.scrapeLimit} /></div>
+          </div>
+          <div className="row2">
+            <div className="field"><label>Find-crawl timeout (minutes)</label><input type="number" min="2" max="60" name="crawl_timeout_min" defaultValue={settings.crawlTimeout} /></div>
+            <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><span className="hint" style={{ margin: 0 }}>How long the research agent may run before it's stopped. The prompt tells it to return results well within this.</span></div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button className="btn" disabled={saving}>Save</button>

@@ -370,7 +370,8 @@ export async function streamClaude(opts: {
     if (opts.system) args.push("--append-system-prompt", opts.system);
     if (opts.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
     const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() } });
-    const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 600000);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs ?? 600000);
     let buf = "";
     let result: any = null;
     let text = "";
@@ -408,7 +409,7 @@ export async function streamClaude(opts: {
           },
         });
       } else {
-        reject(new Error(`claude stream exited ${code}: ${err.slice(0, 200)}`));
+        reject(new Error(timedOut ? `timed out after ${Math.round((opts.timeoutMs ?? 600000) / 60000)} min before the agent returned results` : `claude stream exited ${code}: ${err.slice(0, 200)}`));
       }
     });
     child.stdin.write(opts.prompt);

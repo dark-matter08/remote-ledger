@@ -89,11 +89,13 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       let text = "";
       if (runner === "claude-cli") {
         // stream so the shell shows each web search / step live
-        L("step", "Invoking Claude Code (streaming · web search enabled)…");
+        const timeoutMin = Number(getSetting("crawl_timeout_min") || "15") || 15;
+        L("step", `Invoking Claude Code (streaming · web search · ${timeoutMin} min budget)…`);
         const t0 = Date.now();
         const sr = await streamClaude({
           prompt,
           allowWeb: true,
+          timeoutMs: timeoutMin * 60000,
           onEvent: (ev: any) => {
             if (ev.type === "assistant" && ev.message?.content) {
               for (const c of ev.message.content) {
@@ -164,8 +166,10 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
     updateCrawlRun(runId, { status: "done", ended_at: new Date().toISOString(), ...totals });
     return { ok: true, runId, ...totals };
   } catch (e: any) {
-    L("error", e?.message || String(e));
-    updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), ...totals });
+    const msg = e?.message || String(e);
+    L("error", msg);
+    if (/timed out/i.test(msg)) L("note", "Tip: raise the crawl timeout in Settings → Scheduler, or make the search prompt more focused (fewer sources) so the agent returns sooner.");
+    updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: msg.slice(0, 200), ...totals });
     setMeta("last_crawl_status", "error");
     return { ok: false, runId, ...totals, message: e?.message || String(e) };
   } finally {

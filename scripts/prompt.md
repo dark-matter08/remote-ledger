@@ -12,7 +12,12 @@ remote, or platforms that place engineers from there). Use web search and fetch 
 pages. Prefer roles matching the target stack. Do NOT invent jobs or links; verify
 each application URL resolves.
 
-Aim for 20-30 jobs, each categorized:
+BE EFFICIENT — you have a few minutes only. Do roughly 8–15 targeted searches/fetches,
+then STOP and output the JSON. Do not exhaustively browse; a focused set of 15–25 solid
+roles is better than an endless hunt. Always emit the final JSON array before you run out
+of time, even if you have fewer than 25 roles.
+
+Aim for ~15-25 jobs, each categorized:
 - "high"   = strong stack match AND clearly eligible from the candidate's location.
 - "medium" = good fit but a higher bar, senior level, small stack gap, or eligibility to confirm.
 - "stretch"= worth a shot: harder bar, eligibility to confirm, or real stack gap.
