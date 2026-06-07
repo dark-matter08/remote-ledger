@@ -12,12 +12,18 @@ remote, or platforms that place engineers from there). Use web search and fetch 
 pages. Prefer roles matching the target stack. Do NOT invent jobs or links; verify
 each application URL resolves.
 
-BE EFFICIENT — you have a few minutes only. Do roughly 8–15 targeted searches/fetches,
-then STOP and output the JSON. Do not exhaustively browse; a focused set of 15–25 solid
-roles is better than an endless hunt. Always emit the final JSON array before you run out
-of time, even if you have fewer than 25 roles.
+⏱ STRICT BUDGET: ~{{budget_min}} minutes and AT MOST {{max_actions}} web actions
+(searches + fetches combined). You will be hard-stopped at the deadline.
 
-Aim for ~15-25 jobs, each categorized:
+Because you cannot perceive elapsed time, govern yourself by ACTION COUNT, not the clock:
+- Count every WebSearch and WebFetch. Once you reach {{max_actions}} actions, STOP
+  searching immediately and output the JSON — no exceptions.
+- Outputting the JSON array is your #1 job. A turn that ends WITHOUT the JSON is a total
+  failure. Returning 8 solid roles is far better than being cut off with zero.
+- Work broad-then-shallow: a few wide searches, open only the most promising results,
+  don't chase every link. When in doubt, stop and output now.
+
+Aim for ~10-20 jobs, each categorized:
 - "high"   = strong stack match AND clearly eligible from the candidate's location.
 - "medium" = good fit but a higher bar, senior level, small stack gap, or eligibility to confirm.
 - "stretch"= worth a shot: harder bar, eligibility to confirm, or real stack gap.
