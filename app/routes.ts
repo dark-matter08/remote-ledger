@@ -1,0 +1,19 @@
+import { type RouteConfig, index, route } from "@react-router/dev/routes";
+
+export default [
+  index("routes/home.tsx"),
+  route("settings", "routes/settings.tsx"),
+  route("usage", "routes/usage.tsx"),
+  route("resume", "routes/resume.tsx"),
+  route("jobs/:id", "routes/job.tsx"),
+  route("version/:vid/resume.pdf", "routes/version-pdf.tsx"),
+  route("board", "routes/board.tsx"),
+  route("analytics", "routes/analytics.tsx"),
+  route("apply", "routes/apply.tsx"),
+  route("apply/shot/:id", "routes/apply-shot.tsx"),
+  route("expired", "routes/expired.tsx"),
+  route("setup", "routes/setup.tsx"),
+  route("clipper", "routes/clipper.tsx"),
+  route("api/crawl", "routes/api-crawl.tsx"),
+  route("api/clip", "routes/api-clip.tsx"),
+] satisfies RouteConfig;
