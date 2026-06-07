@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 280px; font-family: ui-monospace, monospace; background: #efe6d2; color: #1a1714; padding: 14px; }
+    h1 { font-family: Georgia, serif; font-size: 16px; margin: 0 0 10px; }
+    label { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #7a6e5e; }
+    input { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; padding: 7px; border: 1.5px solid #7a6e5e; background: #efe6d2; margin: 4px 0 10px; }
+    button { font-family: inherit; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #efe6d2; background: #1a1714; border: 0; padding: 9px 14px; cursor: pointer; box-shadow: 3px 3px 0 0 #b23a2e; }
+    #status { font-size: 11px; margin-top: 10px; min-height: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Clip to Ledger</h1>
+  <label>App URL</label>
+  <input id="url" type="text" value="http://localhost:5173" />
+  <button id="clip">＋ Clip this job</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
