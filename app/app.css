@@ -64,6 +64,20 @@ a {
   color: inherit;
 }
 
+/* ===== themed scrollbars (letterpress) ===== */
+* { scrollbar-width: thin; scrollbar-color: var(--ink-faint) transparent; }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ink-faint); border: 3px solid var(--paper); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink); }
+::-webkit-scrollbar-corner { background: transparent; }
+/* the kanban board's horizontal bar reads as a printer's slug on the rule */
+.board { scrollbar-color: var(--ink) var(--paper-2); }
+.board::-webkit-scrollbar { height: 13px; }
+.board::-webkit-scrollbar-track { background: var(--paper-2); border-top: 1.5px solid var(--rule); }
+.board::-webkit-scrollbar-thumb { background: var(--ink); border: 3px solid var(--paper-2); }
+.board::-webkit-scrollbar-thumb:hover { background: var(--vermillion); }
+
 .sheet {
   max-width: 1080px;
   margin: 0 auto;

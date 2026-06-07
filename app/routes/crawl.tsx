@@ -3,7 +3,7 @@ import { Form, Link, redirect, useNavigation, useRevalidator } from "react-route
 import type { Route } from "./+types/crawl";
 import { Shell } from "../components/Shell";
 import { listCrawlRuns, activeCrawl, getCrawlRun, crawlLogs, updateCrawlRun, crawlLog } from "../db.server";
-import { startCrawl, isCrawlRunning, type CrawlType } from "../services/crawl.server";
+import { startCrawl, isCrawlRunning, abortCrawl, type CrawlType } from "../services/crawl.server";
 import { availableRunners } from "../llm/runner.server";
 
 export function meta(_: Route.MetaArgs) {
@@ -37,7 +37,8 @@ export async function action({ request }: Route.ActionArgs) {
   if (form.get("intent") === "stop") {
     const a = activeCrawl();
     if (a) {
-      crawlLog(a.id, "error", "Stopped by user.");
+      const killed = abortCrawl(a.id); // actually terminate the agent process
+      crawlLog(a.id, "error", killed ? "Stopped by user — agent process killed." : "Marked stopped (no live process in this server).");
       updateCrawlRun(a.id, { status: "error", ended_at: new Date().toISOString(), note: "stopped by user" });
     }
     return redirect(`/crawl?run=${a?.id ?? ""}`);

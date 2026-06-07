@@ -48,6 +48,14 @@ function buildPrompt(): string {
 }
 
 let running = false;
+// active run controllers so a Stop can actually kill the underlying agent process
+const controllers = new Map<number, AbortController>();
+
+export function abortCrawl(runId: number): boolean {
+  const ac = controllers.get(runId);
+  if (ac) { ac.abort(); return true; }
+  return false;
+}
 
 // public: synchronous (scheduler / CLI)
 export async function runCrawl(type: CrawlType = "find", trigger = "cli"): Promise<CrawlResult> {
@@ -75,6 +83,8 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
   running = true;
+  const ac = new AbortController();
+  controllers.set(runId, ac);
   const totals = { received: 0, inserted: 0, updated: 0, scraped: 0, errors: 0 };
   try {
     L("note", `Crawl started · type=${type}`);
@@ -98,6 +108,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           allowWeb: true,
           model: cliModel || undefined,
           timeoutMs: timeoutMin * 60000,
+          signal: ac.signal,
           onEvent: (ev: any) => {
             if (ev.type === "assistant" && ev.message?.content) {
               for (const c of ev.message.content) {
@@ -176,5 +187,6 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
     return { ok: false, runId, ...totals, message: e?.message || String(e) };
   } finally {
     running = false;
+    controllers.delete(runId);
   }
 }

@@ -370,6 +370,7 @@ export async function streamClaude(opts: {
   model?: string;
   allowWeb?: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
   onEvent: (ev: any) => void;
 }): Promise<{ text: string; usage: Partial<Usage> }> {
   return new Promise((resolveP, reject) => {
@@ -379,7 +380,13 @@ export async function streamClaude(opts: {
     if (opts.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
     const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() } });
     let timedOut = false;
+    let aborted = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs ?? 600000);
+    if (opts.signal) {
+      const onAbort = () => { aborted = true; child.kill("SIGKILL"); };
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
     let buf = "";
     let result: any = null;
     let text = "";
@@ -418,7 +425,9 @@ export async function streamClaude(opts: {
         });
       } else {
         reject(new Error(
-          timedOut
+          aborted
+            ? "stopped by user"
+            : timedOut
             ? `timed out after ${Math.round((opts.timeoutMs ?? 600000) / 60000)} min before the agent returned results`
             : signal
             ? `claude was killed by signal ${signal} before finishing (often the dev server reloading mid-crawl — use 'npm run build && npm run start' for uninterrupted crawls)`
