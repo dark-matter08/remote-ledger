@@ -1,0 +1,33 @@
+{
+  "_comment": "USD per 1,000,000 tokens. Editable. Used to cost direct-API calls. Unknown models cost 0 and are flagged. CLI/subscription runs are tracked but not billed per-token.",
+  "anthropic": {
+    "claude-opus-4-8": { "in": 15, "out": 75, "cache": 1.5 },
+    "claude-sonnet-4-6": { "in": 3, "out": 15, "cache": 0.3 },
+    "claude-haiku-4-5-20251001": { "in": 1, "out": 5, "cache": 0.1 },
+    "claude-3-5-sonnet-latest": { "in": 3, "out": 15, "cache": 0.3 }
+  },
+  "openai": {
+    "gpt-4o": { "in": 2.5, "out": 10 },
+    "gpt-4o-mini": { "in": 0.15, "out": 0.6 },
+    "gpt-4.1": { "in": 2, "out": 8 },
+    "gpt-4.1-mini": { "in": 0.4, "out": 1.6 },
+    "o4-mini": { "in": 1.1, "out": 4.4 }
+  },
+  "google": {
+    "gemini-1.5-flash": { "in": 0.075, "out": 0.3 },
+    "gemini-1.5-pro": { "in": 1.25, "out": 5 },
+    "gemini-2.0-flash": { "in": 0.1, "out": 0.4 }
+  },
+  "groq": {
+    "llama-3.3-70b-versatile": { "in": 0.59, "out": 0.79 }
+  },
+  "mistral": {
+    "mistral-large-latest": { "in": 2, "out": 6 }
+  },
+  "openrouter": {
+    "anthropic/claude-3.5-sonnet": { "in": 3, "out": 15 }
+  },
+  "ollama": {
+    "*": { "in": 0, "out": 0 }
+  }
+}
