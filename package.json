@@ -1,0 +1,40 @@
+{
+  "name": "remote-ledger",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "start": "react-router-serve ./build/server/index.js",
+    "typecheck": "react-router typegen && tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "seed": "node scripts/seed.mjs",
+    "crawl": "tsx scripts/run-crawl.ts",
+    "scheduler": "node scripts/os-scheduler.mjs",
+    "postinstall": "playwright install chromium || true"
+  },
+  "dependencies": {
+    "@react-router/node": "7.16.0",
+    "@react-router/serve": "7.16.0",
+    "better-sqlite3": "^12.10.0",
+    "isbot": "^5.1.36",
+    "lucide-react": "^1.17.0",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.60.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-router": "7.16.0"
+  },
+  "devDependencies": {
+    "@react-router/dev": "7.16.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.2.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.3"
+  }
+}

@@ -1,0 +1,17 @@
+services:
+  ledger:
+    build: .
+    ports:
+      - "5173:5173"
+    volumes:
+      # persist the DB, generated PDFs, and the encrypted key store
+      - ./data:/app/data
+    environment:
+      # optional: pass BYO keys via env instead of the in-app encrypted store
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+    restart: unless-stopped
