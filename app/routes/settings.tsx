@@ -7,6 +7,7 @@ import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
 import { getSetting, setSetting } from "../sqlite.server";
 import { listRunners } from "../llm/runner.server";
+import { discoverModels } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 
@@ -30,8 +31,16 @@ function defaultPrompt(): string {
 
 export async function loader() {
   const runners = await listRunners();
+  const modelOptions: Record<string, { value: string; label: string }[]> = {};
+  await Promise.all(
+    runners.map(async (r) => {
+      const ms = await discoverModels(r.id, r.provider, r.kind);
+      modelOptions[r.id] = ms.map((m) => ({ value: m, label: m === "default" ? "Default" : m }));
+    })
+  );
   return {
     runners,
+    modelOptions,
     keys: KEY_FIELDS.map((k) => ({ ...k, set: hasSecret(k.name) })),
     settings: {
       default_runner: getSetting("default_runner") || "",
@@ -105,12 +114,12 @@ const TABS = ["Runners", "Keys", "Scheduler", "Profile", "Prompt"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, keys, settings } = loaderData;
+  const { runners, modelOptions, keys, settings } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
-  const apiRunners = runners.filter((r) => r.kind === "api");
   const cliRunners = runners.filter((r) => r.kind === "cli");
+  const availRunners = runners.filter((r) => r.available);
 
   return (
     <Shell>
@@ -156,10 +165,15 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
                 <Select name="fallback_runner" defaultValue={settings.fallback_runner} options={[{ value: "", label: "None" }, ...runners.map((r) => ({ value: r.id, label: r.label, disabled: !r.available }))]} />
               </div>
             </div>
-            <p className="hint" style={{ marginTop: 14 }}>Model override per API runner (blank = default)</p>
+            <p className="hint" style={{ marginTop: 14 }}>
+              Model per runner — pulled from the agent/provider. CLI agents list the aliases they accept (e.g. sonnet, opus); API runners list live models when a key is set. "Default" uses the agent's own default.
+            </p>
             <div className="row2">
-              {apiRunners.map((r) => (
-                <div className="field" key={r.id}><label>{r.label}</label><input type="text" name={`model_${r.id}`} defaultValue={settings.models[r.id]} placeholder={r.defaultModel} /></div>
+              {availRunners.map((r) => (
+                <div className="field" key={r.id}>
+                  <label>{r.label} {r.kind === "cli" ? <span className="badge off">cli</span> : null}</label>
+                  <Select name={`model_${r.id}`} defaultValue={settings.models[r.id] || "default"} options={modelOptions[r.id] || [{ value: "default", label: "Default" }]} />
+                </div>
               ))}
             </div>
             <div className="row2" style={{ marginTop: 8 }}>

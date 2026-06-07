@@ -90,11 +90,13 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       if (runner === "claude-cli") {
         // stream so the shell shows each web search / step live
         const timeoutMin = Number(getSetting("crawl_timeout_min") || "15") || 15;
-        L("step", `Invoking Claude Code (streaming · web search · ${timeoutMin} min budget)…`);
+        const cliModel = getSetting("model_claude-cli") || "";
+        L("step", `Invoking Claude Code (streaming · ${cliModel || "default"} · web search · ${timeoutMin} min budget)…`);
         const t0 = Date.now();
         const sr = await streamClaude({
           prompt,
           allowWeb: true,
+          model: cliModel || undefined,
           timeoutMs: timeoutMin * 60000,
           onEvent: (ev: any) => {
             if (ev.type === "assistant" && ev.message?.content) {

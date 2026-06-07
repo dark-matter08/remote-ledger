@@ -74,8 +74,9 @@ class ClaudeCliAdapter implements RunnerAdapter {
       detail: "Uses your Claude Code subscription. Reports tokens + cost.",
     };
   }
-  async run(req: RunRequest): Promise<AdapterResult> {
+  async run(req: RunRequest, model?: string): Promise<AdapterResult> {
     const args = ["-p", "--output-format", "json"];
+    if (model && model !== "default") args.push("--model", model);
     if (req.system) args.push("--append-system-prompt", req.system);
     if (req.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
     const r = await exec("claude", args, {
@@ -112,7 +113,7 @@ class GenericCliAdapter implements RunnerAdapter {
     private label: string,
     private provider: string,
     private bin: string,
-    private buildArgs: (req: RunRequest) => string[],
+    private buildArgs: (req: RunRequest, model?: string) => string[],
     private passViaStdin = true
   ) {}
   async info(): Promise<RunnerInfo> {
@@ -125,8 +126,8 @@ class GenericCliAdapter implements RunnerAdapter {
       detail: `Uses your ${this.label} install. Tokens estimated (CLI does not report usage).`,
     };
   }
-  async run(req: RunRequest): Promise<AdapterResult> {
-    const args = this.buildArgs(req);
+  async run(req: RunRequest, model?: string): Promise<AdapterResult> {
+    const args = this.buildArgs(req, model);
     const text = [req.system ? `System:\n${req.system}\n\n` : "", req.prompt].join("");
     const r = await exec(this.bin, args, {
       input: this.passViaStdin ? text : undefined,
@@ -299,14 +300,19 @@ class GoogleApiAdapter implements RunnerAdapter {
 
 export const ADAPTERS: RunnerAdapter[] = [
   new ClaudeCliAdapter(),
-  new GenericCliAdapter("codex-cli", "Codex (CLI)", "codex", "codex", (req) => [
+  new GenericCliAdapter("codex-cli", "Codex (CLI)", "codex", "codex", (req, m) => [
     "exec",
+    ...(m && m !== "default" ? ["--model", m] : []),
     req.prompt,
   ], false),
-  new GenericCliAdapter("cursor-cli", "Cursor Agent (CLI)", "cursor", "cursor-agent", () => [
+  new GenericCliAdapter("cursor-cli", "Cursor Agent (CLI)", "cursor", "cursor-agent", (_req, m) => [
     "-p",
+    ...(m && m !== "default" ? ["--model", m] : []),
   ]),
-  new GenericCliAdapter("gemini-cli", "Gemini (CLI)", "google", "gemini", () => ["-p"]),
+  new GenericCliAdapter("gemini-cli", "Gemini (CLI)", "google", "gemini", (_req, m) => [
+    "-p",
+    ...(m && m !== "default" ? ["--model", m] : []),
+  ]),
   new AnthropicApiAdapter(),
   new OpenAICompatAdapter(
     "openai-api",
@@ -361,12 +367,14 @@ export function adapterById(id: string): RunnerAdapter | undefined {
 export async function streamClaude(opts: {
   prompt: string;
   system?: string;
+  model?: string;
   allowWeb?: boolean;
   timeoutMs?: number;
   onEvent: (ev: any) => void;
 }): Promise<{ text: string; usage: Partial<Usage> }> {
   return new Promise((resolveP, reject) => {
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
+    if (opts.model && opts.model !== "default") args.push("--model", opts.model);
     if (opts.system) args.push("--append-system-prompt", opts.system);
     if (opts.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
     const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() } });
@@ -394,7 +402,7 @@ export async function streamClaude(opts: {
     });
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (result) {
         const u = result.usage || {};
@@ -409,7 +417,13 @@ export async function streamClaude(opts: {
           },
         });
       } else {
-        reject(new Error(timedOut ? `timed out after ${Math.round((opts.timeoutMs ?? 600000) / 60000)} min before the agent returned results` : `claude stream exited ${code}: ${err.slice(0, 200)}`));
+        reject(new Error(
+          timedOut
+            ? `timed out after ${Math.round((opts.timeoutMs ?? 600000) / 60000)} min before the agent returned results`
+            : signal
+            ? `claude was killed by signal ${signal} before finishing (often the dev server reloading mid-crawl — use 'npm run build && npm run start' for uninterrupted crawls)`
+            : `claude exited ${code}: ${err.slice(0, 200)}`
+        ));
       }
     });
     child.stdin.write(opts.prompt);
