@@ -10,7 +10,20 @@ and tracks the whole pipeline — rendered as a hand-set **Heritage Press** broa
 **Privacy is the point:** your data and keys never leave your machine. The only thing
 that goes out is the call to the AI provider you chose.
 
-![styled in Fraunces / Spectral / IBM Plex Mono — see DESIGN.md](DESIGN.md)
+![The ledger — remote roles grouped by fit, set in type](screenshots/readme/ledger.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="screenshots/readme/apply.png" alt="Auto-Apply control room" /></td>
+    <td width="50%"><img src="screenshots/readme/pipeline.png" alt="Kanban pipeline" /></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="screenshots/readme/onboarding.png" alt="First-run onboarding" /></td>
+    <td width="50%"><img src="screenshots/readme/ledger-dark.png" alt="Night Press dark mode" /></td>
+  </tr>
+</table>
+
+<sub>The ledger · Auto-Apply room · pipeline · onboarding · Night Press. Heritage Press design system: Fraunces / Spectral / IBM Plex Mono — see [DESIGN.md](DESIGN.md).</sub>
 
 ---
 
