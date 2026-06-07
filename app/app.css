@@ -497,8 +497,9 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 .sidebar {
   position: fixed;
   left: 14px;
-  top: 14px;
-  bottom: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 70vh;
   width: 56px;
   z-index: 55;
   background: var(--paper);
@@ -561,6 +562,36 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 
 /* ledger card discovered date */
 .num .disc { color: var(--ink-faint); }
+
+/* custom letterpress checkboxes (global) */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  vertical-align: middle;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.12s, border-color 0.12s;
+}
+input[type="checkbox"]:hover { border-color: var(--vermillion); }
+input[type="checkbox"]:checked { background: var(--vermillion); border-color: var(--vermillion); }
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--paper);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--ochre); outline-offset: 2px; }
 
 /* apply room: rule checkboxes + question pool */
 .checkrow { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
