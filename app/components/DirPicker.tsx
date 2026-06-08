@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Folder, Home, ArrowUp } from "lucide-react";
 
 // Path field with a server-side folder browser. Browsing hits /api/dirs (which reads
 // the real filesystem on this machine), so you click into the folder you want and it
@@ -36,8 +37,8 @@ export function DirPicker({ name, placeholder }: { name: string; placeholder?: s
       {open && (
         <div className="dirpick-panel">
           <div className="dirpick-bar">
-            <button type="button" className="back-link" onClick={() => load(data?.home || "")}>⌂ Home</button>
-            <button type="button" className="back-link" onClick={() => data && load(data.parent)} disabled={!data || data.path === data.parent}>↑ Up</button>
+            <button type="button" className="back-link dirpick-nav" onClick={() => load(data?.home || "")}><Home size={13} /> Home</button>
+            <button type="button" className="back-link dirpick-nav" onClick={() => data && load(data.parent)} disabled={!data || data.path === data.parent}><ArrowUp size={13} /> Up</button>
             <code className="dirpick-cwd">{data?.path || "…"}</code>
           </div>
           <div className="dirpick-list">
@@ -49,7 +50,7 @@ export function DirPicker({ name, placeholder }: { name: string; placeholder?: s
               <div className="dirpick-empty">no subfolders here</div>
             ) : (
               data?.dirs.map((d) => (
-                <button type="button" key={d} className="dirpick-dir" onClick={() => load(join(data.path, d))}>📁 {d}</button>
+                <button type="button" key={d} className="dirpick-dir" onClick={() => load(join(data.path, d))}><Folder size={14} /> {d}</button>
               ))
             )}
           </div>

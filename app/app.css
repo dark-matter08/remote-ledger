@@ -1017,8 +1017,12 @@ table.ledger-table tr:hover td { background: var(--card); }
 .dirpick-bar { display: flex; align-items: center; gap: 12px; padding: 9px 11px; border-bottom: 1.5px solid var(--rule); flex-wrap: wrap; }
 .dirpick-cwd { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); word-break: break-all; }
 .dirpick-list { max-height: 240px; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; scrollbar-width: thin; scrollbar-color: var(--rule-faint) transparent; }
-.dirpick-dir { text-align: left; font-family: var(--mono); font-size: 12px; padding: 6px 9px; background: transparent; border: 0; cursor: pointer; color: var(--ink); }
+.dirpick-dir { display: flex; align-items: center; gap: 8px; text-align: left; font-family: var(--mono); font-size: 12px; padding: 6px 9px; background: transparent; border: 0; cursor: pointer; color: var(--ink); }
 .dirpick-dir:hover { background: var(--paper-2); color: var(--vermillion); }
+.dirpick-dir svg { flex: none; color: var(--ink-faint); }
+.dirpick-dir:hover svg { color: var(--vermillion); }
+.dirpick-nav { display: inline-flex; align-items: center; gap: 5px; }
+.dirpick-nav svg { vertical-align: middle; }
 .dirpick-empty { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); padding: 16px; text-align: center; }
 .dirpick-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border-top: 1.5px solid var(--rule); flex-wrap: wrap; }
 .dirpick-pick { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); word-break: break-all; }
