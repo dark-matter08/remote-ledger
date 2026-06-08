@@ -198,6 +198,48 @@ export function startScan(path: string): { id: number; error?: string } {
   return { id };
 }
 
+// Scan projects whose text was gathered + filtered in the browser (folder picker)
+// and uploaded as JSON. Same extraction as the path scan, but contents arrive from
+// the client instead of being read off disk by path.
+export interface UploadedProject { name: string; readme?: string; manifests?: { name: string; content: string }[]; files?: string[] }
+
+function bodyFromUpload(p: UploadedProject): string {
+  const parts: string[] = [];
+  if (p.readme) parts.push("# README\n" + String(p.readme).slice(0, 6000));
+  for (const m of (p.manifests || []).slice(0, 6)) parts.push(`# ${m.name}\n` + String(m.content).slice(0, 2000));
+  if (p.files?.length) {
+    const exts: Record<string, number> = {};
+    for (const f of p.files) { const e = (f.match(/\.[a-z0-9]+$/i) || [""])[0].toLowerCase(); if (e) exts[e] = (exts[e] || 0) + 1; }
+    const langs = Object.entries(exts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k}:${v}`).join(" ");
+    parts.push(`# files\nlanguages: ${langs}\nsample: ${p.files.slice(0, 40).join(", ")}`);
+  }
+  return parts.join("\n\n").trim();
+}
+
+export function startScanFromUpload(label: string, projects: UploadedProject[]): { id: number; error?: string } {
+  if (!projects?.length) return { id: 0, error: "No projects with a README or manifest found in that folder." };
+  const id = Number(getDb().prepare("INSERT INTO kb_scans (path,status,started_at) VALUES (?,?,?)").run(label || "folder", "running", NOW()).lastInsertRowid);
+  void runUploadScan(id, projects.slice(0, 12), label).catch((e: any) => {
+    try { getDb().prepare("UPDATE kb_scans SET status='error', note=?, ended_at=? WHERE id=?").run(String(e?.message || e).slice(0, 300), NOW(), id); } catch {}
+  });
+  return { id };
+}
+
+async function runUploadScan(scanId: number, projects: UploadedProject[], label: string): Promise<void> {
+  const db = getDb();
+  let found = 0;
+  for (const p of projects) {
+    const body = bodyFromUpload(p);
+    if (body.length < 40) continue;
+    try {
+      await extractFromText("project", p.name || "project", body, label || undefined);
+      found++;
+      db.prepare("UPDATE kb_scans SET found=? WHERE id=?").run(found, scanId);
+    } catch { /* skip a project the runner choked on */ }
+  }
+  db.prepare("UPDATE kb_scans SET status='done', found=?, ended_at=? WHERE id=?").run(found, NOW(), scanId);
+}
+
 async function runScan(scanId: number, root: string): Promise<void> {
   const db = getDb();
   const projects = candidateProjects(root);

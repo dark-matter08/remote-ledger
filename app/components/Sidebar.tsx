@@ -8,6 +8,7 @@ import {
   BarChart3,
   Send,
   FileText,
+  BrainCircuit,
   Scissors,
   Gauge,
   Settings,
@@ -34,6 +35,7 @@ const GROUPS: { title: string; items: { to: string; label: string; Icon: LucideI
     items: [
       { to: "/apply", label: "Auto-Apply", Icon: Send },
       { to: "/resume", label: "Résumés", Icon: FileText },
+      { to: "/knowledge", label: "Knowledge Base", Icon: BrainCircuit },
       { to: "/clipper", label: "Clipper", Icon: Scissors },
     ],
   },

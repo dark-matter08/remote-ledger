@@ -1,5 +1,4 @@
-import { useEffect } from "react";
-import { Form, useNavigation, useRevalidator } from "react-router";
+import { Form, Link, useNavigation } from "react-router";
 import type { Route } from "./+types/resume";
 import { Shell } from "../components/Shell";
 import { FilePicker } from "../components/FilePicker";
@@ -9,38 +8,16 @@ import {
   setDefaultProfile,
   deleteProfile,
   getProfile,
-  getDefaultProfile,
   extractPdfText,
   parseResumeText,
 } from "../resume/profiles.server";
-import {
-  kbItems,
-  kbOpenQuestions,
-  kbSuggestions,
-  kbScans,
-  activeScan,
-  addManualNote,
-  startScan,
-  answerKbQuestion,
-  redraftItem,
-  acceptSuggestion,
-  dismissSuggestion,
-  deleteKbItem,
-} from "../services/kb.server";
-import { availableRunners } from "../llm/runner.server";
 
 export function meta(_: Route.MetaArgs) {
   return [{ title: "Resume · The Remote Ledger" }];
 }
 
 export async function loader() {
-  const runners = await availableRunners();
-  return {
-    profiles: listProfiles(),
-    hasRunner: runners.length > 0,
-    hasProfile: !!getDefaultProfile(),
-    kb: { items: kbItems(), questions: kbOpenQuestions(), suggestions: kbSuggestions("pending"), scans: kbScans(), scanning: !!activeScan() },
-  };
+  return { profiles: listProfiles() };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -88,32 +65,6 @@ export async function action({ request }: Route.ActionArgs) {
       saveProfile({ id, name: String(form.get("name") || p.name), data });
       return { ok: true, msg: "Profile saved." };
     }
-    // ---- knowledge base ----
-    if (intent === "kb-note") {
-      const text = String(form.get("text") || "").trim();
-      if (text.length < 12) return { error: "Tell me a bit more about what you're working on." };
-      await addManualNote(text);
-      return { ok: true, msg: "Captured. Drafted bullets and a few questions for you below." };
-    }
-    if (intent === "kb-scan") {
-      const path = String(form.get("path") || "").trim();
-      const r = startScan(path);
-      if (r.error) return { error: r.error };
-      return { ok: true, msg: "Scanning… reading projects in the background." };
-    }
-    if (intent === "kb-answer") {
-      const id = Number(form.get("id"));
-      const itemId = Number(form.get("itemId")) || 0;
-      answerKbQuestion(id, String(form.get("answer") || "").trim());
-      if (itemId) await redraftItem(itemId);
-      return { ok: true, msg: "Answer saved — refreshed the drafted bullets." };
-    }
-    if (intent === "kb-accept") {
-      const r = acceptSuggestion(Number(form.get("id")));
-      return r.ok ? { ok: true, msg: r.msg } : { error: r.msg };
-    }
-    if (intent === "kb-dismiss") { dismissSuggestion(Number(form.get("id"))); return { ok: true, msg: "Dismissed." }; }
-    if (intent === "kb-delete") { deleteKbItem(Number(form.get("id"))); return { ok: true, msg: "Removed from knowledge base." }; }
   } catch (e: any) {
     return { error: e.message || String(e) };
   }
@@ -121,31 +72,25 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function ResumePage({ loaderData, actionData }: Route.ComponentProps) {
-  const { profiles, kb, hasRunner } = loaderData;
+  const { profiles } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
-  const revalidator = useRevalidator();
-
-  // live-refresh while a folder scan runs in the background
-  useEffect(() => {
-    if (!kb.scanning) return;
-    const t = setInterval(() => revalidator.revalidate(), 3000);
-    return () => clearInterval(t);
-  }, [kb.scanning]);
 
   return (
     <Shell>
       <div className="page-head">
         <h1>Base Résumés</h1>
-        <div className="sub">Upload once · tailor per job · keep building from your work</div>
+        <div className="sub">Upload once · tailor per job · multiple profiles</div>
       </div>
       <hr className="rule double" />
 
       {actionData?.error && <div className="notice err">{actionData.error}</div>}
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}
-      {!hasRunner && <div className="notice warn">Connect an AI runner in Settings to build your knowledge base.</div>}
 
-      <KnowledgeBase kb={kb} busy={busy} hasRunner={hasRunner} />
+      <div className="notice ok" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <span>Keep building your résumé from what you've worked on.</span>
+        <Link to="/knowledge" className="entry-title-link">Open Knowledge Base ▸</Link>
+      </div>
 
       <div className="panel">
         <h3>Upload a résumé (PDF)</h3>
@@ -208,115 +153,5 @@ export default function ResumePage({ loaderData, actionData }: Route.ComponentPr
         ))
       )}
     </Shell>
-  );
-}
-
-function KnowledgeBase({ kb, busy, hasRunner }: { kb: any; busy: boolean; hasRunner: boolean }) {
-  const lastScan = kb.scans[0];
-  return (
-    <div className="panel kb">
-      <h3>
-        Knowledge base{" "}
-        {kb.scanning
-          ? <span className="badge off">scanning…</span>
-          : <span className="badge ok">{kb.items.length} item{kb.items.length === 1 ? "" : "s"}</span>}
-      </h3>
-      <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-        Tell the agent what you're building, or point it at a project folder. It reads your work, drafts
-        résumé bullets, and asks what it can't infer. Nothing touches a résumé until you accept it.
-      </p>
-
-      <div className="row2" style={{ marginTop: 12 }}>
-        {/* capture what you're working on */}
-        <Form method="post">
-          <input type="hidden" name="intent" value="kb-note" />
-          <div className="field">
-            <label>What are you building / working on?</label>
-            <textarea name="text" placeholder="e.g. Building a Rust CLI that syncs Postgres → SQLite for offline-first apps; designed the WAL replication and shipped it to 3 teams." style={{ minHeight: 90 }} />
-          </div>
-          <button className="btn" disabled={busy || !hasRunner}>Capture &amp; draft bullets</button>
-        </Form>
-
-        {/* opt-in folder scan */}
-        <Form method="post">
-          <input type="hidden" name="intent" value="kb-scan" />
-          <div className="field">
-            <label>Scan a project folder (opt-in)</label>
-            <input type="text" name="path" placeholder="/Users/you/Projects/my-app  or  ~/code" />
-            <p className="hint" style={{ marginTop: 6 }}>The local runner reads README/manifests/source in each project. Contents stay on your machine — sent only to your chosen runner.</p>
-          </div>
-          <button className="btn" disabled={busy || !hasRunner || kb.scanning}>{kb.scanning ? "Scanning…" : "Scan folder"}</button>
-        </Form>
-      </div>
-
-      {lastScan && (
-        <p className="hint" style={{ marginTop: 4 }}>
-          Last scan: <code>{lastScan.path}</code> — {lastScan.status}
-          {lastScan.found ? ` · ${lastScan.found} project(s)` : ""}{lastScan.note ? ` · ${lastScan.note}` : ""}
-        </p>
-      )}
-
-      {/* questions the agent needs answered */}
-      {kb.questions.length > 0 && (
-        <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 14, paddingTop: 12 }}>
-          <h3 style={{ fontSize: 15 }}>Questions for you <span className="badge warn">{kb.questions.length}</span></h3>
-          {kb.questions.map((q: any) => (
-            <Form method="post" key={q.id} className="qpool">
-              <input type="hidden" name="intent" value="kb-answer" />
-              <input type="hidden" name="id" value={q.id} />
-              <input type="hidden" name="itemId" value={q.item_id || ""} />
-              <div className="qpool-q">{q.question} {q.title ? <span className="qpool-job">— {q.title}</span> : null}</div>
-              <textarea name="answer" placeholder="Your answer (sharpens the drafted bullets)…" />
-              <button className="ghost-btn" disabled={busy}>Save answer</button>
-            </Form>
-          ))}
-        </div>
-      )}
-
-      {/* drafted résumé bullets awaiting approval */}
-      {kb.suggestions.length > 0 && (
-        <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 14, paddingTop: 12 }}>
-          <h3 style={{ fontSize: 15 }}>Drafted résumé bullets <span className="badge ok">{kb.suggestions.length}</span></h3>
-          <p className="hint">Approve to add to your default résumé profile.</p>
-          {kb.suggestions.map((s: any) => (
-            <div key={s.id} className="kb-sugg">
-              <div className="kb-sugg-text">
-                <span className="kb-sugg-sec">{s.section}</span>
-                {s.bullet}
-                {s.title ? <span className="qpool-job"> — {s.title}</span> : null}
-              </div>
-              <div className="kb-sugg-actions">
-                <Form method="post"><input type="hidden" name="intent" value="kb-accept" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy}>✓ Accept</button></Form>
-                <Form method="post"><input type="hidden" name="intent" value="kb-dismiss" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy}>Dismiss</button></Form>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* what the agent knows */}
-      {kb.items.length > 0 && (
-        <details style={{ marginTop: 14 }}>
-          <summary style={{ cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--ink-faint)" }}>
-            What the agent knows ({kb.items.length})
-          </summary>
-          {kb.items.map((it: any) => (
-            <div key={it.id} className="version" style={{ marginTop: 8 }}>
-              <div className="version-head" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                <strong>{it.title}</strong>
-                <span className="badge off">{it.kind}</span>
-                <span className="hint" style={{ margin: 0 }}>{it.source}</span>
-                <Form method="post" style={{ marginLeft: "auto" }} onSubmit={(e) => { if (!confirm("Remove this from the knowledge base?")) e.preventDefault(); }}>
-                  <input type="hidden" name="intent" value="kb-delete" /><input type="hidden" name="id" value={it.id} />
-                  <button className="back-link">remove</button>
-                </Form>
-              </div>
-              <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
-              {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
-            </div>
-          ))}
-        </details>
-      )}
-    </div>
   );
 }

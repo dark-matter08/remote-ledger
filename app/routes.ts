@@ -5,6 +5,7 @@ export default [
   route("settings", "routes/settings.tsx"),
   route("usage", "routes/usage.tsx"),
   route("resume", "routes/resume.tsx"),
+  route("knowledge", "routes/knowledge.tsx"),
   route("jobs/:id", "routes/job.tsx"),
   route("version/:vid/resume.pdf", "routes/version-pdf.tsx"),
   route("board", "routes/board.tsx"),
