@@ -18,6 +18,7 @@ import {
   getJob,
 } from "../db.server";
 import { draftAnswer } from "../resume/ai.server";
+import { kbContext } from "../services/kb.server";
 import { loggedTask } from "../services/crawl.server";
 import { startSession, resumeSession, type ApplyRules } from "../services/apply-session.server";
 import { availableRunners } from "../llm/runner.server";
@@ -63,9 +64,10 @@ export async function action({ request }: Route.ActionArgs) {
     const jobId = String(form.get("jobId") || "");
     const job = jobId ? getJob(jobId) : null;
     const ctx = job ? { id: job.id, company: job.company, role: job.role, stack: job.stack, eligibility: job.eligibility, jd: job.jd } : undefined;
+    const kb = kbContext();
     const { text } = await loggedTask("answers", `AI answer · ${question.slice(0, 50)}…`, async (L) => {
-      L("step", "Drafting an answer from your résumé…");
-      return draftAnswer(profile.data, question, ctx);
+      L("step", `Drafting from your résumé${kb ? " + knowledge base" : ""}…`);
+      return draftAnswer(profile.data, question, ctx, kb);
     });
     return { ok: true, draft: text };
   }

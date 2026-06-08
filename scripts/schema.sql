@@ -257,6 +257,8 @@ CREATE TABLE IF NOT EXISTS kb_sources (
   kind            TEXT NOT NULL DEFAULT 'project',  -- project | company
   note            TEXT,
   interval_hours  INTEGER NOT NULL DEFAULT 0,        -- 0 = manual re-scan only
+  depth           TEXT NOT NULL DEFAULT 'standard', -- quick | standard | deep
+  link_item_id    INTEGER,                          -- link scan to an existing kb_items row
   last_scanned_at TEXT,
   created_at      TEXT NOT NULL
 );

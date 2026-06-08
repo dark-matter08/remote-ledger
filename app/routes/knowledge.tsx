@@ -15,6 +15,7 @@ import {
   kbScans,
   activeScan,
   listSources,
+  linkableItems,
   addSource,
   rescanSource,
   removeSource,
@@ -45,6 +46,7 @@ export async function loader() {
     scans: kbScans(),
     scanning: !!activeScan(),
     sources: listSources(),
+    linkable: linkableItems(),
     graph: buildGraph(),
   };
 }
@@ -60,15 +62,18 @@ export async function action({ request }: Route.ActionArgs) {
       return { ok: true, msg: "Captured. Drafted bullets and a few questions for you below." };
     }
     if (intent === "kb-add-source") {
+      const linkItemId = Number(form.get("linkItemId") || "0") || 0;
       const r = addSource({
         path: String(form.get("path") || ""),
         label: String(form.get("label") || ""),
         kind: String(form.get("kind") || "project"),
         note: String(form.get("note") || ""),
         intervalHours: Number(form.get("interval") || "0") || 0,
+        depth: String(form.get("depth") || "standard"),
+        linkItemId: linkItemId || undefined,
       });
       if (r.error) return { error: r.error };
-      return { ok: true, msg: "Folder added — scanning it in the background. It'll stay and can be re-scanned anytime." };
+      return { ok: true, msg: linkItemId ? "Folder linked to that project — scanning to enrich it." : "Folder added — scanning it in the background. It'll stay and can be re-scanned anytime." };
     }
     if (intent === "kb-rescan") { rescanSource(Number(form.get("id"))); return { ok: true, msg: "Re-scanning folder…" }; }
     if (intent === "kb-remove-source") { removeSource(Number(form.get("id"))); return { ok: true, msg: "Folder removed (its findings stay in the knowledge base)." }; }
@@ -171,6 +176,16 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
               </div>
             </div>
             <div className="field">
+              <label>Scan depth</label>
+              <Select name="depth" defaultValue="standard" options={[
+                { value: "quick", label: "Quick — README + manifests" },
+                { value: "standard", label: "Standard — + file inventory" },
+                { value: "deep", label: "Deep — read source to infer purpose" },
+              ]} />
+            </div>
+          </div>
+          <div className="row2">
+            <div className="field">
               <label>Auto re-scan</label>
               <Select name="interval" defaultValue="0" options={[
                 { value: "0", label: "Manual only" },
@@ -178,6 +193,14 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                 { value: "168", label: "Weekly" },
                 { value: "720", label: "Monthly" },
               ]} />
+            </div>
+            <div className="field">
+              <label>Link to existing project (optional)</label>
+              <Select name="linkItemId" defaultValue="0" options={[
+                { value: "0", label: "— Create a new item —" },
+                ...kb.linkable.map((it: any) => ({ value: String(it.id), label: it.title })),
+              ]} />
+              <p className="hint" style={{ marginTop: 6 }}>Enrich an item already in your knowledge base (e.g. a project from your résumé) instead of creating a duplicate.</p>
             </div>
           </div>
           <div className="field">

@@ -28,6 +28,8 @@ export function getDb(): Database.Database {
   ensureColumn(db, "jobs", "jd", "TEXT");
   ensureColumn(db, "jobs", "jd_html", "TEXT"); // sanitized rich JD (rendered in Heritage Press)
   try { ensureColumn(db, "email_messages", "interview_at", "TEXT"); } catch {} // phase-2 (table may not exist yet on very old DBs)
+  try { ensureColumn(db, "kb_sources", "depth", "TEXT"); } catch {} // scan depth: quick | standard | deep
+  try { ensureColumn(db, "kb_sources", "link_item_id", "INTEGER"); } catch {} // link a scan to an existing KB item
   // reconcile runs orphaned by a previous process: this runs once per process at
   // connection creation, before any new crawl/session can start, so it never
   // touches a run that's live in THIS process.
