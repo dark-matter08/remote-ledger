@@ -984,6 +984,17 @@ table.ledger-table tr:hover td { background: var(--card); }
 .kb-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .kb-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 1px 6px; }
 
+/* ---- tracked KB source folders ---- */
+.kb-sources { display: flex; flex-direction: column; gap: 10px; }
+.kb-source { border: 1.5px solid var(--rule-faint); background: var(--paper); padding: 11px 13px; }
+.kb-source-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.kb-source-head strong { font-family: var(--display); font-size: 15px; }
+.kb-source-when { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); margin-left: auto; }
+.kb-source-path { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); margin: 6px 0 9px; word-break: break-all; }
+.kb-source-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.kb-source-interval { display: inline-flex; align-items: center; gap: 7px; }
+.kb-source-interval .fsel { min-width: 110px; }
+
 /* ---- knowledge graph ---- */
 .kg { border: 1.5px solid var(--rule); background: var(--paper); }
 .kg-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1.5px solid var(--rule); }

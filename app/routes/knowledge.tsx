@@ -186,32 +186,30 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
         {kb.sources.length > 0 && (
           <div style={{ marginTop: 16 }}>
             <h3 style={{ fontSize: 15 }}>Tracked folders <span className="badge ok">{kb.sources.length}</span></h3>
-            <table className="ledger-table">
-              <thead><tr><th>Folder</th><th>Type</th><th>Re-scan</th><th>Last</th><th></th></tr></thead>
-              <tbody>
-                {kb.sources.map((s: any) => (
-                  <tr key={s.id}>
-                    <td><code>{s.label ? `${s.label} · ` : ""}{s.path}</code></td>
-                    <td>{s.kind}</td>
-                    <td>
-                      <Form method="post" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                        <input type="hidden" name="intent" value="kb-interval" />
-                        <input type="hidden" name="id" value={s.id} />
-                        <Select name="interval" defaultValue={String(s.interval_hours)} options={[
-                          { value: "0", label: "Manual" }, { value: "24", label: "Daily" }, { value: "168", label: "Weekly" }, { value: "720", label: "Monthly" },
-                        ]} />
-                        <button className="back-link" disabled={busy}>set</button>
-                      </Form>
-                    </td>
-                    <td>{s.last_scanned_at ? s.last_scanned_at.slice(5, 16).replace("T", " ") : "—"}</td>
-                    <td style={{ display: "flex", gap: 8 }}>
-                      <Form method="post"><input type="hidden" name="intent" value="kb-rescan" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy || kb.scanning}>rescan</button></Form>
-                      <Form method="post" onSubmit={(e) => { if (!confirm("Stop tracking this folder? (its findings stay)")) e.preventDefault(); }}><input type="hidden" name="intent" value="kb-remove-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy}>remove</button></Form>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="kb-sources">
+              {kb.sources.map((s: any) => (
+                <div key={s.id} className="kb-source">
+                  <div className="kb-source-head">
+                    {s.label ? <strong>{s.label}</strong> : null}
+                    <span className="badge off">{s.kind}</span>
+                    <span className="kb-source-when">{s.last_scanned_at ? `scanned ${s.last_scanned_at.slice(5, 16).replace("T", " ")}` : "not scanned yet"}</span>
+                  </div>
+                  <code className="kb-source-path">{s.path}</code>
+                  <div className="kb-source-actions">
+                    <Form method="post" className="kb-source-interval">
+                      <input type="hidden" name="intent" value="kb-interval" />
+                      <input type="hidden" name="id" value={s.id} />
+                      <Select name="interval" defaultValue={String(s.interval_hours)} options={[
+                        { value: "0", label: "Manual" }, { value: "24", label: "Daily" }, { value: "168", label: "Weekly" }, { value: "720", label: "Monthly" },
+                      ]} />
+                      <button className="back-link" disabled={busy}>set</button>
+                    </Form>
+                    <Form method="post"><input type="hidden" name="intent" value="kb-rescan" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy || kb.scanning}>rescan</button></Form>
+                    <Form method="post" onSubmit={(e) => { if (!confirm("Stop tracking this folder? (its findings stay)")) e.preventDefault(); }}><input type="hidden" name="intent" value="kb-remove-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy}>remove</button></Form>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
