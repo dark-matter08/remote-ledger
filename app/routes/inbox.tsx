@@ -27,6 +27,7 @@ export async function loader() {
     lastEmailRun: db.prepare("SELECT id,status FROM crawl_runs WHERE type='email' ORDER BY id DESC LIMIT 1").get() as any,
     autoApply: getSetting("email_autoapply") === "true",
     autoMin: getSetting("email_autoapply_min") || "85",
+    scanLimit: getSetting("email_scan_limit") || "50",
   };
 }
 
@@ -56,6 +57,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "automation") {
     setSetting("email_autoapply", form.get("autoapply") ? "true" : "false");
     setSetting("email_autoapply_min", String(Number(form.get("autoMin") || "85") || 85));
+    setSetting("email_scan_limit", String(Math.max(1, Math.min(500, Number(form.get("scanLimit") || "50") || 50))));
     return { ok: true, msg: "Automation settings saved." };
   }
   return { ok: true };
@@ -64,7 +66,7 @@ export async function action({ request }: Route.ActionArgs) {
 const CAT_BADGE: Record<string, string> = { offer: "ok", interview: "ok", screening: "warn", recruiter: "warn", receipt: "off", rejection: "on", other: "off" };
 
 export default function Inbox({ loaderData, actionData }: Route.ComponentProps) {
-  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin } = loaderData;
+  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin, scanLimit } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();
@@ -156,13 +158,16 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
           <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
             With auto-apply on, high-confidence matches advance the matched application's <strong>stage</strong> automatically during sync (and set an interview reminder if a time is found). It only moves pipeline stages — it never applies to a job or sends anything, and every move is logged and reversible. Off by default; review everything yourself.
           </p>
-          <Form method="post" className="row2">
+          <Form method="post">
             <input type="hidden" name="intent" value="automation" />
-            <div className="field" style={{ display: "flex", alignItems: "flex-end" }}>
+            <div className="row2">
+              <div className="field"><label>Scan latest N emails per sync</label><input type="number" name="scanLimit" min="1" max="500" defaultValue={scanLimit} /></div>
+              <div className="field"><label>Auto-apply minimum confidence</label><input type="number" name="autoMin" min="50" max="100" defaultValue={autoMin} /></div>
+            </div>
+            <div className="field" style={{ marginTop: 4 }}>
               <label style={{ margin: 0 }}><input type="checkbox" name="autoapply" defaultChecked={autoApply} /> Auto-apply high-confidence stage updates</label>
             </div>
-            <div className="field"><label>Minimum confidence</label><input type="number" name="autoMin" min="50" max="100" defaultValue={autoMin} /></div>
-            <div><button className="btn" disabled={busy}>Save automation</button></div>
+            <button className="btn" disabled={busy}>Save automation</button>
           </Form>
         </div>
       )}

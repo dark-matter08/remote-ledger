@@ -135,9 +135,12 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
     try {
       const exists = (client.mailbox as any)?.exists || 0;
       if (!exists) { L("result", "Mailbox is empty."); }
-      // first run: only look at the most recent ~30 messages; later runs: new UIDs only
-      const startSeq = acct.last_uid > 0 ? 1 : Math.max(1, exists - 30);
-      const query = acct.last_uid > 0 ? { uid: `${acct.last_uid + 1}:*` } : { seq: `${startSeq}:*` };
+      // Only ever look at the most recent N messages (configurable) — never trawl old mail.
+      // Within that window we still skip anything already seen (uid <= last_uid).
+      const limit = Math.max(1, Math.min(500, Number(getSetting("email_scan_limit") || "50") || 50));
+      const startSeq = Math.max(1, exists - limit + 1);
+      L("step", `Scanning the latest ${Math.min(limit, exists)} message(s).`);
+      const query = { seq: `${startSeq}:*` };
       for await (const msg of client.fetch(query as any, { uid: true, envelope: true, source: true } as any)) {
         const uid = (msg as any).uid as number;
         if (uid <= acct.last_uid) continue;
