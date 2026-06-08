@@ -493,3 +493,26 @@ export function activeCrawl(): CrawlRun | null {
 export function crawlLogs(runId: number): { id: number; ts: string; kind: string; text: string }[] {
   return getDb().prepare("SELECT id,ts,kind,text FROM crawl_logs WHERE run_id=? ORDER BY id").all(runId) as any[];
 }
+
+// Everything the auto-apply sessions have done for ONE job — so the job page can show
+// which sessions touched it, the drafted answers, and any pooled questions.
+export function jobApplyActivity(jobId: string): {
+  sessions: any[];
+  answers: { session_id: number; ts: string; text: string }[];
+  pooled: { id: number; question: string; answer: string | null }[];
+} {
+  const db = getDb();
+  return {
+    sessions: db
+      .prepare(
+        "SELECT sj.session_id, sj.status, sj.questions, sj.unanswered, s.mode, s.status AS session_status, sj.ended_at FROM apply_session_jobs sj JOIN apply_sessions s ON s.id=sj.session_id WHERE sj.job_id=? ORDER BY sj.id DESC"
+      )
+      .all(jobId) as any[],
+    answers: db
+      .prepare("SELECT session_id, ts, text FROM apply_logs WHERE job_id=? AND kind='answer' ORDER BY id DESC LIMIT 40")
+      .all(jobId) as any[],
+    pooled: db
+      .prepare("SELECT id, question, answer FROM apply_questions WHERE job_id=? ORDER BY id DESC")
+      .all(jobId) as any[],
+  };
+}

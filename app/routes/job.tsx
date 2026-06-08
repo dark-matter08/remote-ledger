@@ -13,6 +13,7 @@ import {
   setJd,
   getMeta,
   setMeta,
+  jobApplyActivity,
 } from "../db.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
@@ -40,6 +41,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     storedMatch: getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!) : null,
     storedPrep: getMeta(`prep:${job.id}`),
     storedAnswers: getMeta(`answers:${job.id}`) ? JSON.parse(getMeta(`answers:${job.id}`)!) : null,
+    applyActivity: jobApplyActivity(job.id),
     styles: RESUME_STYLES,
     stages: STAGES,
     stageLabels: STAGE_LABEL,
@@ -147,7 +149,7 @@ const TABS = ["Overview", "Tailor", "Cover", "Apply", "Prep", "Application", "Hi
 type Tab = (typeof TABS)[number];
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, styles, stages, stageLabels, defaultStyle } = loaderData;
+  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, styles, stages, stageLabels, defaultStyle } = loaderData;
   const [tab, setTab] = useState<Tab>("Overview");
   const nav = useNavigation();
   const busy = nav.state !== "idle";
@@ -275,6 +277,40 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><button className="btn" disabled={busy}>{busy ? "Working…" : "Detect form & draft answers"}</button></Form>
             <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy || !storedAnswers}>Open &amp; prefill in browser ▸</button></Form>
           </div>
+
+          {applyActivity.sessions.length > 0 && (
+            <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 8 }}>
+              <h3 style={{ fontSize: 16, marginTop: 10 }}>In auto-apply sessions</h3>
+              {applyActivity.sessions.map((s: any) => (
+                <div key={s.session_id} className="version-head" style={{ marginTop: 6 }}>
+                  <Link to={`/apply?session=${s.session_id}`} className="entry-title-link">Session #{s.session_id}</Link>
+                  <span className={`badge ${s.status === "drafted" ? "ok" : s.status === "needs_input" ? "warn" : "off"}`}>{s.status}</span>
+                  <span>· {s.questions} q · {s.unanswered} unanswered</span>
+                </div>
+              ))}
+              {applyActivity.pooled.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <p className="hint">Questions the agent pooled for this job:</p>
+                  {applyActivity.pooled.map((q: any) => (
+                    <div key={q.id} className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, margin: "4px 0" }}>
+                      {q.answer ? "✓" : "○"} {q.question}{q.answer ? <> — <em>{q.answer}</em></> : <> — <Link to="/apply" className="entry-title-link">answer in the Apply room</Link></>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {applyActivity.answers.length > 0 && (
+                <details style={{ marginTop: 10 }}>
+                  <summary style={{ cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-faint)" }}>
+                    Drafted answers from sessions ({applyActivity.answers.length})
+                  </summary>
+                  {applyActivity.answers.map((a: any, i: number) => (
+                    <pre key={i} className="letter" style={{ marginTop: 8 }}>{a.text}</pre>
+                  ))}
+                </details>
+              )}
+            </div>
+          )}
+
           {storedAnswers ? (
             <>
               <p className="hint">{storedAnswers.detected ? `${storedAnswers.detected} question(s) detected on the form · ${storedAnswers.fieldCount} fields` : "form not readable — generic questions used"}</p>
