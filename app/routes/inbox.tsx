@@ -28,6 +28,7 @@ export async function loader() {
     autoApply: getSetting("email_autoapply") === "true",
     autoMin: getSetting("email_autoapply_min") || "85",
     scanLimit: getSetting("email_scan_limit") || "50",
+    ingestAlerts: getSetting("email_ingest_alerts") !== "false",
   };
 }
 
@@ -58,6 +59,7 @@ export async function action({ request }: Route.ActionArgs) {
     setSetting("email_autoapply", form.get("autoapply") ? "true" : "false");
     setSetting("email_autoapply_min", String(Number(form.get("autoMin") || "85") || 85));
     setSetting("email_scan_limit", String(Math.max(1, Math.min(500, Number(form.get("scanLimit") || "50") || 50))));
+    setSetting("email_ingest_alerts", form.get("ingestAlerts") ? "true" : "false");
     return { ok: true, msg: "Automation settings saved." };
   }
   return { ok: true };
@@ -66,7 +68,7 @@ export async function action({ request }: Route.ActionArgs) {
 const CAT_BADGE: Record<string, string> = { offer: "ok", interview: "ok", screening: "warn", recruiter: "warn", receipt: "off", rejection: "on", other: "off" };
 
 export default function Inbox({ loaderData, actionData }: Route.ComponentProps) {
-  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin, scanLimit } = loaderData;
+  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin, scanLimit, ingestAlerts } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();
@@ -165,6 +167,9 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
               <div className="field"><label>Auto-apply minimum confidence</label><input type="number" name="autoMin" min="50" max="100" defaultValue={autoMin} /></div>
             </div>
             <div className="field" style={{ marginTop: 4 }}>
+              <label style={{ margin: 0 }}><input type="checkbox" name="ingestAlerts" defaultChecked={ingestAlerts} /> Ingest job alerts — verify links in recruiter/job-board emails and add live roles to the ledger</label>
+            </div>
+            <div className="field">
               <label style={{ margin: 0 }}><input type="checkbox" name="autoapply" defaultChecked={autoApply} /> Auto-apply high-confidence stage updates</label>
             </div>
             <button className="btn" disabled={busy}>Save automation</button>

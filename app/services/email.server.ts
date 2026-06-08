@@ -11,7 +11,8 @@
 //    your primary inbox.
 import { getDb, getSetting } from "../sqlite.server";
 import { setSecret, getSecret, deleteSecret } from "../secrets.server";
-import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addEvent, getJob } from "../db.server";
+import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addEvent, getJob, upsertJobs, setJd, jobId as jobSlug } from "../db.server";
+import { resolveLive } from "./scrape.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
 import { STAGES, type Stage } from "../stages";
 
@@ -74,14 +75,17 @@ const SYSTEM = "You are an email classifier for a job-application tracker. You O
 
 const CATEGORY_STAGE: Record<string, Stage | null> = {
   receipt: "applied", recruiter: "screening", screening: "screening",
-  interview: "interview", offer: "offer", rejection: "rejected", other: null,
+  interview: "interview", offer: "offer", rejection: "rejected", alert: null, other: null,
 };
 
 async function classify(from: string, subject: string, body: string, todayISO: string): Promise<any> {
-  const prompt = `Classify this email for a job-application tracker. Today is ${todayISO}.\n\n--- BEGIN UNTRUSTED EMAIL ---\nFrom: ${from}\nSubject: ${subject}\n\n${body.slice(0, 4000)}\n--- END UNTRUSTED EMAIL ---\n\nReturn JSON:\n{\n  "jobRelated": true|false,\n  "category": "receipt|recruiter|screening|interview|offer|rejection|other",\n  "company": "employer name if identifiable, else \"\"",\n  "role": "role title if mentioned, else \"\"",\n  "interviewAt": "ISO 8601 datetime of a scheduled interview/call if one is clearly stated, else \"\"",\n  "confidence": 0-100,\n  "summary": "one factual sentence on what this email is"\n}`;
-  const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 400, temperature: 0 });
+  const prompt = `Classify this email for a job-application tracker. Today is ${todayISO}.\n\n--- BEGIN UNTRUSTED EMAIL ---\nFrom: ${from}\nSubject: ${subject}\n\n${body.slice(0, 5000)}\n--- END UNTRUSTED EMAIL ---\n\nCategories: receipt (application confirmation), recruiter (outreach about a role), screening, interview, offer, rejection, alert (a job-alert / digest listing one or more OPEN roles to apply to), other.\n\nReturn JSON:\n{\n  "jobRelated": true|false,\n  "category": "receipt|recruiter|screening|interview|offer|rejection|alert|other",\n  "company": "employer name if about ONE specific application, else \"\"",\n  "role": "role title if about ONE specific application, else \"\"",\n  "interviewAt": "ISO 8601 datetime of a scheduled interview/call if clearly stated, else \"\"",\n  "jobs": [ { "company": "...", "role": "...", "url": "the apply/listing URL EXACTLY as it appears in the email" } ],\n  "confidence": 0-100,\n  "summary": "one factual sentence on what this email is"\n}\n\nFor "jobs": ONLY include roles that appear in THIS email with a real URL copied verbatim from the email body. Never invent a company, role, or URL. Empty array if not a job alert.`;
+  const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 900, temperature: 0 });
   return tryParseJson(r.text) || {};
 }
+
+// crude domain → company helper for the source label
+const senderDomain = (addr: string) => { const m = /@([^>]+)/.exec(addr || ""); return m ? m[1].trim() : "email"; };
 const parseISO = (v: any): string | null => { if (!v || typeof v !== "string") return null; const t = Date.parse(v); return Number.isNaN(t) ? null : new Date(t).toISOString(); };
 
 const norm = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -127,8 +131,10 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
   const autoOn = getSetting("email_autoapply") === "true";
   const autoMin = Math.max(50, Number(getSetting("email_autoapply_min") || "85") || 85);
   if (autoOn) L("reasoning", `Auto-apply ON for matches ≥ ${autoMin}% confidence (stage moves only; reversible).`);
+  const ingestAlerts = getSetting("email_ingest_alerts") !== "false"; // default ON
   const todayISO = NOW().slice(0, 10);
-  let maxUid = acct.last_uid, found = 0, matched = 0, received = 0, autoApplied = 0;
+  let leadBrowser: any = null; // lazily launched to verify job-alert links
+  let maxUid = acct.last_uid, found = 0, matched = 0, received = 0, autoApplied = 0, jobsAdded = 0;
   try {
     await client.connect();
     const lock = await client.getMailboxLock(acct.mailbox, { readOnly: true } as any);
@@ -160,6 +166,36 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
         try { c = await classify(`${fromName} <${fromAddr}>`, subject, text, todayISO); } catch (e: any) { L("error", `classify failed: ${String(e?.message || e).slice(0, 60)}`); }
         if (!c.jobRelated) { L("step", `· not job-related — skipped`); continue; }
 
+        // Job alert / digest → verify each linked posting and add live ones to the ledger.
+        if (c.category === "alert" && Array.isArray(c.jobs) && c.jobs.length) {
+          const leads = c.jobs.filter((j: any) => /^https?:\/\//.test(j?.url || "")).slice(0, 8);
+          let added = 0;
+          if (!ingestAlerts) {
+            L("step", `· job alert with ${leads.length} link(s) — ingestion is off`);
+          } else if (!leads.length) {
+            L("step", `· job alert but no usable links`);
+          } else {
+            if (!leadBrowser) { try { const { chromium } = await import("playwright"); leadBrowser = await chromium.launch(); } catch (e: any) { L("error", `browser unavailable for link checks: ${String(e?.message || e).slice(0, 60)}`); } }
+            L("step", `job alert: ${leads.length} link(s) — following to employer pages & verifying…`);
+            for (const lead of leads) {
+              if (!leadBrowser) break;
+              const live = await resolveLive(leadBrowser, lead.url, (s) => L("step", `  ${s}`));
+              if (!live.ok) { L("step", `  ✗ ${(lead.company || lead.url).slice(0, 50)} — ${live.reason}`); continue; }
+              const job = { company: (lead.company || senderDomain(fromAddr)).slice(0, 120), role: (lead.role || "Open role").slice(0, 160), category: "medium", fit_score: 0, apply_url: live.finalUrl, source: `Email · ${senderDomain(fromAddr)}`, seniority: "Varies" };
+              const res = upsertJobs([job]);
+              if (res.inserted || res.updated) { try { setJd(jobSlug(job.company, job.role), live.jdText, live.jdHtml || null); } catch {} added++; L("result", `  ✓ ${res.inserted ? "added" : "updated"} ${job.company} — ${job.role}`); }
+              else if (res.errors.length) L("step", `  ✗ ${job.company}: ${res.errors[0].error}`);
+            }
+          }
+          jobsAdded += added;
+          db.prepare(
+            "INSERT OR IGNORE INTO email_messages (account_id,uid,from_addr,from_name,subject,sent_at,job_id,category,confidence,proposed_stage,interview_at,summary,snippet,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+          ).run(acct.id, uid, fromAddr, fromName, subject, sentAt, null, "alert", Number(c.confidence) || 0, null, null, `Job alert — added ${added} live role(s) to the ledger.`, text.replace(/\s+/g, " ").slice(0, 240), "applied", NOW());
+          found++;
+          L("result", `✓ alert → added ${added}/${leads.length} live job(s) to the ledger`);
+          continue;
+        }
+
         const jobId = matchJob(c.company || "", c.role || "");
         const stage = jobId ? CATEGORY_STAGE[c.category] ?? null : null;
         const interviewAt = parseISO(c.interviewAt);
@@ -179,6 +215,7 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
       }
     } finally {
       lock.release();
+      if (leadBrowser) { try { await leadBrowser.close(); } catch {} }
     }
     await client.logout();
   } catch (e: any) {
@@ -189,8 +226,8 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
   }
 
   db.prepare("UPDATE email_accounts SET last_uid=?, last_synced_at=? WHERE id=?").run(maxUid, NOW(), acct.id);
-  L("note", `Sync complete — scanned ${received}, queued ${found} job email(s), ${matched} matched${autoApplied ? `, ${autoApplied} auto-applied` : ""}. Review the rest in Application Mail.`);
-  updateCrawlRun(runId, { status: "done", ended_at: NOW(), received, scraped: found, inserted: matched, updated: autoApplied });
+  L("note", `Sync complete — scanned ${received}, queued ${found} job email(s), ${matched} matched${autoApplied ? `, ${autoApplied} auto-applied` : ""}${jobsAdded ? `, ${jobsAdded} job(s) added from alerts` : ""}. Review the rest in Application Mail.`);
+  updateCrawlRun(runId, { status: "done", ended_at: NOW(), received, scraped: found + jobsAdded, inserted: matched, updated: autoApplied });
 }
 
 export function runDueEmailSync(): void {
