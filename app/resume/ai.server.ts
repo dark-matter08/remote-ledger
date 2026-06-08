@@ -77,6 +77,32 @@ export async function tailorResume(
   return { resume, match, flags, callId: r.callId };
 }
 
+// ---- conversational résumé edit -------------------------------------------
+// Apply a natural-language instruction to the structured résumé and return the full
+// updated JSON + a one-line summary. Never fabricates facts.
+export async function editResume(current: Resume, instruction: string): Promise<{ resume: Resume; summary: string; callId?: number }> {
+  const r = await runLLM({
+    purpose: "resume-tailor",
+    json: true,
+    temperature: 0.2,
+    maxTokens: 4096,
+    system:
+      "You edit a structured résumé (JSON). Apply the user's instruction to the résumé. ABSOLUTE RULE: use ONLY facts the user states in the instruction or that already exist in the résumé — never invent employers, titles, dates, degrees, or metrics. Keep the exact same JSON shape. If the instruction would require inventing facts, do the safe part and note what you need in the summary.",
+    prompt: `CURRENT RÉSUMÉ (JSON):\n${JSON.stringify(current)}\n\nINSTRUCTION:\n${instruction}\n\nReturn ONLY JSON: { "resume": ${RESUME_JSON_SHAPE}, "summary": "one short sentence on exactly what changed (or what you need from the user)" }`,
+  });
+  const out = r.json || {};
+  const jr = out.resume || {};
+  const resume: Resume = {
+    contact: jr.contact || current.contact,
+    summary: typeof jr.summary === "string" ? jr.summary : current.summary,
+    skills: Array.isArray(jr.skills) ? jr.skills.map(String) : current.skills,
+    experience: Array.isArray(jr.experience) ? jr.experience : current.experience,
+    projects: Array.isArray(jr.projects) ? jr.projects : current.projects,
+    education: Array.isArray(jr.education) ? jr.education : current.education,
+  };
+  return { resume, summary: (out.summary || "Updated your résumé.").toString(), callId: r.callId };
+}
+
 // ---- match-only -----------------------------------------------------------
 
 export async function analyzeMatch(base: Resume, job: JobCtx): Promise<{ match: MatchAnalysis; callId?: number }> {

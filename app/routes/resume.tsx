@@ -9,17 +9,20 @@ import {
   setDefaultProfile,
   deleteProfile,
   getProfile,
+  getDefaultProfile,
   extractPdfText,
   parseResumeText,
 } from "../resume/profiles.server";
 import { listAllVersions } from "../resume/versions.server";
+import { editResume } from "../resume/ai.server";
+import { ResumeChat } from "../components/ResumeChat";
 
 export function meta(_: Route.MetaArgs) {
   return [{ title: "Resume · The Remote Ledger" }];
 }
 
 export async function loader() {
-  return { profiles: listProfiles(), generated: listAllVersions("resume") };
+  return { profiles: listProfiles(), generated: listAllVersions("resume"), hasProfile: !!getDefaultProfile() };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -67,6 +70,15 @@ export async function action({ request }: Route.ActionArgs) {
       saveProfile({ id, name: String(form.get("name") || p.name), data });
       return { ok: true, msg: "Profile saved." };
     }
+    if (intent === "chat-edit") {
+      const message = String(form.get("message") || "").trim();
+      if (!message) return { error: "Type what you'd like to change." };
+      const p = getDefaultProfile();
+      if (!p) return { error: "Upload a base résumé first." };
+      const { resume, summary } = await editResume(p.data, message);
+      saveProfile({ id: p.id, name: p.name, data: resume });
+      return { ok: true, reply: summary };
+    }
   } catch (e: any) {
     return { error: e.message || String(e) };
   }
@@ -74,7 +86,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function ResumePage({ loaderData, actionData }: Route.ComponentProps) {
-  const { profiles, generated } = loaderData;
+  const { profiles, generated, hasProfile } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
 
@@ -180,6 +192,8 @@ export default function ResumePage({ loaderData, actionData }: Route.ComponentPr
           </table>
         )}
       </div>
+
+      <ResumeChat hasProfile={hasProfile} />
     </Shell>
   );
 }
