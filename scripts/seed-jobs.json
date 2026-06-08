@@ -11,37 +11,37 @@
     "source": "Canonical"
   },
   {
-    "company": "Toptal",
-    "role": "Freelance Engineering Network",
+    "company": "Sourcegraph",
+    "role": "Software Engineer",
     "category": "high",
     "fit_score": 78,
-    "stack": "Full-stack · screening-based",
-    "eligibility": "Global · no geographic block",
-    "seniority": "Senior",
-    "apply_url": "https://www.toptal.com/talent/apply",
-    "source": "Toptal"
+    "stack": "Go · TypeScript · React",
+    "eligibility": "Remote-first",
+    "seniority": "Mid–Senior",
+    "apply_url": "https://sourcegraph.com/careers",
+    "source": "Sourcegraph"
   },
   {
-    "company": "Turing",
-    "role": "Remote Developer / AI Track",
+    "company": "PostHog",
+    "role": "Full Stack Engineer",
     "category": "high",
     "fit_score": 76,
-    "stack": "React/Node · LLM post-training",
-    "eligibility": "Remote, many countries · free signup",
+    "stack": "TypeScript · React · Python · Django",
+    "eligibility": "Remote (global)",
     "seniority": "Mid–Senior",
-    "apply_url": "https://www.turing.com/jobs",
-    "source": "Turing"
+    "apply_url": "https://posthog.com/careers",
+    "source": "PostHog"
   },
   {
-    "company": "Andela",
-    "role": "Talent Network",
-    "category": "high",
-    "fit_score": 74,
-    "stack": "TS / Node / React client engagements",
-    "eligibility": "Remote · 135+ countries",
+    "company": "Supabase",
+    "role": "Backend Engineer",
+    "category": "medium",
+    "fit_score": 72,
+    "stack": "TypeScript · Postgres · Go",
+    "eligibility": "Remote-first",
     "seniority": "Mid–Senior",
-    "apply_url": "https://www.andela.com/for-talent",
-    "source": "Andela"
+    "apply_url": "https://supabase.com/careers",
+    "source": "Supabase"
   },
   {
     "company": "GitLab",
@@ -55,10 +55,21 @@
     "source": "GitLab"
   },
   {
-    "company": "Automattic",
-    "role": "Code Wrangler",
+    "company": "Zapier",
+    "role": "Software Engineer",
     "category": "medium",
     "fit_score": 68,
+    "stack": "Python · JavaScript · React",
+    "eligibility": "Remote (select regions)",
+    "seniority": "Mid–Senior",
+    "apply_url": "https://zapier.com/jobs",
+    "source": "Zapier"
+  },
+  {
+    "company": "Automattic",
+    "role": "Code Wrangler",
+    "category": "stretch",
+    "fit_score": 66,
     "stack": "PHP · JS · React",
     "eligibility": "Hires anywhere in the world",
     "seniority": "Mid–Senior",
@@ -66,25 +77,14 @@
     "source": "Automattic"
   },
   {
-    "company": "Proxify",
-    "role": "Senior Engineer (Contract)",
-    "category": "medium",
-    "fit_score": 66,
-    "stack": "React / Node · long-term contracts",
-    "eligibility": "Remote · broad timezone window",
-    "seniority": "Senior",
-    "apply_url": "https://career.proxify.io/apply",
-    "source": "Proxify"
-  },
-  {
-    "company": "Remote OK",
-    "role": "Remote Job Board (browse)",
+    "company": "Hugging Face",
+    "role": "Full-Stack / ML Engineer",
     "category": "stretch",
-    "fit_score": 55,
-    "stack": "Aggregator · all stacks",
-    "eligibility": "Worldwide remote listings",
-    "seniority": "Varies",
-    "apply_url": "https://remoteok.com/remote-dev-jobs",
-    "source": "RemoteOK"
+    "fit_score": 60,
+    "stack": "Python · TypeScript · ML/AI",
+    "eligibility": "Remote (global)",
+    "seniority": "Senior",
+    "apply_url": "https://apply.workable.com/huggingface/",
+    "source": "Hugging Face"
   }
 ]
