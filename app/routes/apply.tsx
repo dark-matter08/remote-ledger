@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { Form, Link, redirect, useNavigation, useRevalidator } from "react-router";
+import { useEffect, useState } from "react";
+import { Form, Link, redirect, useNavigation, useRevalidator, useFetcher } from "react-router";
+import { Sparkles } from "lucide-react";
 import type { Route } from "./+types/apply";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -14,7 +15,10 @@ import {
   answerPooledQuestion,
   clearQuestionPool,
   answerBank,
+  getJob,
 } from "../db.server";
+import { draftAnswer } from "../resume/ai.server";
+import { loggedTask } from "../services/crawl.server";
 import { startSession, resumeSession, type ApplyRules } from "../services/apply-session.server";
 import { availableRunners } from "../llm/runner.server";
 import { getDefaultProfile } from "../resume/profiles.server";
@@ -50,6 +54,20 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "clear-pool") {
     const n = clearQuestionPool();
     return { ok: true, msg: n ? `Cleared ${n} pooled question(s).` : "Pool already empty." };
+  }
+  if (intent === "ai-answer") {
+    const question = String(form.get("question") || "").trim();
+    const profile = getDefaultProfile();
+    if (!profile) return { error: "Upload a base résumé first." };
+    if (!question) return { error: "No question." };
+    const jobId = String(form.get("jobId") || "");
+    const job = jobId ? getJob(jobId) : null;
+    const ctx = job ? { id: job.id, company: job.company, role: job.role, stack: job.stack, eligibility: job.eligibility, jd: job.jd } : undefined;
+    const { text } = await loggedTask("answers", `AI answer · ${question.slice(0, 50)}…`, async (L) => {
+      L("step", "Drafting an answer from your résumé…");
+      return draftAnswer(profile.data, question, ctx);
+    });
+    return { ok: true, draft: text };
   }
   if (intent === "resume") {
     const sid = Number(form.get("sessionId"));
@@ -164,15 +182,7 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
         {pool.length === 0 ? (
           <p className="hint">Nothing waiting on you.</p>
         ) : (
-          pool.map((q: any) => (
-            <Form method="post" key={q.id} className="qpool">
-              <input type="hidden" name="intent" value="answer" />
-              <input type="hidden" name="id" value={q.id} />
-              <div className="qpool-q">{q.question} {q.company ? <span className="qpool-job">— {q.company}</span> : null}</div>
-              <textarea name="answer" placeholder="Your answer (saved for reuse)…" />
-              <button className="ghost-btn" disabled={busy}>Save answer</button>
-            </Form>
-          ))
+          pool.map((q: any) => <PoolQuestion key={q.id} q={q} />)
         )}
         {recentAnswers.length > 0 && (
           <details style={{ marginTop: 12 }}>
@@ -261,4 +271,43 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
 function logIdFor(logs: any[], jobId: string): number | string {
   const l = logs.find((x) => x.job_id === jobId && x.kind === "screenshot");
   return l ? l.id : "0";
+}
+
+// One pooled question: type an answer, or have the AI draft one from your résumé.
+function PoolQuestion({ q }: { q: any }) {
+  const ai = useFetcher<any>();
+  const save = useFetcher<any>();
+  const [text, setText] = useState("");
+  const drafting = ai.state !== "idle";
+  const saving = save.state !== "idle";
+
+  useEffect(() => {
+    if (ai.data?.draft) setText(ai.data.draft);
+  }, [ai.data]);
+
+  return (
+    <div className="qpool">
+      <div className="qpool-q">
+        <span>{q.question} {q.company ? <span className="qpool-job">— {q.company}</span> : null}</span>
+      </div>
+      <save.Form method="post">
+        <input type="hidden" name="intent" value="answer" />
+        <input type="hidden" name="id" value={q.id} />
+        <textarea name="answer" value={text} onChange={(e) => setText(e.target.value)} placeholder={drafting ? "Drafting from your résumé…" : "Your answer (saved for reuse)…"} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="ghost-btn" disabled={saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
+          <button
+            type="button"
+            className="ghost-btn"
+            disabled={drafting}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            onClick={() => ai.submit({ intent: "ai-answer", question: q.question, jobId: q.job_id || "" }, { method: "post" })}
+          >
+            <Sparkles size={13} /> {drafting ? "Drafting…" : "AI draft"}
+          </button>
+          {ai.data?.error && <span className="hint" style={{ margin: 0, color: "var(--vermillion)" }}>{ai.data.error}</span>}
+        </div>
+      </save.Form>
+    </div>
+  );
 }

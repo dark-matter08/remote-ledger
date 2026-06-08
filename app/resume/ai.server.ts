@@ -77,6 +77,20 @@ export async function tailorResume(
   return { resume, match, flags, callId: r.callId };
 }
 
+// ---- draft a single application answer -------------------------------------
+// Answer one application question in the candidate's voice using ONLY résumé facts.
+export async function draftAnswer(base: Resume, question: string, job?: JobCtx): Promise<{ text: string; callId?: number }> {
+  const r = await runLLM({
+    purpose: "misc",
+    temperature: 0.4,
+    maxTokens: 600,
+    system:
+      "You answer a job-application question in the candidate's voice (first person), using ONLY facts present in their résumé. Be specific and concise. NEVER invent employers, projects, dates, or metrics. If the résumé lacks the detail, give an honest, reasonable answer without fabricating specifics.",
+    prompt: `CANDIDATE RÉSUMÉ (JSON):\n${JSON.stringify(base)}\n${job ? `\nROLE: ${job.company} — ${job.role}\n${job.jd ? `JOB DESCRIPTION (excerpt):\n${job.jd.slice(0, 1500)}\n` : ""}` : ""}\nAPPLICATION QUESTION:\n${question}\n\nWrite a strong, truthful answer (2–4 sentences) in first person. Plain text only.`,
+  });
+  return { text: (r.text || "").trim(), callId: r.callId };
+}
+
 // ---- conversational résumé edit -------------------------------------------
 // Apply a natural-language instruction to the structured résumé and return the full
 // updated JSON + a one-line summary. Never fabricates facts.
