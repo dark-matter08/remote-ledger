@@ -15,6 +15,7 @@ export default [
   route("apply/shot/:id", "routes/apply-shot.tsx"),
   route("crawl", "routes/crawl.tsx"),
   route("expired", "routes/expired.tsx"),
+  route("archive", "routes/archive.tsx"),
   route("setup", "routes/setup.tsx"),
   route("clipper", "routes/clipper.tsx"),
   route("api/crawl", "routes/api-crawl.tsx"),

@@ -90,6 +90,23 @@ export function getClosingSoon(days = 7): Job[] {
     .all(today, cutoff) as Job[];
 }
 
+// Found-but-inactive jobs (deactivated by old crawls, or marked closed). These are
+// hidden from the ledger/board but kept so you can revisit or restore them.
+export function getArchive(q?: string): Job[] {
+  const like = q && q.trim() ? `%${q.trim().toLowerCase()}%` : null;
+  if (like) {
+    return getDb()
+      .prepare(`${SELECT_JOB} WHERE j.active = 0 AND (lower(j.company) LIKE ? OR lower(j.role) LIKE ?) ORDER BY j.last_seen DESC`)
+      .all(like, like) as Job[];
+  }
+  return getDb().prepare(`${SELECT_JOB} WHERE j.active = 0 ORDER BY j.last_seen DESC`).all() as Job[];
+}
+
+// Bring an archived job back to the active ledger.
+export function restoreJob(id: string): void {
+  getDb().prepare("UPDATE jobs SET active=1, last_seen=?, updated_at=? WHERE id=?").run(new Date().toISOString(), new Date().toISOString(), id);
+}
+
 export function setClosesAt(id: string, closesAt: string | null): void {
   getDb().prepare("UPDATE jobs SET closes_at=?, updated_at=? WHERE id=?").run(closesAt, new Date().toISOString(), id);
 }
@@ -194,8 +211,10 @@ export function getEvents(jobId: string): AppEvent[] {
 
 // kanban: jobs grouped by stage (active jobs that are in the pipeline OR all)
 export function getBoard(): Record<Stage, Job[]> {
+  // show active+open jobs AND any job you've engaged (stage beyond 'saved') even if the
+  // posting later went inactive/expired — so you never lose an applied job to follow up on.
   const rows = getDb()
-    .prepare(`${SELECT_JOB} WHERE j.active = 1 AND (j.closes_at IS NULL OR j.closes_at >= ?)`)
+    .prepare(`${SELECT_JOB} WHERE (j.active = 1 AND (j.closes_at IS NULL OR j.closes_at >= ?)) OR COALESCE(a.stage,'saved') <> 'saved'`)
     .all(TODAY()) as Job[];
   const board = Object.fromEntries(STAGES.map((s) => [s, [] as Job[]])) as Record<Stage, Job[]>;
   for (const j of rows) board[j.stage]?.push(j);
@@ -217,8 +236,10 @@ export interface Funnel {
 }
 
 export function funnel(): Funnel {
+  // count only jobs still in play: active, or engaged beyond 'saved' (so dead/legacy
+  // inactive postings don't inflate the 'saved' bar)
   const rows = getDb()
-    .prepare("SELECT stage, COUNT(*) n FROM applications GROUP BY stage")
+    .prepare("SELECT a.stage, COUNT(*) n FROM applications a JOIN jobs j ON j.id=a.job_id WHERE j.active=1 OR a.stage<>'saved' GROUP BY a.stage")
     .all() as { stage: Stage; n: number }[];
   const counts = Object.fromEntries(STAGES.map((s) => [s, 0])) as Record<Stage, number>;
   for (const r of rows) counts[r.stage] = r.n;
