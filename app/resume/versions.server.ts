@@ -67,6 +67,17 @@ export function listVersions(jobId: string): ResumeVersion[] {
   return (getDb().prepare("SELECT * FROM resume_versions WHERE job_id=? ORDER BY id DESC").all(jobId) as any[]).map(rowTo);
 }
 
+// All generated versions across every job, newest first, with the job's company/role
+// joined on — for the "Generated for jobs" review list on the Résumés page.
+export interface VersionRow extends ResumeVersion { company: string | null; role: string | null }
+export function listAllVersions(kind?: "resume" | "cover-letter"): VersionRow[] {
+  const where = kind ? "WHERE v.kind=?" : "";
+  const rows = getDb()
+    .prepare(`SELECT v.*, j.company, j.role FROM resume_versions v LEFT JOIN jobs j ON j.id=v.job_id ${where} ORDER BY v.id DESC`)
+    .all(...(kind ? [kind] : [])) as any[];
+  return rows.map((r) => ({ ...rowTo(r), company: r.company ?? null, role: r.role ?? null }));
+}
+
 export function getVersion(id: number): ResumeVersion | null {
   const row = getDb().prepare("SELECT * FROM resume_versions WHERE id=?").get(id) as any;
   return row ? rowTo(row) : null;

@@ -12,13 +12,14 @@ import {
   extractPdfText,
   parseResumeText,
 } from "../resume/profiles.server";
+import { listAllVersions } from "../resume/versions.server";
 
 export function meta(_: Route.MetaArgs) {
   return [{ title: "Resume · The Remote Ledger" }];
 }
 
 export async function loader() {
-  return { profiles: listProfiles() };
+  return { profiles: listProfiles(), generated: listAllVersions("resume") };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -73,7 +74,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function ResumePage({ loaderData, actionData }: Route.ComponentProps) {
-  const { profiles } = loaderData;
+  const { profiles, generated } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
 
@@ -153,6 +154,32 @@ export default function ResumePage({ loaderData, actionData }: Route.ComponentPr
           </div>
         ))
       )}
+
+      <div className="panel">
+        <h3>Generated for jobs {generated.length ? <span className="badge ok">{generated.length}</span> : <span className="badge off">none yet</span>}</h3>
+        <p className="hint">Every résumé tailored for a specific role — from the job's Tailor tab or auto-apply. Open the PDF or jump to the job.</p>
+        {generated.length === 0 ? (
+          <p className="hint">No tailored résumés yet. Use “Tailor & build PDF” on a job, or auto-apply.</p>
+        ) : (
+          <table className="ledger-table">
+            <thead><tr><th>Role</th><th>Style</th><th>Match</th><th>When</th><th></th></tr></thead>
+            <tbody>
+              {generated.map((v: any) => (
+                <tr key={v.id}>
+                  <td><Link to={`/jobs/${v.job_id}`} className="entry-title-link">{v.company || v.job_id}{v.role ? ` — ${v.role}` : ""}</Link></td>
+                  <td>{v.style}</td>
+                  <td>{v.match?.score != null ? `${v.match.score}` : "—"}</td>
+                  <td>{v.created_at.slice(5, 16).replace("T", " ")}</td>
+                  <td style={{ display: "flex", gap: 10 }}>
+                    {v.pdf_path ? <a className="back-link" href={`/version/${v.id}/resume.pdf`} target="_blank" rel="noreferrer">PDF ▸</a> : <span className="hint" style={{ margin: 0 }}>no pdf</span>}
+                    <Link to={`/jobs/${v.job_id}`} className="back-link">job ▸</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </Shell>
   );
 }
