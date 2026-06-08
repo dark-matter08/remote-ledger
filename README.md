@@ -42,23 +42,43 @@ set your location. That's it.
 
 - **Ledger** (`/`) — broadsheet of jobs in High / Medium / Stretch, animated fit
   meters, filter / sort / search, quick stage dropdown, Night Press mode.
-- **Job page** (`/jobs/:id`) — **auto-scraped JD** (or paste/fetch it), **match & gap**
-  analysis, **tailor a résumé** (4 styles incl. ATS-plain) with an **anti-hallucination
-  guard** + downloadable PDF, **cover letter**, **interview prep**, **auto-apply assist**
-  (drafts an answer per form question + prefills the live form — you submit), stage +
-  reminders, full **history**.
-- **Crawl Shell** (`/crawl`) — run Find / Update / Full crawls on demand, watch the
-  reasoning + scraping logs stream live in a terminal view, and replay any past run.
-- **Auto-Apply** (`/apply`) — manual, rule-based sessions that screenshot each posting,
-  draft an answer per form question, and **pool anything they can't answer** for you to
-  answer once (saved to a reusable context bank). Runs in the background; never submits.
-- **Pipeline** (`/board`) — drag jobs across stages (Saved → Offer).
+- **Job page** (`/jobs/:id`) — **rich auto-scraped JD** (the posting's own HTML, reskinned
+  to Heritage Press — not flat text), **match & gap** analysis, **tailor a résumé** (4 styles
+  incl. ATS-plain) with an **anti-hallucination guard** + downloadable PDF, **cover letter**,
+  **interview prep**, **auto-apply assist** (ATS-aware: fills identity fields + uploads résumé +
+  cover, and **auto-generates the résumé PDF / cover letter if the form requires them and you
+  don't have one yet** — you submit), stage + reminders, full **history**. Every AI action
+  streams in the Crawl Shell.
+- **Crawl Shell** (`/crawl`) — the single place to watch all background AI work stream live
+  (job crawls, JD scrapes, folder scans, email syncs, résumé/cover/match/prep) and replay any
+  past run. Crawls can stop on a **time budget** *or* a **goal** ("run until N verified jobs").
+- **Auto-Apply** (`/apply`) — manual, rule-based sessions that screenshot each posting, draft an
+  answer per form question, and **pool anything they can't answer** for you to answer once (saved
+  to a reusable context bank). **Re-verifies every link is still live before acting** — a closed
+  posting is marked closed, never auto-filled. Runs in the background; never submits.
+- **Knowledge Base** (`/knowledge`) — keep building your résumé from what you've worked on:
+  describe a project, or **scan a folder server-side** (no upload) and the runner reads
+  README/manifests/source, drafts factual bullets, and asks clarifying questions. An
+  **interactive force-directed graph** (canvas + SVG engines) maps you ↔ skills ↔ projects ↔
+  jobs ↔ companies ↔ stages ↔ recruiter contacts.
+- **Application Mail** (`/inbox`) — connect a **dedicated job mailbox (IMAP, read-only)**; it
+  classifies recruiter/ATS mail (sandboxed, never acts on email content), proposes pipeline
+  stage moves you approve, sets interview reminders, and **harvests job-alert links into the
+  ledger** (each verified to a live employer page). Opt-in auto-apply for high-confidence moves.
+- **Pipeline** (`/board`) — drag jobs across fixed-height, per-column-scrolling stages
+  (Saved → Offer). Jobs you've engaged stay here even if the posting later closes — so you can
+  always follow up.
 - **Expired** (`/expired`) — deadlines watched; expired roles leave the ledger automatically.
+- **Archive** (`/archive`) — found jobs that went inactive (cleared by an old crawl or marked
+  closed when a link died); search and **restore** any back to the ledger.
 - **Analytics** (`/analytics`) — funnel, conversion rates, by-source, reminders.
 - **Usage** (`/usage`) — every AI call's tokens + cost, by purpose / runner, monthly budget.
-- **Résumés** (`/resume`) — upload PDF → structured profile(s); multiple personas.
+- **Résumés** (`/resume`) — upload PDF → structured profile(s); multiple personas; a list of
+  every **job-tailored résumé** generated (with match score + PDF); and a floating **AI assistant**
+  to edit your résumé structure by chat.
 - **Clipper** (`/clipper`) — bookmarklet + browser extension to save any job page.
-- **Settings** (`/settings`) — runners, BYO keys, prompt, scheduler, budget, profile.
+- **Settings** (`/settings`) — runners, BYO keys, prompt, scheduler (time-budget or goal-count),
+  budget, profile.
 
 First run lands on a short **onboarding wizard** (`/setup`) that sets sensible defaults,
 connects a runner, takes your résumé, and asks for your location + target stack — the app
@@ -122,10 +142,11 @@ app/
   sqlite.server.ts   secrets.server.ts   db.server.ts
   llm/      types · adapters · runner · pricing
   resume/   profiles · ai · templates · pdf · versions · types
-  services/ crawl · scheduler
-  routes/   home settings usage resume job board analytics setup clipper
-            api-crawl api-clip version-pdf
-  components/ Shell Nav
+  services/ crawl · scheduler · scrape · apply · apply-session · kb · graph · email
+  routes/   home settings usage resume knowledge inbox job board analytics
+            expired archive setup clipper  api-crawl api-clip api-pending api-dirs version-pdf
+  components/ Shell Nav Sidebar Select FilePicker DirPicker ConfirmForm ResumeChat
+              graph/ (GraphView · ForceCanvas · SvgForce · palette)
 scripts/    run-crawl.ts os-scheduler.mjs seed.mjs schema.sql prompt.md
 extension/  MV3 browser clipper
 pricing.json  DESIGN.md  ROADMAP.md
@@ -133,6 +154,8 @@ pricing.json  DESIGN.md  ROADMAP.md
 
 ## Tech
 
-React Router 7 (SSR) · better-sqlite3 · Playwright · pdf-parse · TypeScript · zero telemetry.
+React Router 7 (SSR) · better-sqlite3 · Playwright · pdf-parse · ImapFlow + mailparser
+(read-only email) · d3-force + react-force-graph (knowledge graph) · lucide-react ·
+TypeScript · zero telemetry.
 
 MIT licensed — see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
