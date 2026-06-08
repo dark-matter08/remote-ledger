@@ -46,7 +46,7 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TYPE_LABEL: Record<string, string> = { find: "Find new jobs", update: "Update descriptions", full: "Full refresh", scan: "Folder scan" };
+const TYPE_LABEL: Record<string, string> = { find: "Find new jobs", update: "Update descriptions", full: "Full refresh", scan: "Folder scan", email: "Email sync" };
 
 export default function Crawl({ loaderData, actionData }: Route.ComponentProps) {
   const { runs, active, selected, logs, hasRunner } = loaderData;

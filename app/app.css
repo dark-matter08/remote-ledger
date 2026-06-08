@@ -988,6 +988,17 @@ table.ledger-table tr:hover td { background: var(--card); }
 .kb-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .kb-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 1px 6px; }
 
+/* ---- application mail review rows ---- */
+.mailrow { border-top: 1px solid var(--rule-faint); padding: 12px 0; }
+.mailrow:first-of-type { border-top: 0; }
+.mailrow-head { display: flex; align-items: baseline; gap: 9px; }
+.mailrow-subj { font-family: var(--display); font-size: 15px; flex: 1; }
+.mailrow-when { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
+.mailrow-meta { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin: 3px 0; }
+.mailrow-sum { font-family: var(--serif); font-size: 13.5px; color: var(--ink-soft); margin: 4px 0 8px; }
+.mailrow-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mailrow-match { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); }
+
 /* ---- custom confirm modal ---- */
 .modal-scrim { position: fixed; inset: 0; z-index: 200; background: rgba(26, 23, 20, 0.45); display: grid; place-items: center; padding: 24px; animation: modal-fade 0.12s ease-out; }
 .modal { width: min(420px, 100%); background: var(--paper); border: 1.5px solid var(--ink); box-shadow: 7px 7px 0 -1px rgba(26, 23, 20, 0.22); padding: 22px 24px; animation: modal-rise 0.14s cubic-bezier(0.2, 0.8, 0.2, 1); }

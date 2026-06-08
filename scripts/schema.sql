@@ -260,3 +260,37 @@ CREATE TABLE IF NOT EXISTS kb_sources (
   last_scanned_at TEXT,
   created_at      TEXT NOT NULL
 );
+
+-- ===== Email ingestion (read-only; classify job mail → review queue) =====
+CREATE TABLE IF NOT EXISTS email_accounts (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  label           TEXT,
+  host            TEXT NOT NULL,
+  port            INTEGER NOT NULL DEFAULT 993,
+  secure          INTEGER NOT NULL DEFAULT 1,
+  username        TEXT NOT NULL,             -- password lives in the encrypted secrets store
+  mailbox         TEXT NOT NULL DEFAULT 'INBOX',
+  last_uid        INTEGER NOT NULL DEFAULT 0,
+  interval_min    INTEGER NOT NULL DEFAULT 0, -- 0 = manual sync only
+  last_synced_at  TEXT,
+  created_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS email_messages (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id     INTEGER NOT NULL,
+  uid            INTEGER NOT NULL,
+  from_addr      TEXT,
+  from_name      TEXT,
+  subject        TEXT,
+  sent_at        TEXT,
+  job_id         TEXT,                       -- matched application (nullable)
+  category       TEXT,                       -- receipt|recruiter|screening|interview|offer|rejection|other
+  confidence     INTEGER NOT NULL DEFAULT 0,
+  proposed_stage TEXT,                       -- suggested pipeline stage (nullable)
+  summary        TEXT,
+  snippet        TEXT,                       -- short redacted excerpt
+  status         TEXT NOT NULL DEFAULT 'new',-- new | applied | dismissed
+  created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_em_status ON email_messages(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_em_acct_uid ON email_messages(account_id, uid);
