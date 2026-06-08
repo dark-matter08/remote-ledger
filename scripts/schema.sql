@@ -210,3 +210,43 @@ CREATE TABLE IF NOT EXISTS crawl_logs (
   text    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cl_run ON crawl_logs(run_id);
+
+-- ===== Knowledge base (what the agent knows about you, for résumé building) =====
+CREATE TABLE IF NOT EXISTS kb_items (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind        TEXT NOT NULL DEFAULT 'project',  -- project | experience | skill | fact
+  title       TEXT NOT NULL,
+  summary     TEXT NOT NULL DEFAULT '',
+  tags        TEXT NOT NULL DEFAULT '[]',       -- JSON array of tech/skills
+  source      TEXT NOT NULL DEFAULT 'manual',   -- manual | scan
+  source_path TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kb_questions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id     INTEGER,
+  question    TEXT NOT NULL,
+  answer      TEXT,
+  created_at  TEXT NOT NULL,
+  answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_kbq_item ON kb_questions(item_id);
+CREATE TABLE IF NOT EXISTS kb_suggestions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id     INTEGER,
+  section     TEXT NOT NULL DEFAULT 'project',  -- project | experience | skill | summary
+  bullet      TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | dismissed
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kbs_status ON kb_suggestions(status);
+CREATE TABLE IF NOT EXISTS kb_scans (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  path        TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'running',  -- running | done | error
+  found       INTEGER NOT NULL DEFAULT 0,
+  note        TEXT,
+  started_at  TEXT NOT NULL,
+  ended_at    TEXT
+);

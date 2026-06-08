@@ -940,6 +940,15 @@ table.ledger-table tr:hover td { background: var(--card); }
 .jd-edit-toggle { cursor: pointer; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-faint); }
 .jd-edit-toggle:hover { color: var(--vermillion); }
 
+/* ---- knowledge base ---- */
+.kb-sugg { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--rule-faint); }
+.kb-sugg:last-child { border-bottom: 0; }
+.kb-sugg-text { flex: 1; font-family: var(--serif); font-size: 14px; line-height: 1.5; color: var(--ink-soft); }
+.kb-sugg-sec { display: inline-block; font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--vermillion); border: 1px solid var(--rule-faint); padding: 1px 5px; margin-right: 8px; vertical-align: middle; }
+.kb-sugg-actions { display: flex; gap: 6px; flex: none; }
+.kb-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.kb-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 1px 6px; }
+
 @media (max-width: 720px) {
   .ledger { grid-template-columns: 1fr; }
   .ledger .entry { border-right: 0; }
