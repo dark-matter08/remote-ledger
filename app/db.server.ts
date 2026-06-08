@@ -94,10 +94,18 @@ export function setClosesAt(id: string, closesAt: string | null): void {
   getDb().prepare("UPDATE jobs SET closes_at=?, updated_at=? WHERE id=?").run(closesAt, new Date().toISOString(), id);
 }
 
-export function setJd(id: string, jd: string): void {
-  getDb()
-    .prepare("UPDATE jobs SET jd=?, updated_at=? WHERE id=?")
-    .run(jd.slice(0, 16000), new Date().toISOString(), id);
+// Persist the JD. Pass `html` (sanitized rich markup) to also store the rendered
+// version shown in the job page; omit it to leave any existing jd_html untouched,
+// or pass null to clear it (e.g. a manual plain-text paste).
+export function setJd(id: string, jd: string, html?: string | null): void {
+  const now = new Date().toISOString();
+  if (html === undefined) {
+    getDb().prepare("UPDATE jobs SET jd=?, updated_at=? WHERE id=?").run(jd.slice(0, 16000), now, id);
+  } else {
+    getDb()
+      .prepare("UPDATE jobs SET jd=?, jd_html=?, updated_at=? WHERE id=?")
+      .run(jd.slice(0, 16000), html ? html.slice(0, 120000) : null, now, id);
+  }
 }
 
 export function updateNotes(id: string, notes: string): boolean {

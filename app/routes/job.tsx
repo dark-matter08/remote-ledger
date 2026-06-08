@@ -61,13 +61,13 @@ export async function action({ request, params }: Route.ActionArgs) {
   if (!job) throw new Response("Not found", { status: 404 });
   try {
     if (intent === "save-jd") {
-      setJd(job.id, String(form.get("jd") || ""));
+      setJd(job.id, String(form.get("jd") || ""), null); // manual paste → plain text, clear rich render
       return { ok: true, msg: "Job description saved." };
     }
     if (intent === "scrape-jd") {
       const r = await scrapeAndSave(job.id);
       return r.saved
-        ? { ok: true, msg: `Fetched ${r.text.length} chars from the posting.` }
+        ? { ok: true, msg: `Fetched ${r.text.length} chars from the posting${r.html ? " (rich)" : ""}.` }
         : { error: `Couldn't read the posting: ${r.error || "no text found"}. Paste it manually.` };
     }
     if (intent === "stage") {
@@ -191,17 +191,28 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
       {tab === "Overview" && (
         <>
           <div className="panel">
-            <h3>Job description {job.jd ? <span className="badge ok">{job.jd.length} chars</span> : <span className="badge off">empty</span>}</h3>
-            <p className="hint">Auto-collected from the posting, or paste it. Powers tailoring, match &amp; prep.</p>
+            <h3>Job description {job.jd_html ? <span className="badge ok">rich</span> : job.jd ? <span className="badge ok">{job.jd.length} chars</span> : <span className="badge off">empty</span>}</h3>
+            <p className="hint">Captured from the posting and rendered in Heritage Press. Powers tailoring, match &amp; prep.</p>
             <Form method="post" style={{ display: "inline-block", marginBottom: 12 }}>
               <input type="hidden" name="intent" value="scrape-jd" />
               <button className="ghost-btn" disabled={busy}>{busy ? "Fetching…" : "⟳ Fetch from posting"}</button>
             </Form>
-            <Form method="post">
-              <input type="hidden" name="intent" value="save-jd" />
-              <div className="field"><textarea name="jd" defaultValue={job.jd || ""} placeholder="Paste or fetch the full job description…" style={{ minHeight: 200 }} /></div>
-              <button className="btn" disabled={busy}>Save description</button>
-            </Form>
+            {job.jd_html ? (
+              <div className="jd-rendered" dangerouslySetInnerHTML={{ __html: job.jd_html }} />
+            ) : job.jd ? (
+              <div className="jd-rendered jd-plain">{job.jd}</div>
+            ) : (
+              <p className="hint">No description yet — fetch it from the posting, or paste your own below.</p>
+            )}
+            <details style={{ marginTop: 14 }}>
+              <summary className="jd-edit-toggle">Edit description text</summary>
+              <Form method="post" style={{ marginTop: 10 }}>
+                <input type="hidden" name="intent" value="save-jd" />
+                <div className="field"><textarea name="jd" defaultValue={job.jd || ""} placeholder="Paste or fetch the full job description…" style={{ minHeight: 200 }} /></div>
+                <p className="hint">Saving here replaces the text and clears the rich rendering (fetch again to restore it).</p>
+                <button className="btn" disabled={busy}>Save description</button>
+              </Form>
+            </details>
           </div>
           <MatchPanel match={storedMatch} busy={busy} profiles={profiles} defaultProfileId={defaultProfileId} />
         </>

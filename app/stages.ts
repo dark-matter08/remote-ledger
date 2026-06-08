@@ -49,6 +49,7 @@ export interface Job {
   source: string | null;
   closes_at: string | null;
   jd: string | null;
+  jd_html: string | null;
   notes: string;
   active: number;
   first_seen: string;

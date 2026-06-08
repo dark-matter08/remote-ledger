@@ -26,6 +26,7 @@ export function getDb(): Database.Database {
   db.exec(readFileSync(SCHEMA_PATH, "utf8"));
   // migrations for DBs created before a column existed
   ensureColumn(db, "jobs", "jd", "TEXT");
+  ensureColumn(db, "jobs", "jd_html", "TEXT"); // sanitized rich JD (rendered in Heritage Press)
   // reconcile runs orphaned by a previous process: this runs once per process at
   // connection creation, before any new crawl/session can start, so it never
   // touches a run that's live in THIS process.

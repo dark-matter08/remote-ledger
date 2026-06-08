@@ -174,10 +174,10 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       totals.updated = res.updated;
       totals.errors += res.errors.length;
       for (const e of res.errors.slice(0, 5)) L("error", `Rejected ${e.job}: ${e.error}`);
-      // save the JD captured during verification
+      // save the JD (text + sanitized rich HTML) captured during verification
       let saved = 0;
       for (const a of alive) {
-        try { setJd(jobId(a.job.company, a.job.role), a.jd); saved++; } catch {}
+        try { setJd(jobId(a.job.company, a.job.role), a.jd, a.jdHtml || null); saved++; } catch {}
       }
       totals.scraped = saved;
       L("result", `Saved ${res.inserted} new, ${res.updated} updated · ${saved} JDs captured. Existing jobs are kept (add/update only).`);

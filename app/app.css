@@ -883,6 +883,60 @@ table.ledger-table tr:hover td { background: var(--card); }
 .board-card-fit { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
 .board-empty { font-family: var(--mono); font-size: 11px; color: var(--rule-faint); text-align: center; padding: 16px 0; }
 
+/* ---- rendered job description (rich HTML captured from the posting, reskinned to Heritage Press) ---- */
+.jd-rendered {
+  border: 1.5px solid var(--rule);
+  background: var(--card);
+  box-shadow: 4px 4px 0 -1px rgba(26,23,20,.10);
+  padding: 22px 26px;
+  max-height: 620px;
+  overflow: auto;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--ink-soft);
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-faint) transparent;
+}
+.jd-rendered::-webkit-scrollbar { width: 10px; }
+.jd-rendered::-webkit-scrollbar-track { background: transparent; }
+.jd-rendered::-webkit-scrollbar-thumb { background: var(--rule-faint); border: 2px solid transparent; background-clip: padding-box; }
+.jd-rendered::-webkit-scrollbar-thumb:hover { background: var(--ink); background-clip: padding-box; }
+.jd-rendered.jd-plain { white-space: pre-wrap; }
+.jd-rendered > :first-child { margin-top: 0; }
+.jd-rendered > :last-child { margin-bottom: 0; }
+.jd-rendered h1, .jd-rendered h2, .jd-rendered h3, .jd-rendered h4, .jd-rendered h5, .jd-rendered h6 {
+  font-family: var(--display); font-weight: 600; line-height: 1.18; color: var(--ink);
+  margin: 1.3em 0 .5em; letter-spacing: -0.01em;
+}
+.jd-rendered h1 { font-size: 1.55em; }
+.jd-rendered h2 { font-size: 1.3em; }
+.jd-rendered h3 { font-size: 1.12em; }
+.jd-rendered h4, .jd-rendered h5, .jd-rendered h6 { font-size: 1em; text-transform: uppercase; letter-spacing: .08em; font-family: var(--mono); color: var(--ink-faint); }
+.jd-rendered h1, .jd-rendered h2 { border-bottom: 1.5px solid var(--rule-faint); padding-bottom: .28em; }
+.jd-rendered p { margin: .65em 0; }
+.jd-rendered a { color: var(--vermillion); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.jd-rendered a:hover { background: var(--vermillion); color: var(--paper); text-decoration: none; }
+.jd-rendered strong, .jd-rendered b { font-weight: 600; color: var(--ink); }
+.jd-rendered em, .jd-rendered i { font-style: italic; }
+.jd-rendered ul, .jd-rendered ol { margin: .65em 0 .65em 1.4em; padding: 0; }
+.jd-rendered li { margin: .32em 0; }
+.jd-rendered ul { list-style: none; }
+.jd-rendered ul > li { position: relative; padding-left: 1.1em; }
+.jd-rendered ul > li::before { content: "—"; position: absolute; left: 0; color: var(--vermillion); }
+.jd-rendered ol { list-style: decimal; }
+.jd-rendered blockquote { border-left: 3px solid var(--vermillion); margin: .9em 0; padding: .2em 0 .2em 16px; color: var(--ink-faint); font-style: italic; }
+.jd-rendered hr { border: 0; border-top: 1.5px solid var(--rule-faint); margin: 1.2em 0; }
+.jd-rendered code { font-family: var(--mono); font-size: .88em; background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 1px 5px; }
+.jd-rendered pre { font-family: var(--mono); font-size: .85em; background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 12px 14px; overflow: auto; margin: .8em 0; }
+.jd-rendered pre code { background: none; border: 0; padding: 0; }
+.jd-rendered img { max-width: 100%; height: auto; filter: grayscale(.35) contrast(.95); border: 1.5px solid var(--rule-faint); margin: .6em 0; }
+.jd-rendered table { border-collapse: collapse; width: 100%; margin: .9em 0; font-size: .94em; }
+.jd-rendered th, .jd-rendered td { border: 1px solid var(--rule-faint); padding: 7px 10px; text-align: left; vertical-align: top; }
+.jd-rendered th { font-family: var(--mono); font-size: .82em; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); background: var(--paper-2); }
+.jd-edit-toggle { cursor: pointer; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-faint); }
+.jd-edit-toggle:hover { color: var(--vermillion); }
+
 @media (max-width: 720px) {
   .ledger { grid-template-columns: 1fr; }
   .ledger .entry { border-right: 0; }

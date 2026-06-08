@@ -10,6 +10,7 @@ const UA =
 export interface Scraped {
   title: string;
   text: string;
+  html: string; // sanitized rich markup of the JD container (empty if unavailable)
   ok: boolean;
   error?: string;
 }
@@ -23,20 +24,99 @@ function clean(text: string): string {
     .slice(0, 20000);
 }
 
+// Picks the JD container in the page and returns its text + raw innerHTML.
+// Runs inside the browser (page.evaluate), so it can only use DOM globals.
+const PICK_JD = () => {
+  const cands = [
+    "#job-description", ".job-description", "[data-testid*=description]",
+    "[class*=description]", "[class*=posting]", "[class*=job-details]",
+    "article", "main", "[role=main]", "[class*=job]", ".content",
+  ];
+  let best: HTMLElement | null = null;
+  let bestLen = 0;
+  for (const s of cands) {
+    const el = document.querySelector(s) as HTMLElement | null;
+    if (el) {
+      const t = el.innerText || "";
+      if (t.length > bestLen) { bestLen = t.length; best = el; }
+    }
+  }
+  const body = document.body;
+  if (!best || bestLen < 200) best = body;
+  const meta = (document.querySelector('meta[name="description"]') as HTMLMetaElement | null)?.content || "";
+  return {
+    title: document.title,
+    meta,
+    text: best.innerText || "",
+    html: best.innerHTML || "",
+    bodyText: body.innerText || "",
+  };
+};
+
+// Whitelist sanitizer: keeps the posting's structure (headings, lists, tables,
+// emphasis, links, images) but drops scripts/styles/event handlers and every
+// presentational attribute (style/class/color/bgcolor) so the JD always renders
+// in our Heritage Press skin on paper — never the source site's chrome.
+const ALLOWED = new Set([
+  "h1","h2","h3","h4","h5","h6","p","br","hr","strong","b","em","i","u","s","small","sub","sup","mark",
+  "ul","ol","li","dl","dt","dd","blockquote","a","img","figure","figcaption",
+  "table","thead","tbody","tfoot","tr","td","th","caption","colgroup","col",
+  "code","pre","span","div","section","article","details","summary",
+]);
+
+export function sanitizeJdHtml(html: string): string {
+  if (!html) return "";
+  let out = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(script|style|noscript|template|svg|head|link|meta|iframe|object|embed|form|input|button|select|textarea|nav|header|footer|video|audio|canvas)\b[\s\S]*?<\/\1>/gi, "")
+    .replace(/<(script|style|link|meta|iframe|object|embed|input|br|hr|img|col)\b[^>]*\/?>/gi, (m, tag) =>
+      /^(br|hr|img|col)$/i.test(tag) ? m : ""
+    );
+  out = out.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g, (_m, rawTag: string, attrs: string) => {
+    const tag = rawTag.toLowerCase();
+    if (!ALLOWED.has(tag)) return ""; // drop the tag wrapper, keep its inner text
+    const closing = /^<\//.test(_m);
+    if (closing) return `</${tag}>`;
+    const selfClose = /\/>$/.test(_m) || /^(br|hr|img|col)$/.test(tag);
+    let keep = "";
+    if (tag === "a") {
+      const href = /href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+      const url = href ? (href[2] || href[3] || href[4] || "").trim() : "";
+      if (/^(https?:|mailto:)/i.test(url)) keep = ` href="${url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener noreferrer"`;
+    } else if (tag === "img") {
+      const src = /src\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+      const url = src ? (src[2] || src[3] || src[4] || "").trim() : "";
+      const alt = /alt\s*=\s*("([^"]*)"|'([^']*)')/i.exec(attrs);
+      if (/^https?:/i.test(url)) keep = ` src="${url.replace(/"/g, "&quot;")}"${alt ? ` alt="${(alt[2] || alt[3] || "").replace(/"/g, "&quot;")}"` : ""} loading="lazy"`;
+      else return "";
+    } else if (tag === "td" || tag === "th") {
+      const cs = /colspan\s*=\s*"?(\d+)"?/i.exec(attrs);
+      const rs = /rowspan\s*=\s*"?(\d+)"?/i.exec(attrs);
+      if (cs) keep += ` colspan="${cs[1]}"`;
+      if (rs) keep += ` rowspan="${rs[1]}"`;
+    }
+    return `<${tag}${keep}${selfClose ? " /" : ""}>`;
+  });
+  // collapse empty wrappers left behind and runaway whitespace
+  out = out.replace(/(\s*<(?:div|span|p)>\s*<\/(?:div|span|p)>)+/gi, "").replace(/\n{3,}/g, "\n\n");
+  return out.trim().slice(0, 120000);
+}
+
 // Strip tags as a last-resort fallback if the browser can't reach the page.
 async function fetchFallback(url: string): Promise<Scraped> {
   try {
     const res = await fetch(url, { headers: { "user-agent": UA } });
     const html = await res.text();
     const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || "";
+    const bodyHtml = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] || html;
     const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<[^>]+>/g, " ")
       .replace(/&[a-z]+;/gi, " ");
-    return { title, text: clean(text), ok: res.ok };
+    return { title, text: clean(text), html: sanitizeJdHtml(bodyHtml), ok: res.ok };
   } catch (e: any) {
-    return { title: "", text: "", ok: false, error: e.message };
+    return { title: "", text: "", html: "", ok: false, error: e.message };
   }
 }
 
@@ -45,39 +125,16 @@ async function scrapeWithBrowser(browser: any, url: string): Promise<Scraped> {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(1800); // let SPA job portals (Lever/Ashby/Greenhouse/Workday) render
-    const data = await page.evaluate(() => {
-      const pick = (sel: string) => {
-        const el = document.querySelector(sel) as HTMLElement | null;
-        return el ? el.innerText : "";
-      };
-      let text = "";
-      for (const s of [
-        "main",
-        "article",
-        "[role=main]",
-        "#job-description",
-        ".job-description",
-        "[class*=description]",
-        "[class*=posting]",
-        "[class*=job]",
-        ".content",
-      ]) {
-        const t = pick(s);
-        if (t && t.length > text.length) text = t;
-      }
-      if (text.length < 200) text = document.body.innerText;
-      const meta =
-        (document.querySelector('meta[name="description"]') as HTMLMetaElement | null)?.content || "";
-      return { title: document.title, text: (meta ? meta + "\n\n" : "") + text };
-    });
-    return { title: data.title, text: clean(data.text), ok: clean(data.text).length > 60 };
+    const data = await page.evaluate(PICK_JD);
+    const text = clean((data.meta ? data.meta + "\n\n" : "") + data.text);
+    return { title: data.title, text, html: sanitizeJdHtml(data.html), ok: text.length > 60 };
   } finally {
     await page.close().catch(() => {});
   }
 }
 
 export async function scrapeJobPage(url: string): Promise<Scraped> {
-  if (!/^https?:\/\//.test(url)) return { title: "", text: "", ok: false, error: "bad url" };
+  if (!/^https?:\/\//.test(url)) return { title: "", text: "", html: "", ok: false, error: "bad url" };
   let browser: any;
   try {
     const { chromium } = await import("playwright");
@@ -95,11 +152,11 @@ export async function scrapeJobPage(url: string): Promise<Scraped> {
 // Scrape one job by id and persist its JD.
 export async function scrapeAndSave(jobId: string): Promise<Scraped & { saved: boolean }> {
   const job = getJob(jobId);
-  if (!job) return { title: "", text: "", ok: false, error: "job not found", saved: false };
+  if (!job) return { title: "", text: "", html: "", ok: false, error: "job not found", saved: false };
   const r = await scrapeJobPage(job.apply_url);
   if (r.ok && r.text) {
-    setJd(jobId, r.text);
-    addEvent(jobId, "jd_scraped", { chars: r.text.length, source: job.apply_url });
+    setJd(jobId, r.text, r.html || null);
+    addEvent(jobId, "jd_scraped", { chars: r.text.length, rich: !!r.html, source: job.apply_url });
     return { ...r, saved: true };
   }
   return { ...r, saved: false };
@@ -136,8 +193,8 @@ export async function scrapeJds(opts: {
       let r = browser ? await scrapeWithBrowser(browser, row.apply_url) : await fetchFallback(row.apply_url);
       if (!r.ok) r = await fetchFallback(row.apply_url);
       if (r.ok && r.text) {
-        setJd(row.id, r.text);
-        addEvent(row.id, "jd_scraped", { chars: r.text.length });
+        setJd(row.id, r.text, r.html || null);
+        addEvent(row.id, "jd_scraped", { chars: r.text.length, rich: !!r.html });
         scraped++;
         onLog(`scraped ${row.company} — ${r.text.length} chars`);
       } else {
@@ -165,7 +222,7 @@ export async function scrapeMissingJds(limit = 12): Promise<{ scraped: number; f
 const DEAD = /(posting|job|position|page)\s+not\s+found|no longer (available|accepting|active|open)|position (has been|is)\s+(filled|closed)|this (job|posting|position) (is|has) (closed|expired|filled)|404 (not found|error)|we can'?t find|doesn'?t exist|page you are looking for (can'?t|cannot|could not) be found|application (is )?closed/i;
 
 export interface VerifyResult {
-  alive: { job: any; jd: string }[];
+  alive: { job: any; jd: string; jdHtml: string }[];
   dropped: { company: string; role: string; url: string; reason: string }[];
 }
 
@@ -193,7 +250,9 @@ export async function verifyJobs(
     if (!/^https?:\/\//.test(url)) { drop("no/invalid apply URL"); continue; }
 
     let status = 0;
-    let text = "";
+    let text = "";        // body text, used for the dead/thin checks
+    let jdText = "";      // JD container text, stored
+    let jdHtml = "";      // JD container sanitized HTML, stored
     try {
       if (browser) {
         const page = await browser.newPage({ userAgent: UA });
@@ -201,14 +260,21 @@ export async function verifyJobs(
           const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
           status = resp ? resp.status() : 0;
           await page.waitForTimeout(1500);
-          text = await page.evaluate(() => document.body.innerText || "");
+          const cap = await page.evaluate(PICK_JD);
+          text = cap.bodyText || "";
+          jdText = cap.text || cap.bodyText || "";
+          jdHtml = sanitizeJdHtml(cap.html);
         } finally {
           await page.close().catch(() => {});
         }
       } else {
         const r = await fetch(url, { headers: { "user-agent": UA }, redirect: "follow" });
         status = r.status;
-        text = (await r.text()).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
+        const raw = await r.text();
+        const bodyHtml = raw.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] || raw;
+        text = raw.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
+        jdText = text;
+        jdHtml = sanitizeJdHtml(bodyHtml);
       }
     } catch (e: any) {
       drop(`unreachable (${e.message?.slice(0, 40)})`);
@@ -220,7 +286,7 @@ export async function verifyJobs(
     if (clean.length < 220) { drop(`page too thin (${clean.length} chars) — likely dead/redirect`); continue; }
     if (DEAD.test(clean.slice(0, 4000))) { drop("posting closed / not found"); continue; }
 
-    alive.push({ job, jd: clean.slice(0, 16000) });
+    alive.push({ job, jd: jdText.replace(/\s+\n/g, "\n").trim().slice(0, 16000), jdHtml });
     onLog(`✓ ${company} — verified live (${clean.length} chars)`);
   }
   if (browser) await browser.close().catch(() => {});
