@@ -167,3 +167,30 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
   updateSession(sessionId, { status: "done", ended_at: new Date().toISOString() });
   addLog(sessionId, "note", { text: `Session complete. ${processed} processed, ${needsInputTotal} question(s) need your input.` });
 }
+
+// Resume a finished session after you've answered its pooled questions. Re-applies the
+// now-available answers (from the question pool + answer bank), flipping jobs whose
+// questions are all answered from "needs_input" to "drafted". Cheap — no LLM/browser.
+export function resumeSession(sessionId: number): { resolved: number; stillNeeds: number } {
+  const db = getDb();
+  const sjs = db
+    .prepare("SELECT id, job_id FROM apply_session_jobs WHERE session_id=? AND status='needs_input'")
+    .all(sessionId) as { id: number; job_id: string }[];
+  addLog(sessionId, "note", { text: "Resuming — applying your pooled answers…" });
+  let resolved = 0, stillNeeds = 0, totalUnanswered = 0;
+  for (const sj of sjs) {
+    const open = (db
+      .prepare("SELECT COUNT(*) n FROM apply_questions WHERE session_id=? AND job_id=? AND answer IS NULL")
+      .get(sessionId, sj.job_id) as any).n as number;
+    const answered = db
+      .prepare("SELECT question, answer FROM apply_questions WHERE session_id=? AND job_id=? AND answer IS NOT NULL")
+      .all(sessionId, sj.job_id) as { question: string; answer: string }[];
+    for (const a of answered) addLog(sessionId, "answer", { jobId: sj.job_id, text: `Q: ${a.question}\nA: ${a.answer}` });
+    updateSessionJob(sj.id, { unanswered: open, status: open ? "needs_input" : "drafted", ended_at: new Date().toISOString() });
+    totalUnanswered += open;
+    if (open) stillNeeds++; else resolved++;
+  }
+  updateSession(sessionId, { needs_input: totalUnanswered, status: "done", ended_at: new Date().toISOString() });
+  addLog(sessionId, "note", { text: `Resume complete — ${resolved} job(s) ready, ${stillNeeds} still awaiting answers.` });
+  return { resolved, stillNeeds };
+}

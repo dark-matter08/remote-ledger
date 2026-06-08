@@ -13,7 +13,7 @@ import {
   answerPooledQuestion,
   answerBank,
 } from "../db.server";
-import { startSession, type ApplyRules } from "../services/apply-session.server";
+import { startSession, resumeSession, type ApplyRules } from "../services/apply-session.server";
 import { availableRunners } from "../llm/runner.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 
@@ -44,6 +44,11 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "answer") {
     answerPooledQuestion(Number(form.get("id")), String(form.get("answer") || "").trim());
     return { ok: true, msg: "Answer saved to your context bank." };
+  }
+  if (intent === "resume") {
+    const sid = Number(form.get("sessionId"));
+    resumeSession(sid);
+    return redirect(`/apply?session=${sid}`);
   }
   if (intent === "start") {
     const rules: ApplyRules = {
@@ -186,8 +191,22 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
       {/* session detail */}
       {active && (
         <div className="panel">
-          <h3>Session #{active.id} — monitor</h3>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0 }}>Session #{active.id} — monitor</h3>
+            {activeJobs.some((j: any) => j.status === "needs_input") && (
+              <Form method="post" style={{ marginLeft: "auto" }}>
+                <input type="hidden" name="intent" value="resume" />
+                <input type="hidden" name="sessionId" value={active.id} />
+                <button className="btn" disabled={busy} title="Apply your pooled answers and complete the remaining jobs">
+                  {busy ? "Resuming…" : "▶ Resume session"}
+                </button>
+              </Form>
+            )}
+          </div>
           <p className="hint">{active.mode} · {active.status} · {active.processed}/{active.total} processed · {active.needs_input} need input</p>
+          {active.needs_input > 0 && (
+            <p className="hint">Answer the open questions in the pool above, then Resume — answered jobs flip to <strong>drafted</strong>.</p>
+          )}
           <table className="ledger-table">
             <thead><tr><th>Job</th><th>Status</th><th>Qs</th><th>Unanswered</th><th>Shot</th></tr></thead>
             <tbody>
