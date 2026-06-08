@@ -24,13 +24,22 @@ company careers page for a single role), not to a network's homepage or a search
 🔒 HARD VERIFICATION RULE (most important):
 - Include a job ONLY if you actually OPENED its application page with WebFetch in THIS
   session and saw the real, currently-open role on the page.
-- Set apply_url to the EXACT URL you successfully fetched (after redirects).
+- FOLLOW THROUGH TO THE FINAL APPLICATION PAGE. Aggregators (Remotive, WeWorkRemotely,
+  RemoteOK, Wellfound, LinkedIn, Indeed, Glassdoor) only LIST a job — the real apply form
+  lives on the employer's site/ATS (Greenhouse, Lever, Ashby, Workable, Workday…). Open the
+  aggregator page, find its "Apply" link, follow it to the employer's posting, and confirm
+  THAT page is live and open. Set apply_url to the FINAL employer URL — never the aggregator
+  URL. If the employer page 404s or is gone, the job is dead: EXCLUDE it.
+- Set apply_url to the EXACT URL you successfully fetched (after all redirects + the apply
+  hop). It must be a single concrete role, not a board, search, or "current openings" page.
 - NEVER guess, construct, or pattern-match a URL. Do NOT invent Lever/Ashby/Greenhouse/
   Workable posting IDs or slugs. If you didn't open it, you don't know it exists.
-- If the page 404s, redirects to a generic list, or shows "not found" / "no longer
-  accepting" / "position closed/filled" — EXCLUDE it.
-- Every link you return will be re-opened and verified by the system; fabricated or dead
-  links are discarded and make the whole result worthless. 6 verified jobs beat 20 guesses.
+- If the page 404s, redirects to a generic list / "current openings", or shows "not found" /
+  "no longer accepting" / "position closed/filled" / "job you are looking for is no longer
+  open" — EXCLUDE it.
+- Every link you return will be re-opened, followed to its final destination, and verified by
+  the system; aggregator-only, fabricated, or dead links are discarded and make the whole
+  result worthless. 6 verified employer links beat 20 aggregator guesses.
 
 ⏱ BUDGET: aim for ~{{budget_min}} minutes, and AT MOST {{max_actions}} web actions
 (searches + fetches combined). The action cap is your real limit — it's fine to run a

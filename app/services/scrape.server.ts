@@ -219,7 +219,133 @@ export async function scrapeMissingJds(limit = 12): Promise<{ scraped: number; f
 // agent's claim). Renders the apply_url, checks HTTP status + page content for
 // dead/closed markers, and captures the JD in the same visit. Returns the live jobs
 // (with JD) and the dropped ones with a reason — so the Crawl Shell can show both.
-const DEAD = /(posting|job|position|page)\s+not\s+found|no longer (available|accepting|active|open)|position (has been|is)\s+(filled|closed)|this (job|posting|position) (is|has) (closed|expired|filled)|404 (not found|error)|we can'?t find|doesn'?t exist|page you are looking for (can'?t|cannot|could not) be found|application (is )?closed/i;
+const DEAD = /(posting|job|position|page|role|listing)\s+(you('?re| are) looking for\s+)?(is\s+)?(no longer|not)\s+(found|available|open|active|accepting)|no longer (available|accepting|active|open)|(position|posting|role|job|listing) (has been|is|was)\s+(filled|closed|removed|expired|deactivated)|this (job|posting|position|role|listing) (is|has|was) (closed|expired|filled|removed|no longer)|404 (not found|error)|we can'?t find|does ?n'?t exist|page you are looking for (can'?t|cannot|could not) be found|application (is |are )?(now )?closed|applications? (are )?closed|stopped accepting applications|opportunity (is )?no longer/i;
+
+// Aggregator / job-board hosts whose pages are NOT a real application — they link
+// out to the employer's ATS. We must follow through to that final page.
+const AGGREGATOR = /(^|\.)(remotive\.com|weworkremotely\.com|remoteok\.(com|io)|wellfound\.com|angel\.co|linkedin\.com|indeed\.com|glassdoor\.[a-z.]+|remote\.co|jobspresso\.co|nodesk\.co|himalayas\.app|workingnomads\.com|jobicy\.com|dailyremote\.com|remoteok\.com|builtin\.com|otta\.com|dice\.com|ziprecruiter\.com|simplyhired\.com|google\.com)$/i;
+
+// Real ATS hosts — a strong signal that an outbound link is the true apply page.
+const ATS_HOST = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|breezy\.hr|smartrecruiters\.com|jobvite\.com|bamboohr\.com|myworkdayjobs\.com|workday\.com|recruitee\.com|teamtailor\.com|pinpointhq\.com|join\.com|rippling\.com|gem\.com|paylocity\.com|icims\.com|ashby|greenhouse|lever)/i;
+
+const hostOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+
+// Runs in the browser: pick the best outbound "Apply" link on an aggregator page.
+const FIND_APPLY = () => {
+  const here = location.hostname.replace(/^www\./, "");
+  const ats = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|breezy\.hr|smartrecruiters\.com|jobvite\.com|bamboohr\.com|myworkdayjobs\.com|workday|recruitee\.com|teamtailor\.com|pinpointhq\.com|join\.com|rippling\.com|icims\.com)/i;
+  let best = "";
+  let bestScore = 0;
+  for (const a of Array.from(document.querySelectorAll("a[href]")) as HTMLAnchorElement[]) {
+    const href = a.href;
+    if (!/^https?:/i.test(href)) continue;
+    let host = "";
+    try { host = new URL(href).hostname.replace(/^www\./, ""); } catch { continue; }
+    const txt = (a.innerText || a.textContent || "").trim().toLowerCase();
+    let s = 0;
+    if (ats.test(href)) s += 8;
+    if (host !== here && host.indexOf("remotive") < 0) s += 3;
+    if (/\bapply\b/.test(txt)) s += 5;
+    if (/apply|application/i.test(href)) s += 2;
+    if (/career|jobs?|positions?/i.test(href)) s += 1;
+    if (s > bestScore) { bestScore = s; best = href; }
+  }
+  return bestScore >= 3 ? best : "";
+};
+
+export interface LiveCheck {
+  ok: boolean;
+  status: number;
+  finalUrl: string;
+  reason: string;        // empty when ok
+  hops: string[];        // intermediate URLs walked (aggregator → employer)
+  jdText: string;
+  jdHtml: string;
+}
+
+// Walk a URL to its FINAL application page (following redirects and aggregator
+// "Apply" links) and confirm it's a live, open posting. Reuses one browser across
+// calls. This is the single source of truth for "is this job still applyable?".
+export async function resolveLive(browser: any, startUrl: string, onLog?: (s: string) => void): Promise<LiveCheck> {
+  const hops: string[] = [];
+  let cur = startUrl;
+  let status = 0;
+  let finalUrl = startUrl;
+
+  for (let hop = 0; hop < 3; hop++) {
+    let bodyText = "", jdText = "", jdHtml = "";
+    if (browser) {
+      const page = await browser.newPage({ userAgent: UA });
+      try {
+        const resp = await page.goto(cur, { waitUntil: "domcontentloaded", timeout: 30000 });
+        status = resp ? resp.status() : 0;
+        await page.waitForTimeout(1600);
+        finalUrl = page.url();
+        const cap = await page.evaluate(PICK_JD);
+        bodyText = cap.bodyText || "";
+        jdText = cap.text || cap.bodyText || "";
+        jdHtml = cap.html || "";
+        // if still on an aggregator, try to find the outbound apply link before giving up
+        if (AGGREGATOR.test(hostOf(finalUrl))) {
+          const applyHref = await page.evaluate(FIND_APPLY);
+          if (applyHref && applyHref !== cur) {
+            hops.push(finalUrl);
+            onLog?.(`  ↪ following ${hostOf(finalUrl)} → ${hostOf(applyHref)}`);
+            cur = applyHref;
+            continue; // walk to the employer page
+          }
+        }
+      } catch (e: any) {
+        return { ok: false, status, finalUrl, reason: `unreachable (${String(e.message).slice(0, 40)})`, hops, jdText: "", jdHtml: "" };
+      } finally {
+        await page.close().catch(() => {});
+      }
+    } else {
+      try {
+        const r = await fetch(cur, { headers: { "user-agent": UA }, redirect: "follow" });
+        status = r.status;
+        finalUrl = r.url || cur;
+        const raw = await r.text();
+        const bodyHtml = raw.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] || raw;
+        bodyText = raw.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
+        jdText = bodyText;
+        jdHtml = bodyHtml;
+        if (AGGREGATOR.test(hostOf(finalUrl))) {
+          const m = raw.match(/href=["']([^"']*(?:greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|myworkdayjobs\.com)[^"']*)["']/i);
+          if (m && m[1] && m[1] !== cur) { hops.push(finalUrl); cur = m[1]; continue; }
+        }
+      } catch (e: any) {
+        return { ok: false, status, finalUrl, reason: `unreachable (${String(e.message).slice(0, 40)})`, hops, jdText: "", jdHtml: "" };
+      }
+    }
+
+    const clean = bodyText.replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
+    if (status >= 400) return { ok: false, status, finalUrl, reason: `HTTP ${status}`, hops, jdText: "", jdHtml: "" };
+    if (DEAD.test(clean.slice(0, 6000))) return { ok: false, status, finalUrl, reason: "posting closed / no longer open", hops, jdText: "", jdHtml: "" };
+    if (AGGREGATOR.test(hostOf(finalUrl)))
+      return { ok: false, status, finalUrl, reason: `could not resolve a final application link off ${hostOf(finalUrl)}`, hops, jdText: "", jdHtml: "" };
+    if (clean.length < 220) return { ok: false, status, finalUrl, reason: `page too thin (${clean.length} chars) — likely dead/redirect`, hops, jdText: "", jdHtml: "" };
+
+    return { ok: true, status, finalUrl, reason: "", hops, jdText: jdText.replace(/\s+\n/g, "\n").trim().slice(0, 16000), jdHtml: sanitizeJdHtml(jdHtml) };
+  }
+  return { ok: false, status, finalUrl, reason: "too many redirects — never reached a real posting", hops, jdText: "", jdHtml: "" };
+}
+
+// On-demand liveness check for a single apply URL (launches its own browser).
+// Used right before auto-apply so we never act on a closed posting.
+export async function verifyApplyUrl(url: string): Promise<LiveCheck> {
+  if (!/^https?:\/\//.test(url)) return { ok: false, status: 0, finalUrl: url, reason: "no/invalid apply URL", hops: [], jdText: "", jdHtml: "" };
+  let browser: any;
+  try {
+    const { chromium } = await import("playwright");
+    browser = await chromium.launch();
+  } catch { /* fall back to fetch inside resolveLive */ }
+  try {
+    return await resolveLive(browser, url);
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
 
 export interface VerifyResult {
   alive: { job: any; jd: string; jdHtml: string }[];
@@ -249,45 +375,14 @@ export async function verifyJobs(
 
     if (!/^https?:\/\//.test(url)) { drop("no/invalid apply URL"); continue; }
 
-    let status = 0;
-    let text = "";        // body text, used for the dead/thin checks
-    let jdText = "";      // JD container text, stored
-    let jdHtml = "";      // JD container sanitized HTML, stored
-    try {
-      if (browser) {
-        const page = await browser.newPage({ userAgent: UA });
-        try {
-          const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-          status = resp ? resp.status() : 0;
-          await page.waitForTimeout(1500);
-          const cap = await page.evaluate(PICK_JD);
-          text = cap.bodyText || "";
-          jdText = cap.text || cap.bodyText || "";
-          jdHtml = sanitizeJdHtml(cap.html);
-        } finally {
-          await page.close().catch(() => {});
-        }
-      } else {
-        const r = await fetch(url, { headers: { "user-agent": UA }, redirect: "follow" });
-        status = r.status;
-        const raw = await r.text();
-        const bodyHtml = raw.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] || raw;
-        text = raw.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
-        jdText = text;
-        jdHtml = sanitizeJdHtml(bodyHtml);
-      }
-    } catch (e: any) {
-      drop(`unreachable (${e.message?.slice(0, 40)})`);
-      continue;
-    }
+    const r = await resolveLive(browser, url, onLog);
+    if (!r.ok) { drop(r.reason); continue; }
 
-    const clean = text.replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
-    if (status >= 400) { drop(`HTTP ${status}`); continue; }
-    if (clean.length < 220) { drop(`page too thin (${clean.length} chars) — likely dead/redirect`); continue; }
-    if (DEAD.test(clean.slice(0, 4000))) { drop("posting closed / not found"); continue; }
-
-    alive.push({ job, jd: jdText.replace(/\s+\n/g, "\n").trim().slice(0, 16000), jdHtml });
-    onLog(`✓ ${company} — verified live (${clean.length} chars)`);
+    // store the FINAL employer apply URL (not the aggregator/redirect we started at)
+    const resolved = r.finalUrl && r.finalUrl !== url ? { ...job, apply_url: r.finalUrl } : job;
+    if (r.hops.length) onLog(`  resolved ${company} → ${hostOf(r.finalUrl)} (final apply page)`);
+    alive.push({ job: resolved, jd: r.jdText, jdHtml: r.jdHtml });
+    onLog(`✓ ${company} — verified live (${r.jdText.length} chars)`);
   }
   if (browser) await browser.close().catch(() => {});
   return { alive, dropped };

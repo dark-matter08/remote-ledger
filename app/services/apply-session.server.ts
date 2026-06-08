@@ -17,10 +17,13 @@ import {
   addQuestion,
   lookupAnswer,
   setJd,
+  markClosed,
+  setApplyUrl,
 } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { draftSessionAnswers, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields } from "./apply.server";
+import { resolveLive } from "./scrape.server";
 
 const SHOT_DIR = resolve(process.cwd(), "data", "apply");
 const UA =
@@ -100,6 +103,21 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
     const sjId = addSessionJob(sessionId, job.id);
     addLog(sessionId, "action", { jobId: job.id, text: `Opening ${job.company} — ${job.role}` });
     try {
+      // 0) FRESHNESS GATE: confirm the posting is still live (follow redirects to the
+      // final employer page) before spending any work on it. Closed → mark + skip.
+      if (browser) {
+        const live = await resolveLive(browser, job.apply_url, (s) => addLog(sessionId, "action", { jobId: job.id, text: s }));
+        if (!live.ok) {
+          markClosed(job.id, live.reason);
+          addLog(sessionId, "note", { jobId: job.id, text: `SKIPPED — posting no longer open (${live.reason}); marked closed.` });
+          updateSessionJob(sjId, { status: "skipped", ended_at: new Date().toISOString() });
+          processed++;
+          updateSession(sessionId, { processed, needs_input: needsInputTotal });
+          continue;
+        }
+        if (live.finalUrl && live.finalUrl !== job.apply_url) { setApplyUrl(job.id, live.finalUrl); job.apply_url = live.finalUrl; }
+      }
+
       // 1) screenshot the application page + (optionally) capture the JD
       let shot: string | undefined;
       let fields: any[] = [];

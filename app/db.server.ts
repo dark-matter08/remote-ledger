@@ -108,6 +108,18 @@ export function setJd(id: string, jd: string, html?: string | null): void {
   }
 }
 
+// Mark a posting closed/dead (found unreachable or "no longer open"). Drops it from
+// the active ledger and records why, so auto-apply never targets it again.
+export function markClosed(id: string, reason: string): void {
+  getDb().prepare("UPDATE jobs SET active=0, updated_at=? WHERE id=?").run(new Date().toISOString(), id);
+  try { addEvent(id, "posting_closed", { reason }); } catch {}
+}
+
+// Correct a job's apply URL to the resolved final employer page.
+export function setApplyUrl(id: string, applyUrl: string): void {
+  getDb().prepare("UPDATE jobs SET apply_url=?, updated_at=? WHERE id=?").run(applyUrl, new Date().toISOString(), id);
+}
+
 export function updateNotes(id: string, notes: string): boolean {
   const info = getDb()
     .prepare("UPDATE jobs SET notes=?, updated_at=? WHERE id=?")

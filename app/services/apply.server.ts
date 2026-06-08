@@ -3,9 +3,10 @@
 // Safety: this never submits an application. It (1) reads the form to draft answers,
 // and (2) optionally opens a VISIBLE browser and prefills identity fields, resume
 // upload, and drafted answers — then leaves it for you to review and submit.
-import { getJob, getMeta, setMeta, addEvent, jobApplyActivity, answerBank } from "../db.server";
+import { getJob, getMeta, setMeta, addEvent, markClosed, setApplyUrl, jobApplyActivity, answerBank } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { latestVersion } from "../resume/versions.server";
+import { verifyApplyUrl } from "./scrape.server";
 import type { ResumeContact } from "../resume/types";
 
 const UA =
@@ -154,6 +155,18 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
   const at = new Date().toISOString();
   const job = getJob(jobId);
   if (!job) return { ok: false, filled: [], unfilled: [], ats: "", confidence: 0, at, message: "job not found" };
+
+  // FRESHNESS GATE: never auto-apply to a posting that's closed/gone. Re-verify the
+  // link is still a live, open application right now (following any redirect to the
+  // final employer page). If it's dead, mark the job closed and refuse.
+  const live = await verifyApplyUrl(job.apply_url);
+  if (!live.ok) {
+    markClosed(jobId, live.reason);
+    return { ok: false, filled: [], unfilled: [], ats: detectAts(job.apply_url), confidence: 0, at,
+      message: `This posting is no longer applyable (${live.reason}). I've marked it closed so it won't show up for auto-apply again.` };
+  }
+  if (live.finalUrl && live.finalUrl !== job.apply_url) { setApplyUrl(jobId, live.finalUrl); job.apply_url = live.finalUrl; }
+
   const ats = detectAts(job.apply_url);
   const contact = getDefaultProfile()?.data.contact || { name: "" };
   const pdfPath = latestVersion(jobId, "resume")?.pdf_path || null;
