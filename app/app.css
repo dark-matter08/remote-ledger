@@ -984,6 +984,17 @@ table.ledger-table tr:hover td { background: var(--card); }
 .kb-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .kb-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 1px 6px; }
 
+/* ---- custom confirm modal ---- */
+.modal-scrim { position: fixed; inset: 0; z-index: 200; background: rgba(26, 23, 20, 0.45); display: grid; place-items: center; padding: 24px; animation: modal-fade 0.12s ease-out; }
+.modal { width: min(420px, 100%); background: var(--paper); border: 1.5px solid var(--ink); box-shadow: 7px 7px 0 -1px rgba(26, 23, 20, 0.22); padding: 22px 24px; animation: modal-rise 0.14s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.modal-title { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0 0 8px; color: var(--ink); }
+.modal-body { font-family: var(--serif); font-size: 15px; line-height: 1.5; color: var(--ink-soft); margin: 0 0 20px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.btn.danger { background: var(--vermillion); border-color: var(--vermillion); color: var(--paper); }
+.btn.danger:hover { background: var(--ink); border-color: var(--ink); }
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
 /* ---- server-side folder picker ---- */
 .dirpick { position: relative; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .dirpick-input { flex: 1; min-width: 240px; }

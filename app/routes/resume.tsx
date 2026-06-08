@@ -2,6 +2,7 @@ import { Form, Link, useNavigation } from "react-router";
 import type { Route } from "./+types/resume";
 import { Shell } from "../components/Shell";
 import { FilePicker } from "../components/FilePicker";
+import { ConfirmForm } from "../components/ConfirmForm";
 import {
   listProfiles,
   saveProfile,
@@ -132,10 +133,10 @@ export default function ResumePage({ loaderData, actionData }: Route.ComponentPr
               {!p.is_default && (
                 <Form method="post"><input type="hidden" name="intent" value="default" /><input type="hidden" name="id" value={p.id} /><button className="ghost-btn">Make default</button></Form>
               )}
-              <Form method="post" onSubmit={(e) => { if (!confirm("Delete this profile?")) e.preventDefault(); }}>
+              <ConfirmForm method="post" title="Delete profile?" confirm={`"${p.name}" and its tailored versions will be deleted. This can't be undone.`} confirmLabel="Delete">
                 <input type="hidden" name="intent" value="delete" /><input type="hidden" name="id" value={p.id} />
                 <button className="ghost-btn">Delete</button>
-              </Form>
+              </ConfirmForm>
             </div>
             <details>
               <summary style={{ cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--ink-faint)" }}>

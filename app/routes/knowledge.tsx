@@ -4,6 +4,7 @@ import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
 import { DirPicker } from "../components/DirPicker";
+import { ConfirmForm } from "../components/ConfirmForm";
 import { GraphView } from "../components/graph/GraphView";
 import { buildGraph } from "../services/graph.server";
 import {
@@ -206,7 +207,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                       <button className="back-link" disabled={busy}>set</button>
                     </Form>
                     <Form method="post"><input type="hidden" name="intent" value="kb-rescan" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy || kb.scanning}>rescan</button></Form>
-                    <Form method="post" onSubmit={(e) => { if (!confirm("Stop tracking this folder? (its findings stay)")) e.preventDefault(); }}><input type="hidden" name="intent" value="kb-remove-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy}>remove</button></Form>
+                    <ConfirmForm method="post" title="Stop tracking folder?" confirm="This folder won't be re-scanned, but everything it already found stays in your knowledge base." confirmLabel="Stop tracking"><input type="hidden" name="intent" value="kb-remove-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy}>remove</button></ConfirmForm>
                   </div>
                 </div>
               ))}
@@ -271,10 +272,10 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                 <strong>{it.title}</strong>
                 <span className="badge off">{it.kind}</span>
                 <span className="hint" style={{ margin: 0 }}>{it.source}</span>
-                <Form method="post" style={{ marginLeft: "auto" }} onSubmit={(e) => { if (!confirm("Remove this from the knowledge base?")) e.preventDefault(); }}>
+                <ConfirmForm method="post" style={{ marginLeft: "auto" }} title="Remove from knowledge base?" confirm={`"${it.title}" and its drafted bullets/questions will be removed.`} confirmLabel="Remove">
                   <input type="hidden" name="intent" value="kb-delete" /><input type="hidden" name="id" value={it.id} />
                   <button className="back-link">remove</button>
-                </Form>
+                </ConfirmForm>
               </div>
               <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
               {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
