@@ -32,8 +32,10 @@ company careers page for a single role), not to a network's homepage or a search
 - Every link you return will be re-opened and verified by the system; fabricated or dead
   links are discarded and make the whole result worthless. 6 verified jobs beat 20 guesses.
 
-⏱ STRICT BUDGET: ~{{budget_min}} minutes and AT MOST {{max_actions}} web actions
-(searches + fetches combined). You will be hard-stopped at the deadline.
+⏱ BUDGET: aim for ~{{budget_min}} minutes, and AT MOST {{max_actions}} web actions
+(searches + fetches combined). The action cap is your real limit — it's fine to run a
+little past the minutes while you finish your actions and write the JSON. (The system
+only force-stops a true runaway at 2× the time.)
 
 Because you cannot perceive elapsed time, govern yourself by ACTION COUNT, not the clock:
 - Count every WebSearch and WebFetch. Once you reach {{max_actions}} actions, STOP

@@ -10,7 +10,6 @@ import { streamClaude } from "../llm/adapters.server";
 import { getSetting } from "../sqlite.server";
 import {
   upsertJobs,
-  deactivateMissing,
   setMeta,
   getMeta,
   setJd,
@@ -114,14 +113,17 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       if (runner === "claude-cli") {
         // stream so the shell shows each web search / step live
         const cliModel = getSetting("model_claude-cli") || "";
-        L("step", `Invoking Claude Code (streaming · ${cliModel || "default"} · web search · ${timeoutMin} min budget)…`);
+        L("step", `Invoking Claude Code (streaming · ${cliModel || "default"} · web search · budget ${timeoutMin}m → ${maxActions} actions; hard stop only at ${timeoutMin * 2}m)…`);
         const t0 = Date.now();
         const sr = await streamClaude({
           prompt,
           allowWeb: true,
           model: cliModel || undefined,
-          // +30s grace beyond the stated budget so a final JSON flush isn't cut off
-          timeoutMs: timeoutMin * 60000 + 30000,
+          // The action cap (in the prompt) governs how long the agent works; the agent
+          // may run a little past the nominal budget while finishing its actions and
+          // writing JSON — that's fine, we DON'T interrupt it. This timeout is only a
+          // runaway safety net at 2× the budget.
+          timeoutMs: timeoutMin * 2 * 60000,
           signal: ac.signal,
           onEvent: (ev: any) => {
             if (ev.type === "assistant" && ev.message?.content) {
@@ -178,9 +180,11 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
         try { setJd(jobId(a.job.company, a.job.role), a.jd); saved++; } catch {}
       }
       totals.scraped = saved;
-      L("result", `Saved ${res.inserted} new, ${res.updated} updated · ${saved} JDs captured.`);
+      L("result", `Saved ${res.inserted} new, ${res.updated} updated · ${saved} JDs captured. Existing jobs are kept (add/update only).`);
 
-      deactivateMissing(now);
+      // NOTE: we intentionally do NOT deactivate jobs missing from this run — each crawl
+      // only adds new and refreshes existing. Stale roles leave via the Expired tab
+      // (closes_at) or manual withdraw, never by being wiped on the next crawl.
       const prev = getMeta("last_crawl");
       if (prev) setMeta("prev_crawl", prev);
       setMeta("last_crawl", now);
