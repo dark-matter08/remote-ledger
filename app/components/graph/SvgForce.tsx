@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY } from "d3-force";
 import type { GraphData, GraphNode } from "./palette";
 import { TYPE_COLOR, themeColors } from "./palette";
 
-// Hand-rolled SVG engine: d3-force simulation, custom pan/zoom/drag. No canvas.
-export function SvgForce({ data, width, height, dim, onPick }: {
-  data: GraphData; width: number; height: number; dim: Set<string> | null; onPick: (n: GraphNode | null) => void;
+// Hand-rolled SVG engine: d3-force simulation, custom pan/zoom/drag, auto-fit.
+export function SvgForce({ data, width, height, dim, charge, linkDist, fitNonce, onPick }: {
+  data: GraphData; width: number; height: number; dim: Set<string> | null;
+  charge: number; linkDist: number; fitNonce: number; onPick: (n: GraphNode | null) => void;
 }) {
   const nodesRef = useRef<any[]>([]);
   const linksRef = useRef<any[]>([]);
@@ -15,31 +16,58 @@ export function SvgForce({ data, width, height, dim, onPick }: {
   const svgRef = useRef<SVGSVGElement>(null);
   const theme = themeColors();
 
-  // (re)build the simulation when the node/link set changes
+  // resolve line endpoints against the CURRENT node objects by id — never trust the
+  // forceLink-mutated reference (StrictMode/HMR can leave it bound to a stale array)
+  const byId = useMemo(() => new Map(nodesRef.current.map((n) => [n.id, n])), [nodesRef.current]);
+
+  function fit() {
+    const ns = nodesRef.current.filter((n) => n.x != null);
+    if (!ns.length || !width) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of ns) { minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x); minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y); }
+    const pad = 50, gw = maxX - minX || 1, gh = maxY - minY || 1;
+    const k = Math.min(2.5, Math.max(0.2, Math.min((width - pad * 2) / gw, (height - pad * 2) / gh)));
+    setView({ k, tx: width / 2 - ((minX + maxX) / 2) * k, ty: height / 2 - ((minY + maxY) / 2) * k });
+  }
+
+  // (re)build the simulation when the node/link set or size changes
   useEffect(() => {
     const nodes = data.nodes.map((n) => ({ ...n }));
-    const idmap = new Map(nodes.map((n) => [n.id, n]));
-    const links = data.links.filter((l) => idmap.has(idof(l.source)) && idmap.has(idof(l.target))).map((l) => ({ ...l }));
+    const ids = new Set(nodes.map((n) => n.id));
+    const links = data.links.filter((l) => ids.has(idof(l.source)) && ids.has(idof(l.target))).map((l) => ({ source: idof(l.source), target: idof(l.target), kind: l.kind }));
     nodesRef.current = nodes; linksRef.current = links;
     const sim = forceSimulation(nodes)
-      .force("charge", forceManyBody().strength(-34).distanceMax(260))
-      .force("link", forceLink(links).id((d: any) => d.id).distance(38).strength(0.5))
+      .force("charge", forceManyBody().strength(charge).distanceMax(280))
+      .force("link", forceLink(links).id((d: any) => d.id).distance(linkDist).strength(0.5))
       .force("center", forceCenter(width / 2, height / 2))
       .force("x", forceX(width / 2).strength(0.06))
       .force("y", forceY(height / 2).strength(0.06))
       .force("collide", forceCollide().radius((d: any) => radius(d) + 2))
-      .on("tick", () => setTick((t) => t + 1));
+      .on("tick", () => setTick((t) => t + 1))
+      .on("end", () => fit());
     simRef.current = sim;
-    return () => { sim.stop(); };
+    const fitTimer = setTimeout(fit, 1400);
+    return () => { clearTimeout(fitTimer); sim.stop(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, width, height]);
+
+  // live force tuning (sliders)
+  useEffect(() => {
+    const sim = simRef.current; if (!sim) return;
+    sim.force("charge")?.strength(charge);
+    sim.force("link")?.distance(linkDist);
+    sim.alpha(0.6).restart();
+  }, [charge, linkDist]);
+
+  // external Fit trigger
+  useEffect(() => { if (fitNonce) fit(); /* eslint-disable-next-line */ }, [fitNonce]);
 
   // ---- pan / zoom ----
   function onWheel(e: React.WheelEvent) {
-    e.preventDefault();
     const rect = svgRef.current!.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     setView((v) => {
-      const k = Math.min(6, Math.max(0.2, v.k * (e.deltaY < 0 ? 1.1 : 0.9)));
+      const k = Math.min(6, Math.max(0.15, v.k * (e.deltaY < 0 ? 1.1 : 0.9)));
       return { k, tx: mx - ((mx - v.tx) / v.k) * k, ty: my - ((my - v.ty) / v.k) * k };
     });
   }
@@ -62,15 +90,16 @@ export function SvgForce({ data, width, height, dim, onPick }: {
       onWheel={onWheel} onPointerDown={(e) => onDown(e)} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
       <g transform={`translate(${view.tx},${view.ty}) scale(${view.k})`}>
         {linksRef.current.map((l, i) => {
-          const s = l.source, t = l.target; if (s?.x == null || t?.x == null) return null;
+          const s = byId.get(idof(l.source)), t = byId.get(idof(l.target));
+          if (!s || !t || s.x == null || t.x == null) return null;
           const lit = !dim || (dim.has(s.id) && dim.has(t.id));
-          return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={theme.ruleFaint} strokeWidth={lit ? 1.2 : 0.5} opacity={lit ? 0.95 : 0.14} />;
+          return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={theme.ruleFaint} strokeWidth={lit ? 1.2 : 0.5} opacity={lit ? 0.9 : 0.12} />;
         })}
         {nodesRef.current.map((n) => {
           const lit = !dim || dim.has(n.id);
           const r = radius(n);
           return (
-            <g key={n.id} transform={`translate(${n.x || 0},${n.y || 0})`} opacity={lit ? 1 : 0.18}
+            <g key={n.id} transform={`translate(${n.x || 0},${n.y || 0})`} opacity={lit ? 1 : 0.16}
               style={{ cursor: "pointer" }} onPointerDown={(e) => { e.stopPropagation(); onDown(e, n); }}
               onClick={(e) => { e.stopPropagation(); onPick(n); }}>
               <circle r={r} fill={TYPE_COLOR[n.type as keyof typeof TYPE_COLOR]} stroke={n.type === "self" ? theme.ink : "none"} strokeWidth={1.5} />
@@ -85,5 +114,5 @@ export function SvgForce({ data, width, height, dim, onPick }: {
   );
 }
 
-const idof = (v: any) => (typeof v === "object" ? v.id : v);
+const idof = (v: any) => (typeof v === "object" && v ? v.id : v);
 const radius = (n: any) => Math.max(3, Math.sqrt(n.val) * 2.2);

@@ -3,11 +3,14 @@ import type { GraphData, GraphNode } from "./palette";
 import { TYPE_COLOR, themeColors } from "./palette";
 
 // Canvas engine: react-force-graph-2d, loaded client-only (it touches window at import).
-export function ForceCanvas({ data, width, height, dim, onPick }: {
+export function ForceCanvas({ data, width, height, dim, charge, linkDist, fitNonce, onPick }: {
   data: GraphData;
   width: number;
   height: number;
   dim: Set<string> | null;        // node ids to keep bright (neighbors of selected); null = all bright
+  charge: number;
+  linkDist: number;
+  fitNonce: number;
   onPick: (n: GraphNode | null) => void;
 }) {
   const [FG, setFG] = useState<any>(null);
@@ -20,6 +23,17 @@ export function ForceCanvas({ data, width, height, dim, onPick }: {
     return () => { alive = false; };
   }, []);
 
+  // live force tuning from the sliders
+  useEffect(() => {
+    const fg = ref.current; if (!fg) return;
+    fg.d3Force("charge")?.strength(charge);
+    fg.d3Force("link")?.distance(linkDist);
+    fg.d3ReheatSimulation();
+  }, [charge, linkDist, FG]);
+
+  // external Fit trigger
+  useEffect(() => { ref.current?.zoomToFit(400, 50); }, [fitNonce]);
+
   if (!FG) return <div className="graph-loading">loading graph engine…</div>;
 
   return (
@@ -30,6 +44,7 @@ export function ForceCanvas({ data, width, height, dim, onPick }: {
       height={height}
       backgroundColor={theme.paper}
       cooldownTicks={120}
+      onEngineStop={() => ref.current?.zoomToFit(400, 50)}
       nodeRelSize={5}
       nodeVal={(n: any) => n.val}
       linkColor={() => theme.ruleFaint}
