@@ -27,6 +27,7 @@ export function getDb(): Database.Database {
   // migrations for DBs created before a column existed
   ensureColumn(db, "jobs", "jd", "TEXT");
   ensureColumn(db, "jobs", "jd_html", "TEXT"); // sanitized rich JD (rendered in Heritage Press)
+  try { ensureColumn(db, "email_messages", "interview_at", "TEXT"); } catch {} // phase-2 (table may not exist yet on very old DBs)
   // reconcile runs orphaned by a previous process: this runs once per process at
   // connection creation, before any new crawl/session can start, so it never
   // touches a run that's live in THIS process.

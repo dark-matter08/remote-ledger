@@ -8,7 +8,7 @@ import {
   listAccounts, addAccount, removeAccount, setAccountInterval,
   pendingEmails, recentEmails, startSync, applyEmailUpdate, dismissEmail,
 } from "../services/email.server";
-import { getDb } from "../sqlite.server";
+import { getDb, getSetting, setSetting } from "../sqlite.server";
 import { availableRunners } from "../llm/runner.server";
 
 export function meta(_: Route.MetaArgs) {
@@ -25,6 +25,8 @@ export async function loader() {
     recent: recentEmails(),
     syncing: !!db.prepare("SELECT 1 FROM crawl_runs WHERE type='email' AND status='running' LIMIT 1").get(),
     lastEmailRun: db.prepare("SELECT id,status FROM crawl_runs WHERE type='email' ORDER BY id DESC LIMIT 1").get() as any,
+    autoApply: getSetting("email_autoapply") === "true",
+    autoMin: getSetting("email_autoapply_min") || "85",
   };
 }
 
@@ -51,13 +53,18 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "interval") { setAccountInterval(Number(form.get("id")), Number(form.get("interval") || "0") || 0); return { ok: true, msg: "Auto-sync interval updated." }; }
   if (intent === "apply") { const r = applyEmailUpdate(Number(form.get("id"))); return r.ok ? { ok: true, msg: r.msg } : { error: r.msg }; }
   if (intent === "dismiss") { dismissEmail(Number(form.get("id"))); return { ok: true, msg: "Dismissed." }; }
+  if (intent === "automation") {
+    setSetting("email_autoapply", form.get("autoapply") ? "true" : "false");
+    setSetting("email_autoapply_min", String(Number(form.get("autoMin") || "85") || 85));
+    return { ok: true, msg: "Automation settings saved." };
+  }
   return { ok: true };
 }
 
 const CAT_BADGE: Record<string, string> = { offer: "ok", interview: "ok", screening: "warn", recruiter: "warn", receipt: "off", rejection: "on", other: "off" };
 
 export default function Inbox({ loaderData, actionData }: Route.ComponentProps) {
-  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun } = loaderData;
+  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();
@@ -88,7 +95,9 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
       <div className="panel">
         <h3>Connect a mailbox (IMAP){syncing ? <span className="badge off">syncing…</span> : null}</h3>
         <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-          Use an <strong>app password</strong> (Gmail: enable 2FA → App passwords, and IMAP in settings; Fastmail/others: create an app password). Never your main account password.
+          Use an <strong>app password</strong>, never your main account password. Gmail: enable 2FA, then create one at{" "}
+          <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" className="entry-title-link">myaccount.google.com/apppasswords</a>{" "}
+          (and turn on IMAP in Gmail settings). Fastmail/others: create an app password in your account settings.
         </p>
         <Form method="post">
           <input type="hidden" name="intent" value="add-account" />
@@ -139,6 +148,24 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
           </div>
         )}
       </div>
+
+      {/* automation */}
+      {accounts.length > 0 && (
+        <div className="panel">
+          <h3>Automation</h3>
+          <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
+            With auto-apply on, high-confidence matches advance the matched application's <strong>stage</strong> automatically during sync (and set an interview reminder if a time is found). It only moves pipeline stages — it never applies to a job or sends anything, and every move is logged and reversible. Off by default; review everything yourself.
+          </p>
+          <Form method="post" className="row2">
+            <input type="hidden" name="intent" value="automation" />
+            <div className="field" style={{ display: "flex", alignItems: "flex-end" }}>
+              <label style={{ margin: 0 }}><input type="checkbox" name="autoapply" defaultChecked={autoApply} /> Auto-apply high-confidence stage updates</label>
+            </div>
+            <div className="field"><label>Minimum confidence</label><input type="number" name="autoMin" min="50" max="100" defaultValue={autoMin} /></div>
+            <div><button className="btn" disabled={busy}>Save automation</button></div>
+          </Form>
+        </div>
+      )}
 
       {/* review queue */}
       <div className="panel">

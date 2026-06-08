@@ -289,6 +289,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
   proposed_stage TEXT,                       -- suggested pipeline stage (nullable)
   summary        TEXT,
   snippet        TEXT,                       -- short redacted excerpt
+  interview_at   TEXT,                       -- extracted interview datetime (ISO), if any
   status         TEXT NOT NULL DEFAULT 'new',-- new | applied | dismissed
   created_at     TEXT NOT NULL
 );

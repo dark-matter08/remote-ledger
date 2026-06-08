@@ -4,7 +4,7 @@ import { ForceCanvas } from "./ForceCanvas";
 import { SvgForce } from "./SvgForce";
 import { TYPE_COLOR, TYPE_LABEL, type GraphData, type GraphNode, type NodeType } from "./palette";
 
-const ALL_TYPES: NodeType[] = ["self", "skill", "project", "job", "company", "source", "stage", "qa"];
+const ALL_TYPES: NodeType[] = ["self", "skill", "project", "job", "company", "source", "stage", "qa", "contact"];
 
 export function GraphView({ data }: { data: GraphData }) {
   const [engine, setEngine] = useState<"canvas" | "svg">("canvas");

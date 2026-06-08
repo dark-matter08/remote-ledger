@@ -9,9 +9,9 @@
 //    pipeline until you approve it. Email never triggers auto-apply or any outbound action.
 //  - Recommended setup: a DEDICATED job-application mailbox / alias, so this never sees
 //    your primary inbox.
-import { getDb } from "../sqlite.server";
+import { getDb, getSetting } from "../sqlite.server";
 import { setSecret, getSecret, deleteSecret } from "../secrets.server";
-import { createCrawlRun, crawlLog, updateCrawlRun, setStage, addEvent, getJob } from "../db.server";
+import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addEvent, getJob } from "../db.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
 import { STAGES, type Stage } from "../stages";
 
@@ -51,17 +51,19 @@ export function recentEmails(limit = 20): EmailMessage[] {
   return getDb().prepare("SELECT * FROM email_messages WHERE status!='new' ORDER BY id DESC LIMIT ?").all(limit) as any[];
 }
 
-// Apply a reviewed email's proposed stage change to its matched application.
-export function applyEmailUpdate(msgId: number): { ok: boolean; msg: string } {
-  const m = getDb().prepare("SELECT * FROM email_messages WHERE id=?").get(msgId) as EmailMessage | undefined;
+// Apply a reviewed email's proposed stage change to its matched application, and set
+// an interview reminder if the email carried a date/time.
+export function applyEmailUpdate(msgId: number, auto = false): { ok: boolean; msg: string } {
+  const m = getDb().prepare("SELECT * FROM email_messages WHERE id=?").get(msgId) as (EmailMessage & { interview_at?: string | null }) | undefined;
   if (!m) return { ok: false, msg: "message not found" };
   if (!m.job_id || !m.proposed_stage) { getDb().prepare("UPDATE email_messages SET status='applied' WHERE id=?").run(msgId); return { ok: true, msg: "Noted (no pipeline change)." }; }
   if (!STAGES.includes(m.proposed_stage as Stage)) return { ok: false, msg: "invalid stage" };
   if (!getJob(m.job_id)) return { ok: false, msg: "matched job no longer exists" };
-  setStage(m.job_id, m.proposed_stage as Stage, { note: `From email: ${m.subject || ""}`.slice(0, 200) });
-  addEvent(m.job_id, "email_update", { category: m.category, from: m.from_addr, subject: m.subject });
+  setStage(m.job_id, m.proposed_stage as Stage, { note: `${auto ? "Auto from email" : "From email"}: ${m.subject || ""}`.slice(0, 200) });
+  if (m.interview_at) setNextAction(m.job_id, `Interview — ${m.from_name || m.from_addr || "recruiter"}`, m.interview_at);
+  addEvent(m.job_id, "email_update", { category: m.category, from: m.from_addr, subject: m.subject, interviewAt: m.interview_at || null, auto });
   getDb().prepare("UPDATE email_messages SET status='applied' WHERE id=?").run(msgId);
-  return { ok: true, msg: `Moved to ${m.proposed_stage}.` };
+  return { ok: true, msg: `Moved to ${m.proposed_stage}${m.interview_at ? " + interview reminder set" : ""}.` };
 }
 export function dismissEmail(msgId: number): void {
   getDb().prepare("UPDATE email_messages SET status='dismissed' WHERE id=?").run(msgId);
@@ -75,11 +77,12 @@ const CATEGORY_STAGE: Record<string, Stage | null> = {
   interview: "interview", offer: "offer", rejection: "rejected", other: null,
 };
 
-async function classify(from: string, subject: string, body: string): Promise<any> {
-  const prompt = `Classify this email for a job-application tracker.\n\n--- BEGIN UNTRUSTED EMAIL ---\nFrom: ${from}\nSubject: ${subject}\n\n${body.slice(0, 4000)}\n--- END UNTRUSTED EMAIL ---\n\nReturn JSON:\n{\n  "jobRelated": true|false,\n  "category": "receipt|recruiter|screening|interview|offer|rejection|other",\n  "company": "employer name if identifiable, else \"\"",\n  "role": "role title if mentioned, else \"\"",\n  "confidence": 0-100,\n  "summary": "one factual sentence on what this email is"\n}`;
+async function classify(from: string, subject: string, body: string, todayISO: string): Promise<any> {
+  const prompt = `Classify this email for a job-application tracker. Today is ${todayISO}.\n\n--- BEGIN UNTRUSTED EMAIL ---\nFrom: ${from}\nSubject: ${subject}\n\n${body.slice(0, 4000)}\n--- END UNTRUSTED EMAIL ---\n\nReturn JSON:\n{\n  "jobRelated": true|false,\n  "category": "receipt|recruiter|screening|interview|offer|rejection|other",\n  "company": "employer name if identifiable, else \"\"",\n  "role": "role title if mentioned, else \"\"",\n  "interviewAt": "ISO 8601 datetime of a scheduled interview/call if one is clearly stated, else \"\"",\n  "confidence": 0-100,\n  "summary": "one factual sentence on what this email is"\n}`;
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 400, temperature: 0 });
   return tryParseJson(r.text) || {};
 }
+const parseISO = (v: any): string | null => { if (!v || typeof v !== "string") return null; const t = Date.parse(v); return Number.isNaN(t) ? null : new Date(t).toISOString(); };
 
 const norm = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 function matchJob(company: string, role: string): string | null {
@@ -121,7 +124,11 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
   const { simpleParser } = await import("mailparser");
   const client = new ImapFlow({ host: acct.host, port: acct.port, secure: !!acct.secure, auth: { user: acct.username, pass }, logger: false });
 
-  let maxUid = acct.last_uid, found = 0, matched = 0, received = 0;
+  const autoOn = getSetting("email_autoapply") === "true";
+  const autoMin = Math.max(50, Number(getSetting("email_autoapply_min") || "85") || 85);
+  if (autoOn) L("reasoning", `Auto-apply ON for matches ≥ ${autoMin}% confidence (stage moves only; reversible).`);
+  const todayISO = NOW().slice(0, 10);
+  let maxUid = acct.last_uid, found = 0, matched = 0, received = 0, autoApplied = 0;
   try {
     await client.connect();
     const lock = await client.getMailboxLock(acct.mailbox, { readOnly: true } as any);
@@ -147,17 +154,25 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
         L("step", `reading "${(subject || "(no subject)").slice(0, 60)}" from ${fromAddr} → classifying…`);
 
         let c: any = {};
-        try { c = await classify(`${fromName} <${fromAddr}>`, subject, text); } catch (e: any) { L("error", `classify failed: ${String(e?.message || e).slice(0, 60)}`); }
+        try { c = await classify(`${fromName} <${fromAddr}>`, subject, text, todayISO); } catch (e: any) { L("error", `classify failed: ${String(e?.message || e).slice(0, 60)}`); }
         if (!c.jobRelated) { L("step", `· not job-related — skipped`); continue; }
 
         const jobId = matchJob(c.company || "", c.role || "");
         const stage = jobId ? CATEGORY_STAGE[c.category] ?? null : null;
-        db.prepare(
-          "INSERT OR IGNORE INTO email_messages (account_id,uid,from_addr,from_name,subject,sent_at,job_id,category,confidence,proposed_stage,summary,snippet,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ).run(acct.id, uid, fromAddr, fromName, subject, sentAt, jobId, c.category || "other", Number(c.confidence) || 0, stage, (c.summary || "").slice(0, 400), text.replace(/\s+/g, " ").slice(0, 240), "new", NOW());
+        const interviewAt = parseISO(c.interviewAt);
+        const conf = Number(c.confidence) || 0;
+        const info = db.prepare(
+          "INSERT OR IGNORE INTO email_messages (account_id,uid,from_addr,from_name,subject,sent_at,job_id,category,confidence,proposed_stage,interview_at,summary,snippet,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        ).run(acct.id, uid, fromAddr, fromName, subject, sentAt, jobId, c.category || "other", conf, stage, interviewAt, (c.summary || "").slice(0, 400), text.replace(/\s+/g, " ").slice(0, 240), "new", NOW());
         found++;
         if (jobId) matched++;
-        L("result", `✓ ${c.category || "other"}${jobId ? ` → matched ${jobId}${stage ? ` (suggest: ${stage})` : ""}` : " (no job match)"}`);
+        const newId = Number(info.lastInsertRowid);
+        // opt-in auto-apply for high-confidence, matched stage moves (reversible; never auto-applies an application)
+        if (autoOn && newId && jobId && stage && conf >= autoMin) {
+          const r = applyEmailUpdate(newId, true);
+          if (r.ok) { autoApplied++; L("result", `✓ ${c.category} → ${jobId} · AUTO-APPLIED (${conf}%): ${r.msg}`); continue; }
+        }
+        L("result", `✓ ${c.category || "other"}${jobId ? ` → matched ${jobId}${stage ? ` (suggest: ${stage})` : ""}` : " (no job match)"}${interviewAt ? ` · interview ${interviewAt.slice(0, 16).replace("T", " ")}` : ""}`);
       }
     } finally {
       lock.release();
@@ -171,8 +186,8 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
   }
 
   db.prepare("UPDATE email_accounts SET last_uid=?, last_synced_at=? WHERE id=?").run(maxUid, NOW(), acct.id);
-  L("note", `Sync complete — scanned ${received}, queued ${found} job email(s), ${matched} matched to an application. Review them in Application Mail.`);
-  updateCrawlRun(runId, { status: "done", ended_at: NOW(), received, scraped: found, inserted: matched });
+  L("note", `Sync complete — scanned ${received}, queued ${found} job email(s), ${matched} matched${autoApplied ? `, ${autoApplied} auto-applied` : ""}. Review the rest in Application Mail.`);
+  updateCrawlRun(runId, { status: "done", ended_at: NOW(), received, scraped: found, inserted: matched, updated: autoApplied });
 }
 
 export function runDueEmailSync(): void {

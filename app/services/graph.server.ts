@@ -6,7 +6,7 @@ import { getDb } from "../sqlite.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { kbItems, kbOpenQuestions } from "./kb.server";
 
-export type NodeType = "self" | "skill" | "project" | "job" | "company" | "source" | "stage" | "qa";
+export type NodeType = "self" | "skill" | "project" | "job" | "company" | "source" | "stage" | "qa" | "contact";
 
 export interface GraphNode {
   id: string;
@@ -103,6 +103,20 @@ export function buildGraph(): GraphData {
       if (tokenRe(sk.label).test(hay)) { link(sk.id, jid, "needs"); matched++; }
     }
   }
+
+  // ---- recruiter / contact people from matched application mail ----
+  try {
+    const contacts = db.prepare(
+      "SELECT from_addr, from_name, job_id, COUNT(*) n, MAX(category) category FROM email_messages WHERE job_id IS NOT NULL AND from_addr IS NOT NULL AND from_addr<>'' GROUP BY from_addr, job_id"
+    ).all() as any[];
+    for (const c of contacts) {
+      const jid = `job:${c.job_id}`;
+      if (!nodes.has(jid)) continue;
+      const cid = `contact:${norm(c.from_addr)}`;
+      if (!nodes.has(cid)) addNode({ id: cid, type: "contact", label: c.from_name || c.from_addr, val: 2, detail: `${c.from_addr}${c.category ? ` · ${c.category}` : ""}` });
+      link(cid, jid, "contact");
+    }
+  } catch { /* email tables may not exist on old DBs */ }
 
   const counts: Record<string, number> = {};
   for (const n of nodes.values()) counts[n.type] = (counts[n.type] || 0) + 1;

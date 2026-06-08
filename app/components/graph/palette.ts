@@ -1,5 +1,5 @@
 // Shared types + Heritage-Press earth-tone palette for both graph engines.
-export type NodeType = "self" | "skill" | "project" | "job" | "company" | "source" | "stage" | "qa";
+export type NodeType = "self" | "skill" | "project" | "job" | "company" | "source" | "stage" | "qa" | "contact";
 export interface GraphNode { id: string; type: NodeType; label: string; val: number; href?: string; detail?: string; meta?: Record<string, any>; x?: number; y?: number; }
 export interface GraphLink { source: any; target: any; kind: string }
 export interface GraphData { nodes: GraphNode[]; links: GraphLink[]; counts?: Record<string, number> }
@@ -14,11 +14,12 @@ export const TYPE_COLOR: Record<NodeType, string> = {
   source: "#9a8460",   // taupe
   stage: "#a64b3a",    // sienna
   qa: "#8c7e68",       // faint ink
+  contact: "#7a5c8a",  // muted plum — recruiters/people
 };
 
 export const TYPE_LABEL: Record<NodeType, string> = {
   self: "You", skill: "Skills", project: "Projects", job: "Jobs",
-  company: "Companies", source: "Sources", stage: "Stages", qa: "Answers",
+  company: "Companies", source: "Sources", stage: "Stages", qa: "Answers", contact: "Contacts",
 };
 
 export function themeColors() {
