@@ -91,7 +91,7 @@ export function SvgForce({ data, width, height, dim, charge, linkDist, fitNonce,
       <g transform={`translate(${view.tx},${view.ty}) scale(${view.k})`}>
         {linksRef.current.map((l, i) => {
           const s = byId.get(idof(l.source)), t = byId.get(idof(l.target));
-          if (!s || !t || s.x == null || t.x == null) return null;
+          if (!s || !t || !Number.isFinite(s.x) || !Number.isFinite(s.y) || !Number.isFinite(t.x) || !Number.isFinite(t.y)) return null;
           const lit = !dim || (dim.has(s.id) && dim.has(t.id));
           return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={theme.ruleFaint} strokeWidth={lit ? 1.2 : 0.5} opacity={lit ? 0.9 : 0.12} />;
         })}

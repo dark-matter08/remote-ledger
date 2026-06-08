@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Form, Link, useNavigation, useRevalidator } from "react-router";
 import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
-import { FolderScan } from "../components/FolderScan";
+import { Select } from "../components/Select";
 import { GraphView } from "../components/graph/GraphView";
 import { buildGraph } from "../services/graph.server";
 import {
@@ -11,8 +11,12 @@ import {
   kbSuggestions,
   kbScans,
   activeScan,
+  listSources,
+  addSource,
+  rescanSource,
+  removeSource,
+  setSourceInterval,
   addManualNote,
-  startScanFromUpload,
   answerKbQuestion,
   redraftItem,
   acceptSuggestion,
@@ -36,6 +40,7 @@ export async function loader() {
     suggestions: kbSuggestions("pending"),
     scans: kbScans(),
     scanning: !!activeScan(),
+    sources: listSources(),
     graph: buildGraph(),
   };
 }
@@ -50,14 +55,20 @@ export async function action({ request }: Route.ActionArgs) {
       await addManualNote(text);
       return { ok: true, msg: "Captured. Drafted bullets and a few questions for you below." };
     }
-    if (intent === "kb-scan") {
-      let parsed: any = null;
-      try { parsed = JSON.parse(String(form.get("payload") || "")); } catch {}
-      if (!parsed?.projects?.length) return { error: "Pick a folder that has at least one project (a README or manifest)." };
-      const r = startScanFromUpload(parsed.label || "folder", parsed.projects);
+    if (intent === "kb-add-source") {
+      const r = addSource({
+        path: String(form.get("path") || ""),
+        label: String(form.get("label") || ""),
+        kind: String(form.get("kind") || "project"),
+        note: String(form.get("note") || ""),
+        intervalHours: Number(form.get("interval") || "0") || 0,
+      });
       if (r.error) return { error: r.error };
-      return { ok: true, msg: `Scanning ${parsed.projects.length} project(s) in the background…` };
+      return { ok: true, msg: "Folder added — scanning it in the background. It'll stay and can be re-scanned anytime." };
     }
+    if (intent === "kb-rescan") { rescanSource(Number(form.get("id"))); return { ok: true, msg: "Re-scanning folder…" }; }
+    if (intent === "kb-remove-source") { removeSource(Number(form.get("id"))); return { ok: true, msg: "Folder removed (its findings stay in the knowledge base)." }; }
+    if (intent === "kb-interval") { setSourceInterval(Number(form.get("id")), Number(form.get("interval") || "0") || 0); return { ok: true, msg: "Re-scan interval updated." }; }
     if (intent === "kb-answer") {
       answerKbQuestion(Number(form.get("id")), String(form.get("answer") || "").trim());
       const itemId = Number(form.get("itemId")) || 0;
@@ -124,26 +135,85 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
           résumé bullets, and asks what it can't infer. Nothing touches a résumé until you accept it.
         </p>
 
-        <div className="row2" style={{ marginTop: 12 }}>
-          <Form method="post">
-            <input type="hidden" name="intent" value="kb-note" />
-            <div className="field">
-              <label>What are you building / working on?</label>
-              <textarea name="text" placeholder="e.g. Building a Rust CLI that syncs Postgres → SQLite for offline-first apps; designed the WAL replication and shipped it to 3 teams." style={{ minHeight: 90 }} />
-            </div>
-            <button className="btn" disabled={busy || !kb.hasRunner}>Capture &amp; draft bullets</button>
-          </Form>
+        <Form method="post">
+          <input type="hidden" name="intent" value="kb-note" />
+          <div className="field">
+            <label>What are you building / working on?</label>
+            <textarea name="text" placeholder="e.g. Building a Rust CLI that syncs Postgres → SQLite for offline-first apps; designed the WAL replication and shipped it to 3 teams." style={{ minHeight: 80 }} />
+          </div>
+          <button className="btn" disabled={busy || !kb.hasRunner}>Capture &amp; draft bullets</button>
+        </Form>
+      </div>
 
-          <Form method="post">
-            <input type="hidden" name="intent" value="kb-scan" />
+      {/* opt-in folder scan — read locally on the server, never uploaded */}
+      <div className="panel kb">
+        <h3>Scan a project folder {kb.scanning ? <span className="badge off">scanning…</span> : null}</h3>
+        <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
+          The runner reads README/manifests/source <strong>on this machine</strong> (skips node_modules, .git, build output) — nothing is uploaded, so it's safe for big folders. Added folders stay and can be re-scanned manually or on a schedule.
+        </p>
+        <Form method="post">
+          <input type="hidden" name="intent" value="kb-add-source" />
+          <div className="field">
+            <label>Folder path</label>
+            <input type="text" name="path" placeholder="/Users/you/Projects/my-app  or  ~/work/acme" />
+          </div>
+          <div className="row2">
             <div className="field">
-              <label>Scan a project folder (opt-in)</label>
-              <FolderScan disabled={busy || !kb.hasRunner || kb.scanning} />
-              <p className="hint" style={{ marginTop: 6 }}>The runner reads README/manifests/source in each project. Picked in your browser, filtered locally (no node_modules), sent only to your chosen runner.</p>
+              <label>This folder is…</label>
+              <div className="radiocol">
+                <label><input type="radio" name="kind" value="project" defaultChecked /> A single project I'm working on</label>
+                <label><input type="radio" name="kind" value="company" /> A company folder with several projects</label>
+              </div>
             </div>
-            <button className="btn" disabled={busy || !kb.hasRunner || kb.scanning}>{kb.scanning ? "Scanning…" : "Scan folder"}</button>
-          </Form>
-        </div>
+            <div className="field">
+              <label>Auto re-scan</label>
+              <Select name="interval" defaultValue="0" options={[
+                { value: "0", label: "Manual only" },
+                { value: "24", label: "Daily" },
+                { value: "168", label: "Weekly" },
+                { value: "720", label: "Monthly" },
+              ]} />
+            </div>
+          </div>
+          <div className="field">
+            <label>A few words about this folder (optional)</label>
+            <input type="text" name="label" placeholder="Label (e.g. Acme Corp)" style={{ marginBottom: 8 }} />
+            <textarea name="note" placeholder="Context for the agent — e.g. 'My work at Acme; I led the billing service and the data pipeline.'" style={{ minHeight: 64 }} />
+          </div>
+          <button className="btn" disabled={busy || !kb.hasRunner || kb.scanning}>{kb.scanning ? "Scanning…" : "Add & scan folder"}</button>
+        </Form>
+
+        {kb.sources.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ fontSize: 15 }}>Tracked folders <span className="badge ok">{kb.sources.length}</span></h3>
+            <table className="ledger-table">
+              <thead><tr><th>Folder</th><th>Type</th><th>Re-scan</th><th>Last</th><th></th></tr></thead>
+              <tbody>
+                {kb.sources.map((s: any) => (
+                  <tr key={s.id}>
+                    <td><code>{s.label ? `${s.label} · ` : ""}{s.path}</code></td>
+                    <td>{s.kind}</td>
+                    <td>
+                      <Form method="post" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                        <input type="hidden" name="intent" value="kb-interval" />
+                        <input type="hidden" name="id" value={s.id} />
+                        <Select name="interval" defaultValue={String(s.interval_hours)} options={[
+                          { value: "0", label: "Manual" }, { value: "24", label: "Daily" }, { value: "168", label: "Weekly" }, { value: "720", label: "Monthly" },
+                        ]} />
+                        <button className="back-link" disabled={busy}>set</button>
+                      </Form>
+                    </td>
+                    <td>{s.last_scanned_at ? s.last_scanned_at.slice(5, 16).replace("T", " ") : "—"}</td>
+                    <td style={{ display: "flex", gap: 8 }}>
+                      <Form method="post"><input type="hidden" name="intent" value="kb-rescan" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy || kb.scanning}>rescan</button></Form>
+                      <Form method="post" onSubmit={(e) => { if (!confirm("Stop tracking this folder? (its findings stay)")) e.preventDefault(); }}><input type="hidden" name="intent" value="kb-remove-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy}>remove</button></Form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {lastScan && (
           <p className="hint" style={{ marginTop: 4 }}>

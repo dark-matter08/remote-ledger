@@ -4,6 +4,7 @@
 import { getSetting } from "../sqlite.server";
 import { getMeta } from "../db.server";
 import { runCrawl } from "./crawl.server";
+import { runDueSources } from "./kb.server";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -14,6 +15,7 @@ const TICK_MS = 30 * 60 * 1000;
 
 async function tick() {
   try {
+    try { runDueSources(); } catch (e) { console.error("[scheduler] kb rescan error:", e); }
     if (getSetting("scheduler_enabled") === "false") return;
     const hours = Number(getSetting("scheduler_interval_hours") || "4") || 4;
     const last = getMeta("last_crawl");

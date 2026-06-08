@@ -100,26 +100,28 @@ export function acceptSuggestion(id: number): { ok: boolean; msg: string } {
 // ---------- LLM extraction ----------
 const SYSTEM = "You build a developer's knowledge base for résumé writing. Be strictly factual: only state what the evidence supports. When the contribution or impact is unclear, ASK a question rather than inventing detail. Output ONLY valid JSON.";
 
-async function extractFromText(kind: "note" | "project", title: string, body: string, sourcePath?: string): Promise<number> {
-  const prompt = `${kind === "project" ? "Analyze this software project from its files" : "The developer described what they're working on"}:\n\n"""${body.slice(0, 12000)}"""\n\nReturn JSON:\n{\n  "title": "short project/work name",\n  "kind": "project|experience|skill",\n  "summary": "2-3 sentence factual summary of what it is and the developer's role",\n  "tags": ["tech","stack","tools"],\n  "bullets": ["2-4 résumé bullets, action-led, factual, quantify ONLY if the evidence gives numbers"],\n  "questions": ["2-3 specific questions to clarify the developer's contribution, scope, or measurable impact"]\n}`;
+interface Analysis { title: string; kind: string; summary: string; tags: string[]; bullets: string[]; questions: string[] }
+
+async function analyze(mode: "note" | "project", title: string, body: string, note?: string): Promise<Analysis> {
+  const ctx = note ? `\n\nContext the developer gave about this work: "${note}"` : "";
+  const prompt = `${mode === "project" ? "Analyze this software project from its files" : "The developer described what they're working on"}:${ctx}\n\n"""${body.slice(0, 12000)}"""\n\nReturn JSON:\n{\n  "title": "short project/work name",\n  "kind": "project|experience|skill",\n  "summary": "2-3 sentence factual summary of what it is and the developer's role",\n  "tags": ["tech","stack","tools"],\n  "bullets": ["2-4 résumé bullets, action-led, factual, quantify ONLY if the evidence gives numbers"],\n  "questions": ["2-3 specific questions to clarify the developer's contribution, scope, or measurable impact"]\n}`;
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 1500, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
-  const itemId = insertItem({
-    kind: normalizeKind(j.kind),
-    title: (j.title || title).toString(),
-    summary: (j.summary || "").toString(),
+  return {
+    title: String(j.title || title), kind: normalizeKind(j.kind), summary: String(j.summary || ""),
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
-    source: kind === "project" ? "scan" : "manual",
-    source_path: sourcePath ?? null,
-  });
-  addSuggestions(itemId, (Array.isArray(j.bullets) ? j.bullets : []).map((b: string) => ({ section: "project", bullet: String(b) })));
-  addQuestions(itemId, Array.isArray(j.questions) ? j.questions.map(String) : []);
-  return itemId;
+    bullets: Array.isArray(j.bullets) ? j.bullets.map(String) : [],
+    questions: Array.isArray(j.questions) ? j.questions.map(String) : [],
+  };
 }
 const normalizeKind = (k?: string) => (["project", "experience", "skill", "fact"].includes(String(k)) ? String(k) : "project");
 
 export async function addManualNote(text: string): Promise<number> {
-  return extractFromText("note", "Recent work", text);
+  const a = await analyze("note", "Recent work", text);
+  const id = insertItem({ kind: a.kind, title: a.title, summary: a.summary, tags: a.tags, source: "manual" });
+  addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b })));
+  addQuestions(id, a.questions);
+  return id;
 }
 
 // Re-draft a few fresh bullets for an item after its questions get answered.
@@ -187,75 +189,85 @@ function candidateProjects(root: string, max = 12): string[] {
   return out.slice(0, max);
 }
 
-export function startScan(path: string): { id: number; error?: string } {
-  const clean = path.trim().replace(/^~(?=\/)/, process.env.HOME || "~");
-  if (!clean || !existsSync(clean)) return { id: 0, error: "Folder not found on this machine." };
-  try { if (!statSync(clean).isDirectory()) return { id: 0, error: "That path is not a folder." }; } catch { return { id: 0, error: "Cannot read that path." }; }
-  const id = Number(getDb().prepare("INSERT INTO kb_scans (path,status,started_at) VALUES (?,?,?)").run(clean, "running", NOW()).lastInsertRowid);
-  void runScan(id, clean).catch((e: any) => {
-    try { getDb().prepare("UPDATE kb_scans SET status='error', note=?, ended_at=? WHERE id=?").run(String(e?.message || e).slice(0, 300), NOW(), id); } catch {}
-  });
+// upsert a scanned project item keyed by (source_path, title) so re-scans REFRESH the
+// item (summary/tags) instead of duplicating; returns whether it's newly discovered.
+function upsertScanItem(o: { title: string; summary: string; tags: string[]; sourcePath: string }): { id: number; isNew: boolean } {
+  const db = getDb();
+  const ex = db.prepare("SELECT id FROM kb_items WHERE source='scan' AND source_path=? AND title=?").get(o.sourcePath, o.title) as any;
+  if (ex) {
+    db.prepare("UPDATE kb_items SET summary=?, tags=?, updated_at=? WHERE id=?").run(o.summary.slice(0, 4000), JSON.stringify(o.tags.slice(0, 30)), NOW(), ex.id);
+    return { id: ex.id, isNew: false };
+  }
+  return { id: insertItem({ kind: "project", title: o.title, summary: o.summary, tags: o.tags, source: "scan", source_path: o.sourcePath }), isNew: true };
+}
+
+// ---------- sources: persistent, re-scannable folders ----------
+export interface KbSource { id: number; path: string; label: string | null; kind: string; note: string | null; interval_hours: number; last_scanned_at: string | null; created_at: string }
+const expandPath = (p: string) => p.trim().replace(/^~(?=\/)/, process.env.HOME || "~");
+
+export function listSources(): KbSource[] {
+  return getDb().prepare("SELECT * FROM kb_sources ORDER BY created_at DESC").all() as any[];
+}
+
+// Register a folder and run its first scan. kind: 'project' (whole folder = one project)
+// or 'company' (each sub-project scanned separately). note = free-text context.
+export function addSource(o: { path: string; label?: string; kind?: string; note?: string; intervalHours?: number }): { id: number; error?: string } {
+  const path = expandPath(o.path || "");
+  if (!path || !existsSync(path)) return { id: 0, error: "Folder not found on this machine." };
+  try { if (!statSync(path).isDirectory()) return { id: 0, error: "That path is not a folder." }; } catch { return { id: 0, error: "Cannot read that path." }; }
+  const kind = o.kind === "company" ? "company" : "project";
+  const id = Number(getDb().prepare(
+    "INSERT INTO kb_sources (path,label,kind,note,interval_hours,created_at) VALUES (?,?,?,?,?,?)"
+  ).run(path, o.label?.trim() || null, kind, o.note?.trim() || null, Math.max(0, Math.floor(o.intervalHours || 0)), NOW()).lastInsertRowid);
+  startSourceScan(id);
   return { id };
 }
+export function setSourceInterval(id: number, hours: number): void { getDb().prepare("UPDATE kb_sources SET interval_hours=? WHERE id=?").run(Math.max(0, Math.floor(hours || 0)), id); }
+export function removeSource(id: number): void { getDb().prepare("DELETE FROM kb_sources WHERE id=?").run(id); }
+export function rescanSource(id: number): void { startSourceScan(id); }
 
-// Scan projects whose text was gathered + filtered in the browser (folder picker)
-// and uploaded as JSON. Same extraction as the path scan, but contents arrive from
-// the client instead of being read off disk by path.
-export interface UploadedProject { name: string; readme?: string; manifests?: { name: string; content: string }[]; files?: string[] }
-
-function bodyFromUpload(p: UploadedProject): string {
-  const parts: string[] = [];
-  if (p.readme) parts.push("# README\n" + String(p.readme).slice(0, 6000));
-  for (const m of (p.manifests || []).slice(0, 6)) parts.push(`# ${m.name}\n` + String(m.content).slice(0, 2000));
-  if (p.files?.length) {
-    const exts: Record<string, number> = {};
-    for (const f of p.files) { const e = (f.match(/\.[a-z0-9]+$/i) || [""])[0].toLowerCase(); if (e) exts[e] = (exts[e] || 0) + 1; }
-    const langs = Object.entries(exts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k}:${v}`).join(" ");
-    parts.push(`# files\nlanguages: ${langs}\nsample: ${p.files.slice(0, 40).join(", ")}`);
-  }
-  return parts.join("\n\n").trim();
-}
-
-export function startScanFromUpload(label: string, projects: UploadedProject[]): { id: number; error?: string } {
-  if (!projects?.length) return { id: 0, error: "No projects with a README or manifest found in that folder." };
-  const id = Number(getDb().prepare("INSERT INTO kb_scans (path,status,started_at) VALUES (?,?,?)").run(label || "folder", "running", NOW()).lastInsertRowid);
-  void runUploadScan(id, projects.slice(0, 12), label).catch((e: any) => {
-    try { getDb().prepare("UPDATE kb_scans SET status='error', note=?, ended_at=? WHERE id=?").run(String(e?.message || e).slice(0, 300), NOW(), id); } catch {}
+function startSourceScan(sourceId: number): number {
+  const src = getDb().prepare("SELECT * FROM kb_sources WHERE id=?").get(sourceId) as KbSource | undefined;
+  if (!src) return 0;
+  const scanId = Number(getDb().prepare("INSERT INTO kb_scans (path,status,started_at) VALUES (?,?,?)").run(src.path, "running", NOW()).lastInsertRowid);
+  void runSourceScan(scanId, src).catch((e: any) => {
+    try { getDb().prepare("UPDATE kb_scans SET status='error', note=?, ended_at=? WHERE id=?").run(String(e?.message || e).slice(0, 300), NOW(), scanId); } catch {}
   });
-  return { id };
+  return scanId;
 }
 
-async function runUploadScan(scanId: number, projects: UploadedProject[], label: string): Promise<void> {
+async function runSourceScan(scanId: number, src: KbSource): Promise<void> {
   const db = getDb();
-  let found = 0;
-  for (const p of projects) {
-    const body = bodyFromUpload(p);
-    if (body.length < 40) continue;
-    try {
-      await extractFromText("project", p.name || "project", body, label || undefined);
-      found++;
-      db.prepare("UPDATE kb_scans SET found=? WHERE id=?").run(found, scanId);
-    } catch { /* skip a project the runner choked on */ }
-  }
-  db.prepare("UPDATE kb_scans SET status='done', found=?, ended_at=? WHERE id=?").run(found, NOW(), scanId);
-}
-
-async function runScan(scanId: number, root: string): Promise<void> {
-  const db = getDb();
-  const projects = candidateProjects(root);
-  if (!projects.length) {
-    db.prepare("UPDATE kb_scans SET status='done', note=?, ended_at=? WHERE id=?").run("No projects (no README/manifest) found here.", NOW(), scanId);
+  const dirs = src.kind === "company" ? candidateProjects(src.path) : [src.path];
+  if (!dirs.length) {
+    db.prepare("UPDATE kb_scans SET status='done', note=?, ended_at=? WHERE id=?").run("No projects (README/manifest) found here.", NOW(), scanId);
+    db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
     return;
   }
+  const noteCtx = [src.note, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
   let found = 0;
-  for (const dir of projects) {
+  for (const dir of dirs) {
     const g = gatherProjectText(dir);
     if (!g) continue;
     try {
-      await extractFromText("project", g.name, g.text, dir);
+      const a = await analyze("project", g.name, g.text, noteCtx || undefined);
+      const tags = [...a.tags]; if (src.kind === "company" && src.label) tags.push(src.label);
+      const { id, isNew } = upsertScanItem({ title: a.title || g.name, summary: a.summary, tags, sourcePath: dir });
+      if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b }))); addQuestions(id, a.questions); }
       found++;
       db.prepare("UPDATE kb_scans SET found=? WHERE id=?").run(found, scanId);
     } catch { /* skip a project the runner choked on */ }
   }
   db.prepare("UPDATE kb_scans SET status='done', found=?, ended_at=? WHERE id=?").run(found, NOW(), scanId);
+  db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
+}
+
+// Scheduler hook: re-scan any source whose interval has elapsed.
+export function runDueSources(): void {
+  const now = Date.now();
+  for (const s of getDb().prepare("SELECT * FROM kb_sources WHERE interval_hours>0").all() as KbSource[]) {
+    if (activeScan()) break; // don't pile up scans
+    const last = s.last_scanned_at ? new Date(s.last_scanned_at).getTime() : 0;
+    if (now - last >= s.interval_hours * 3600 * 1000) startSourceScan(s.id);
+  }
 }

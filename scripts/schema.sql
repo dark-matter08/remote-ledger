@@ -250,3 +250,13 @@ CREATE TABLE IF NOT EXISTS kb_scans (
   started_at  TEXT NOT NULL,
   ended_at    TEXT
 );
+CREATE TABLE IF NOT EXISTS kb_sources (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  path            TEXT NOT NULL,
+  label           TEXT,
+  kind            TEXT NOT NULL DEFAULT 'project',  -- project | company
+  note            TEXT,
+  interval_hours  INTEGER NOT NULL DEFAULT 0,        -- 0 = manual re-scan only
+  last_scanned_at TEXT,
+  created_at      TEXT NOT NULL
+);

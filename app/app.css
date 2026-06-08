@@ -623,6 +623,41 @@ input[type="checkbox"]:checked::after {
 }
 input[type="checkbox"]:focus-visible { outline: 2px solid var(--ochre); outline-offset: 2px; }
 
+/* custom letterpress radios (global) */
+input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  vertical-align: middle;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  border-radius: 50%;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.12s;
+}
+input[type="radio"]:hover { border-color: var(--vermillion); }
+input[type="radio"]:checked { border-color: var(--vermillion); }
+input[type="radio"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vermillion);
+  transform: translate(-50%, -50%);
+}
+input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-offset: 2px; }
+
+/* stacked radio group */
+.radiocol { display: flex; flex-direction: column; gap: 9px; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); }
+.radiocol label { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+
 /* apply room: rule checkboxes + question pool */
 .checkrow { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
 .checkrow label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
