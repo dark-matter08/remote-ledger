@@ -491,6 +491,10 @@ export function openQuestions(): any[] {
     )
     .all();
 }
+// Clear the question pool — drop all unanswered pooled questions. Returns how many.
+export function clearQuestionPool(): number {
+  return getDb().prepare("DELETE FROM apply_questions WHERE answer IS NULL").run().changes as number;
+}
 export function answeredQuestions(limit = 50): any[] {
   return getDb()
     .prepare("SELECT * FROM apply_questions WHERE answer IS NOT NULL ORDER BY answered_at DESC LIMIT ?")

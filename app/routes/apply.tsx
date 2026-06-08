@@ -3,6 +3,7 @@ import { Form, Link, redirect, useNavigation, useRevalidator } from "react-route
 import type { Route } from "./+types/apply";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { ConfirmForm } from "../components/ConfirmForm";
 import {
   listSessions,
   getSession,
@@ -11,6 +12,7 @@ import {
   openQuestions,
   answeredQuestions,
   answerPooledQuestion,
+  clearQuestionPool,
   answerBank,
 } from "../db.server";
 import { startSession, resumeSession, type ApplyRules } from "../services/apply-session.server";
@@ -44,6 +46,10 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "answer") {
     answerPooledQuestion(Number(form.get("id")), String(form.get("answer") || "").trim());
     return { ok: true, msg: "Answer saved to your context bank." };
+  }
+  if (intent === "clear-pool") {
+    const n = clearQuestionPool();
+    return { ok: true, msg: n ? `Cleared ${n} pooled question(s).` : "Pool already empty." };
   }
   if (intent === "resume") {
     const sid = Number(form.get("sessionId"));
@@ -140,7 +146,20 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
 
       {/* question pool */}
       <div className="panel">
-        <h3>Question pool {pool.length ? <span className="badge warn">{pool.length} open</span> : <span className="badge ok">clear</span>}</h3>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span>Question pool</span>
+          {pool.length ? (
+            <>
+              <span className="badge warn">{pool.length} open</span>
+              <ConfirmForm method="post" title="Clear question pool?" confirm={`Discard all ${pool.length} unanswered pooled question(s)? Already-answered ones in your context bank stay.`} confirmLabel="Clear pool" style={{ marginLeft: "auto" }}>
+                <input type="hidden" name="intent" value="clear-pool" />
+                <button className="ghost-btn" disabled={busy}>Clear</button>
+              </ConfirmForm>
+            </>
+          ) : (
+            <span className="badge ok">empty</span>
+          )}
+        </h3>
         <p className="hint">Questions the agent couldn't answer truthfully. Answer once — saved to your context bank ({bankCount}) and reused automatically next time.</p>
         {pool.length === 0 ? (
           <p className="hint">Nothing waiting on you.</p>
