@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useFetcher, redirect } from "react-router";
+import { ChevronDown } from "lucide-react";
 import type { Route } from "./+types/home";
 import { Shell } from "../components/Shell";
 import { getSetting } from "../sqlite.server";
@@ -96,7 +97,7 @@ function StageDropdown({
       <button type="button" className="dd-btn" aria-haspopup="listbox" aria-expanded={open} onClick={() => onOpenChange(!open)}>
         <span className="dd-dot" />
         <span className="dd-label">{STAGE_LABEL[current]}</span>
-        <span className="dd-caret">▾</span>
+        <span className="dd-caret"><ChevronDown size={13} /></span>
       </button>
       {open && (
         <ul className="dd-menu" role="listbox">
@@ -220,7 +221,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   }, [data.groups, cats, tags, hidePassed, q, sort]);
 
   const shown = sections.reduce((n, s) => n + s.jobs.length, 0);
-  const sortLabel = sort === "fit" ? "Fit ▾" : sort === "closing" ? "Closing ▾" : "A–Z ▾";
+  const sortLabel = sort === "fit" ? "Fit" : sort === "closing" ? "Closing" : "A–Z";
 
   return (
     <Shell>
@@ -252,7 +253,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         ))}
         <span className="sep">·</span>
         <button className={`chip ${hidePassed ? "on" : ""}`} onClick={() => setHidePassed((v) => !v)}>Hide passed</button>
-        <button className="chip on" onClick={() => setSort((s) => (s === "fit" ? "closing" : s === "closing" ? "company" : "fit"))}>Sort: {sortLabel}</button>
+        <button className="chip on" style={{ display: "inline-flex", alignItems: "center", gap: 5 }} onClick={() => setSort((s) => (s === "fit" ? "closing" : s === "closing" ? "company" : "fit"))}>Sort: {sortLabel} <ChevronDown size={12} /></button>
         <input className="search" placeholder="Search the ledger…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <hr className="rule thin" />

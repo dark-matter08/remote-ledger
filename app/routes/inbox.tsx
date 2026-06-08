@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Form, Link, useNavigation, useRevalidator } from "react-router";
+import { Check } from "lucide-react";
 import type { Route } from "./+types/inbox";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -201,7 +202,7 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
                 )}
                 <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                   {m.job_id && m.proposed_stage && (
-                    <Form method="post"><input type="hidden" name="intent" value="apply" /><input type="hidden" name="id" value={m.id} /><button className="ghost-btn" disabled={busy}>✓ Apply</button></Form>
+                    <Form method="post"><input type="hidden" name="intent" value="apply" /><input type="hidden" name="id" value={m.id} /><button className="ghost-btn" disabled={busy} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Check size={13} /> Apply</button></Form>
                   )}
                   <Form method="post"><input type="hidden" name="intent" value="dismiss" /><input type="hidden" name="id" value={m.id} /><button className="back-link" disabled={busy}>dismiss</button></Form>
                 </span>

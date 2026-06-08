@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Form, Link, useNavigation, useRevalidator } from "react-router";
+import { Check, X } from "lucide-react";
 import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -237,7 +238,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                 <Form method="post" className="qpool-del">
                   <input type="hidden" name="intent" value="kb-del-question" />
                   <input type="hidden" name="id" value={q.id} />
-                  <button className="back-link" disabled={busy} title="Remove this question">✕ dismiss</button>
+                  <button className="back-link" disabled={busy} title="Remove this question" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><X size={12} /> dismiss</button>
                 </Form>
               </div>
               <Form method="post">
@@ -264,7 +265,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                 {s.title ? <span className="qpool-job"> — {s.title}</span> : null}
               </div>
               <div className="kb-sugg-actions">
-                <Form method="post"><input type="hidden" name="intent" value="kb-accept" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy}>✓ Accept</button></Form>
+                <Form method="post"><input type="hidden" name="intent" value="kb-accept" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Check size={13} /> Accept</button></Form>
                 <Form method="post"><input type="hidden" name="intent" value="kb-dismiss" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy}>Dismiss</button></Form>
               </div>
             </div>

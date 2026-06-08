@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
 
 export interface Opt {
   value: string;
@@ -56,7 +57,7 @@ export function Select({
         onClick={() => setOpen((o) => !o)}
       >
         <span className="fsel-val">{cur ? cur.label : placeholder}</span>
-        <span className="fsel-caret">▾</span>
+        <span className="fsel-caret"><ChevronDown size={14} /></span>
       </button>
       {open && (
         <ul className="fsel-menu" role="listbox">
@@ -72,7 +73,7 @@ export function Select({
               }}
             >
               <span>{o.label}</span>
-              {o.value === value ? <span className="fsel-check">✓</span> : null}
+              {o.value === value ? <Check size={14} className="fsel-check" /> : null}
             </li>
           ))}
         </ul>

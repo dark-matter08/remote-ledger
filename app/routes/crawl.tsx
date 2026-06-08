@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Form, Link, redirect, useNavigation, useRevalidator } from "react-router";
+import { Square } from "lucide-react";
 import type { Route } from "./+types/crawl";
 import { Shell } from "../components/Shell";
 import { listCrawlRuns, activeCrawl, getCrawlRun, crawlLogs, updateCrawlRun, crawlLog } from "../db.server";
@@ -94,7 +95,7 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
           {active && (
             <Form method="post" style={{ marginLeft: "auto" }}>
               <input type="hidden" name="intent" value="stop" />
-              <button className="ghost-btn">■ Stop run #{active.id}</button>
+              <button className="ghost-btn" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Square size={13} /> Stop run #{active.id}</button>
             </Form>
           )}
         </div>

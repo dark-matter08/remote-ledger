@@ -1064,7 +1064,9 @@ table.ledger-table tr:hover td { background: var(--card); }
 .kg-panel { position: absolute; top: 12px; right: 12px; width: 290px; max-height: calc(100% - 24px); overflow: auto; background: var(--card); border: 1.5px solid var(--ink); box-shadow: 5px 5px 0 -1px rgba(26,23,20,.14); padding: 14px; }
 .kg-panel-head { display: flex; align-items: center; gap: 8px; }
 .kg-panel-type { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
-.kg-close { margin-left: auto; background: transparent; border: 0; cursor: pointer; color: var(--ink-faint); font-size: 14px; }
+.kg-close { margin-left: auto; background: transparent; border: 0; cursor: pointer; color: var(--ink-faint); display: grid; place-items: center; line-height: 0; padding: 2px; }
+.kg-close:hover { color: var(--vermillion); }
+.dd-caret svg, .fsel-caret svg { display: block; }
 .kg-panel h4 { font-family: var(--display); font-size: 17px; margin: 6px 0 8px; line-height: 1.2; }
 .kg-detail { font-family: var(--serif); font-size: 13px; line-height: 1.5; color: var(--ink-soft); white-space: pre-wrap; word-break: break-word; margin: 0 0 8px; }
 .kg-neighbors { display: flex; flex-wrap: wrap; gap: 5px; }

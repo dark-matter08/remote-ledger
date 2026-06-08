@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
+import { X } from "lucide-react";
 import { ForceCanvas } from "./ForceCanvas";
 import { SvgForce } from "./SvgForce";
 import { TYPE_COLOR, TYPE_LABEL, type GraphData, type GraphNode, type NodeType } from "./palette";
@@ -93,7 +94,7 @@ export function GraphView({ data }: { data: GraphData }) {
             <div className="kg-panel-head">
               <span className="kg-dot" style={{ background: TYPE_COLOR[selected.type] }} />
               <span className="kg-panel-type">{TYPE_LABEL[selected.type]}</span>
-              <button className="kg-close" onClick={() => setSelected(null)}>✕</button>
+              <button className="kg-close" onClick={() => setSelected(null)} aria-label="Close"><X size={15} /></button>
             </div>
             <h4>{selected.label}</h4>
             {selected.detail && <pre className="kg-detail">{selected.detail}</pre>}

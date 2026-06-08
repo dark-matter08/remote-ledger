@@ -20,6 +20,7 @@ import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
+import { RefreshCw, Check, X, Circle } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -214,7 +215,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <p className="hint">Captured from the posting and rendered in Heritage Press. Powers tailoring, match &amp; prep.</p>
             <Form method="post" style={{ display: "inline-block", marginBottom: 12 }}>
               <input type="hidden" name="intent" value="scrape-jd" />
-              <button className="ghost-btn" disabled={busy}>{running === "scrape-jd" ? "Fetching…" : "⟳ Fetch from posting"}</button>
+              <button className="ghost-btn" disabled={busy} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{running === "scrape-jd" ? "Fetching…" : <><RefreshCw size={13} /> Fetch from posting</>}</button>
             </Form>
             {job.jd_html ? (
               <div className="jd-rendered" dangerouslySetInnerHTML={{ __html: job.jd_html }} />
@@ -331,7 +332,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 <div className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
                   <strong>Filled ({assist.filled.length}):</strong>{" "}
                   {assist.filled.map((f: string, i: number) => (
-                    <span key={i}>✓ {f}{i < assist.filled.length - 1 ? " · " : ""}</span>
+                    <span key={i}><Check size={11} style={{ transform: "translateY(1px)" }} /> {f}{i < assist.filled.length - 1 ? " · " : ""}</span>
                   ))}
                 </div>
               )}
@@ -339,7 +340,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 <div className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, marginTop: 6, color: "var(--vermillion)" }}>
                   <strong>Needs your input ({assist.unfilled.length}):</strong>{" "}
                   {assist.unfilled.map((f: string, i: number) => (
-                    <span key={i}>○ {f}{i < assist.unfilled.length - 1 ? " · " : ""}</span>
+                    <span key={i}><Circle size={11} style={{ transform: "translateY(1px)" }} /> {f}{i < assist.unfilled.length - 1 ? " · " : ""}</span>
                   ))}
                 </div>
               )}
@@ -362,7 +363,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                   <p className="hint">Questions the agent pooled for this job:</p>
                   {applyActivity.pooled.map((q: any) => (
                     <div key={q.id} className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, margin: "4px 0" }}>
-                      {q.answer ? "✓" : "○"} {q.question}{q.answer ? <> — <em>{q.answer}</em></> : <> — <Link to="/apply" className="entry-title-link">answer in the Apply room</Link></>}
+                      {q.answer ? <Check size={12} style={{ transform: "translateY(1px)" }} /> : <Circle size={12} style={{ transform: "translateY(1px)" }} />} {q.question}{q.answer ? <> — <em>{q.answer}</em></> : <> — <Link to="/apply" className="entry-title-link">answer in the Apply room</Link></>}
                     </div>
                   ))}
                 </div>
@@ -474,8 +475,8 @@ function MatchPanel({ match, busy, running, profiles, defaultProfileId }: any) {
             <div className="stat"><div className="k">Matched</div><div className="v">{match.matched.length}</div></div>
             <div className="stat"><div className="k">Missing</div><div className="v">{match.missing.length}</div></div>
           </div>
-          <p className="hint">✓ {match.matched.join(", ") || "—"}</p>
-          <p className="hint">✗ {match.missing.join(", ") || "—"}</p>
+          <p className="hint" style={{ display: "flex", gap: 6, alignItems: "baseline" }}><Check size={13} style={{ flex: "none", transform: "translateY(2px)", color: "var(--ink)" }} /> <span>{match.matched.join(", ") || "—"}</span></p>
+          <p className="hint" style={{ display: "flex", gap: 6, alignItems: "baseline" }}><X size={13} style={{ flex: "none", transform: "translateY(2px)", color: "var(--vermillion)" }} /> <span>{match.missing.join(", ") || "—"}</span></p>
           <p className="hint">ATS keywords: {match.atsKeywords?.join(", ") || "—"}</p>
         </>
       ) : (

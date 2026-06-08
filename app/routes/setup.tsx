@@ -1,4 +1,5 @@
 import { Form, Link, redirect, useNavigation } from "react-router";
+import { Check } from "lucide-react";
 import type { Route } from "./+types/setup";
 import { Shell } from "../components/Shell";
 import { FilePicker } from "../components/FilePicker";
@@ -87,7 +88,7 @@ export async function action({ request }: Route.ActionArgs) {
 function Step({ n, done, title, children }: { n: number; done: boolean; title: string; children: React.ReactNode }) {
   return (
     <div className={`wz-step ${done ? "done" : ""}`}>
-      <div className="wz-num">{done ? "✓" : n}</div>
+      <div className="wz-num">{done ? <Check size={15} /> : n}</div>
       <div className="wz-body">
         <h3>{title}{done && <span className="badge ok" style={{ marginLeft: 8 }}>done</span>}</h3>
         <div className="wz-content">{children}</div>
