@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Form, Link, useNavigation, useRevalidator, useFetcher } from "react-router";
-import { Check, X, Sparkles } from "lucide-react";
+import { Check, X, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -12,6 +12,7 @@ import {
   kbItems,
   kbOpenQuestions,
   kbSuggestions,
+  kbSuggestionClusters,
   kbScans,
   activeScan,
   listSources,
@@ -45,6 +46,7 @@ export async function loader() {
     items: kbItems(),
     questions: kbOpenQuestions(),
     suggestions: kbSuggestions("pending"),
+    suggestionGroups: kbSuggestionClusters(),
     scans: kbScans(),
     scanning: !!activeScan(),
     sources: listSources(),
@@ -94,9 +96,15 @@ export async function action({ request }: Route.ActionArgs) {
     }
     if (intent === "kb-accept") {
       const r = acceptSuggestion(Number(form.get("id")));
-      return r.ok ? { ok: true, msg: r.msg } : { error: r.msg };
+      // when accepting one from a stack, drop the near-duplicate siblings
+      const dropped = String(form.get("dismiss") || "").split(",").map(Number).filter(Boolean);
+      for (const oid of dropped) dismissSuggestion(oid);
+      return r.ok ? { ok: true, msg: `${r.msg}${dropped.length ? ` (dismissed ${dropped.length} similar)` : ""}` } : { error: r.msg };
     }
-    if (intent === "kb-dismiss") { dismissSuggestion(Number(form.get("id"))); return { ok: true, msg: "Dismissed." }; }
+    if (intent === "kb-dismiss") {
+      String(form.get("id") || "").split(",").map(Number).filter(Boolean).forEach(dismissSuggestion);
+      return { ok: true, msg: "Dismissed." };
+    }
     if (intent === "kb-delete") { deleteKbItem(Number(form.get("id"))); return { ok: true, msg: "Removed from knowledge base." }; }
   } catch (e: any) {
     return { error: e.message || String(e) };
@@ -268,20 +276,8 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
       {kb.suggestions.length > 0 && (
         <div className="panel">
           <h3>Drafted résumé bullets <span className="badge ok">{kb.suggestions.length}</span></h3>
-          <p className="hint">Approve to add to your default résumé profile.</p>
-          {kb.suggestions.map((s: any) => (
-            <div key={s.id} className="kb-sugg">
-              <div className="kb-sugg-text">
-                <span className="kb-sugg-sec">{s.section}</span>
-                {s.bullet}
-                {s.title ? <span className="qpool-job"> — {s.title}</span> : null}
-              </div>
-              <div className="kb-sugg-actions">
-                <Form method="post"><input type="hidden" name="intent" value="kb-accept" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Check size={13} /> Accept</button></Form>
-                <Form method="post"><input type="hidden" name="intent" value="kb-dismiss" /><input type="hidden" name="id" value={s.id} /><button className="ghost-btn" disabled={busy}>Dismiss</button></Form>
-              </div>
-            </div>
-          ))}
+          <p className="hint">Approve to add to your default résumé profile. Near-duplicate drafts are stacked — cycle and pick the one you like; accepting it drops the rest.</p>
+          {kb.suggestionGroups.map((g: any[]) => <SuggestionStack key={g[0].id} group={g} busy={busy} />)}
         </div>
       )}
 
@@ -348,6 +344,47 @@ function KbQuestion({ q }: { q: any }) {
           {ai.data?.error && <span className="hint" style={{ margin: 0, color: "var(--vermillion)" }}>{ai.data.error}</span>}
         </div>
       </save.Form>
+    </div>
+  );
+}
+
+// A stack of near-duplicate drafted bullets: cycle through and accept just one
+// (accepting drops the siblings so you don't add two bullets that say the same thing).
+function SuggestionStack({ group, busy }: { group: any[]; busy: boolean }) {
+  const [i, setI] = useState(0);
+  const cur = group[Math.min(i, group.length - 1)];
+  const many = group.length > 1;
+  const siblings = group.filter((g) => g.id !== cur.id).map((g) => g.id).join(",");
+  const allIds = group.map((g) => g.id).join(",");
+  return (
+    <div className={`sugg-stack ${many ? "stacked" : ""}`}>
+      <div className="kb-sugg-text">
+        <span className="kb-sugg-sec">{cur.section}</span>
+        {cur.bullet}
+        {cur.title ? <span className="qpool-job"> — {cur.title}</span> : null}
+      </div>
+      <div className="sugg-stack-bar">
+        {many && (
+          <span className="sugg-cycle">
+            <button type="button" className="back-link" onClick={() => setI((i - 1 + group.length) % group.length)} aria-label="Previous"><ChevronLeft size={13} /></button>
+            <span className="sugg-count">{(i % group.length) + 1} / {group.length} similar</span>
+            <button type="button" className="back-link" onClick={() => setI((i + 1) % group.length)} aria-label="Next"><ChevronRight size={13} /></button>
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <Form method="post">
+            <input type="hidden" name="intent" value="kb-accept" />
+            <input type="hidden" name="id" value={cur.id} />
+            {many && <input type="hidden" name="dismiss" value={siblings} />}
+            <button className="ghost-btn" disabled={busy} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Check size={13} /> Accept{many ? " this one" : ""}</button>
+          </Form>
+          <Form method="post">
+            <input type="hidden" name="intent" value="kb-dismiss" />
+            <input type="hidden" name="id" value={allIds} />
+            <button className="ghost-btn" disabled={busy}>Dismiss{many ? " all" : ""}</button>
+          </Form>
+        </span>
+      </div>
     </div>
   );
 }

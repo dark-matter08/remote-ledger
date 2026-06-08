@@ -29,6 +29,30 @@ export function kbOpenQuestions(): KbQuestion[] {
 export function kbSuggestions(status = "pending"): KbSuggestion[] {
   return getDb().prepare("SELECT s.*, i.title FROM kb_suggestions s LEFT JOIN kb_items i ON i.id=s.item_id WHERE s.status=? ORDER BY s.created_at DESC").all(status) as any[];
 }
+
+// Group pending suggestions that say essentially the same thing (same item, high word
+// overlap) so the UI can show one card stack to pick from — avoiding near-duplicate bullets.
+const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "using", "used", "able", "across", "their", "your", "you", "via", "built", "build", "developed", "design", "designed", "implemented", "implement"]);
+export function kbSuggestionClusters(): KbSuggestion[][] {
+  const sugg = kbSuggestions("pending");
+  const tok = (s: string) => new Set((s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w)));
+  const toks = sugg.map((s) => tok(s.bullet));
+  const used = new Array(sugg.length).fill(false);
+  const clusters: KbSuggestion[][] = [];
+  for (let i = 0; i < sugg.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const group = [sugg[i]];
+    for (let j = i + 1; j < sugg.length; j++) {
+      if (used[j] || sugg[j].item_id !== sugg[i].item_id) continue;
+      let inter = 0; for (const w of toks[i]) if (toks[j].has(w)) inter++;
+      const uni = new Set([...toks[i], ...toks[j]]).size || 1;
+      if (inter / uni >= 0.35) { used[j] = true; group.push(sugg[j]); }
+    }
+    clusters.push(group);
+  }
+  return clusters;
+}
 // Scans are recorded as crawl_runs (type='scan') so they show in the Crawl Shell with
 // live step logs. These map run rows back to the shape the KB page expects.
 export function kbScans(limit = 5): KbScan[] {

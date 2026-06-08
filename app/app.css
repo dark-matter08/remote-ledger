@@ -985,6 +985,13 @@ table.ledger-table tr:hover td { background: var(--card); }
 .kb-sugg-text { flex: 1; font-family: var(--serif); font-size: 14px; line-height: 1.5; color: var(--ink-soft); }
 .kb-sugg-sec { display: inline-block; font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--vermillion); border: 1px solid var(--rule-faint); padding: 1px 5px; margin-right: 8px; vertical-align: middle; }
 .kb-sugg-actions { display: flex; gap: 6px; flex: none; }
+/* near-duplicate draft stack */
+.sugg-stack { border: 1.5px solid var(--rule-faint); background: var(--paper); padding: 11px 13px; margin: 10px 0; position: relative; }
+.sugg-stack.stacked { box-shadow: 4px 4px 0 -1px var(--card), 7px 7px 0 -1px var(--rule-faint); }
+.sugg-stack-bar { display: flex; align-items: center; gap: 12px; margin-top: 9px; flex-wrap: wrap; }
+.sugg-cycle { display: inline-flex; align-items: center; gap: 8px; }
+.sugg-cycle .back-link { display: inline-grid; place-items: center; }
+.sugg-count { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); }
 .kb-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .kb-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 1px 6px; }
 
