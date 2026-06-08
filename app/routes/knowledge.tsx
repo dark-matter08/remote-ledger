@@ -13,6 +13,7 @@ import {
   kbOpenQuestions,
   kbSuggestions,
   kbSuggestionClusters,
+  reclusterAll,
   kbScans,
   activeScan,
   listSources,
@@ -104,6 +105,10 @@ export async function action({ request }: Route.ActionArgs) {
     if (intent === "kb-dismiss") {
       String(form.get("id") || "").split(",").map(Number).filter(Boolean).forEach(dismissSuggestion);
       return { ok: true, msg: "Dismissed." };
+    }
+    if (intent === "kb-recluster") {
+      const n = await loggedTask("answers", "Re-cluster drafted bullets", async (L) => { L("step", "Grouping near-duplicate bullets by meaning…"); return reclusterAll(); });
+      return { ok: true, msg: `Re-clustered bullets across ${n} project(s).` };
     }
     if (intent === "kb-delete") { deleteKbItem(Number(form.get("id"))); return { ok: true, msg: "Removed from knowledge base." }; }
   } catch (e: any) {
@@ -275,7 +280,13 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
 
       {kb.suggestions.length > 0 && (
         <div className="panel">
-          <h3>Drafted résumé bullets <span className="badge ok">{kb.suggestions.length}</span></h3>
+          <h3 style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span>Drafted résumé bullets <span className="badge ok">{kb.suggestions.length}</span></span>
+            <Form method="post" style={{ marginLeft: "auto" }}>
+              <input type="hidden" name="intent" value="kb-recluster" />
+              <button className="ghost-btn" disabled={busy} title="Re-group near-duplicate bullets by meaning">{busy ? "…" : "Re-cluster"}</button>
+            </Form>
+          </h3>
           <p className="hint">Approve to add to your default résumé profile. Near-duplicate drafts are stacked — cycle and pick the one you like; accepting it drops the rest.</p>
           {kb.suggestionGroups.map((g: any[]) => <SuggestionStack key={g[0].id} group={g} busy={busy} />)}
         </div>

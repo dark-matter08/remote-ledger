@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS kb_suggestions (
   section     TEXT NOT NULL DEFAULT 'project',  -- project | experience | skill | summary
   bullet      TEXT NOT NULL,
   status      TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | dismissed
+  cluster_id  INTEGER,                         -- groups near-duplicate bullets
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_kbs_status ON kb_suggestions(status);

@@ -30,28 +30,73 @@ export function kbSuggestions(status = "pending"): KbSuggestion[] {
   return getDb().prepare("SELECT s.*, i.title FROM kb_suggestions s LEFT JOIN kb_items i ON i.id=s.item_id WHERE s.status=? ORDER BY s.created_at DESC").all(status) as any[];
 }
 
-// Group pending suggestions that say essentially the same thing (same item, high word
-// overlap) so the UI can show one card stack to pick from — avoiding near-duplicate bullets.
+// Group pending suggestions that say essentially the same thing. Bullets already given a
+// cluster_id (by the LLM re-cluster) group by that; the rest fall back to a same-item
+// word-overlap heuristic so newly-added bullets still stack until re-clustered.
 const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "using", "used", "able", "across", "their", "your", "you", "via", "built", "build", "developed", "design", "designed", "implemented", "implement"]);
-export function kbSuggestionClusters(): KbSuggestion[][] {
-  const sugg = kbSuggestions("pending");
+export function kbSuggestionClusters(): (KbSuggestion & { cluster_id?: number | null })[][] {
+  const sugg = kbSuggestions("pending") as any[];
+  const clusters: any[][] = [];
+  // 1) explicit clusters from a prior LLM re-cluster
+  const byCid = new Map<number, any[]>();
+  const loose: any[] = [];
+  for (const s of sugg) {
+    if (s.cluster_id) { const arr = byCid.get(s.cluster_id) || []; arr.push(s); byCid.set(s.cluster_id, arr); }
+    else loose.push(s);
+  }
+  for (const g of byCid.values()) clusters.push(g);
+  // 2) heuristic fallback for bullets not yet clustered
   const tok = (s: string) => new Set((s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w)));
-  const toks = sugg.map((s) => tok(s.bullet));
-  const used = new Array(sugg.length).fill(false);
-  const clusters: KbSuggestion[][] = [];
-  for (let i = 0; i < sugg.length; i++) {
-    if (used[i]) continue;
-    used[i] = true;
-    const group = [sugg[i]];
-    for (let j = i + 1; j < sugg.length; j++) {
-      if (used[j] || sugg[j].item_id !== sugg[i].item_id) continue;
+  const toks = loose.map((s) => tok(s.bullet));
+  const used = new Array(loose.length).fill(false);
+  for (let i = 0; i < loose.length; i++) {
+    if (used[i]) continue; used[i] = true;
+    const group = [loose[i]];
+    for (let j = i + 1; j < loose.length; j++) {
+      if (used[j] || loose[j].item_id !== loose[i].item_id) continue;
       let inter = 0; for (const w of toks[i]) if (toks[j].has(w)) inter++;
       const uni = new Set([...toks[i], ...toks[j]]).size || 1;
-      if (inter / uni >= 0.35) { used[j] = true; group.push(sugg[j]); }
+      if (inter / uni >= 0.35) { used[j] = true; group.push(loose[j]); }
     }
     clusters.push(group);
   }
   return clusters;
+}
+
+// LLM re-cluster: group an item's pending bullets by MEANING (catches paraphrases that
+// word-overlap misses) and persist a shared cluster_id per group.
+export async function reclusterItem(itemId: number): Promise<void> {
+  const db = getDb();
+  const sugg = db.prepare("SELECT id, bullet FROM kb_suggestions WHERE item_id=? AND status='pending' ORDER BY id").all(itemId) as any[];
+  if (sugg.length <= 1) { if (sugg.length === 1) db.prepare("UPDATE kb_suggestions SET cluster_id=? WHERE id=?").run(sugg[0].id, sugg[0].id); return; }
+  const list = sugg.map((s, i) => `${i + 1}. ${s.bullet}`).join("\n");
+  let groups: number[][] = [];
+  try {
+    const r = await runLLM({
+      purpose: "misc", json: true, temperature: 0, maxTokens: 500,
+      system: "You group résumé bullet points that convey essentially the SAME accomplishment/information (paraphrases or heavy overlap), so the user can pick one and drop the rest. Bullets about genuinely different work go in their own group. Output ONLY JSON.",
+      prompt: `Bullets:\n${list}\n\nReturn JSON: {"groups": [[1,3],[2],[4,5]]} — each inner array lists the 1-based bullet numbers that say essentially the same thing. Every number 1..${sugg.length} must appear exactly once.`,
+    });
+    const j = tryParseJson(r.text) || {};
+    if (Array.isArray(j.groups)) groups = j.groups.map((g: any) => (Array.isArray(g) ? g.map(Number).filter((n: number) => n >= 1 && n <= sugg.length) : [])).filter((g: number[]) => g.length);
+  } catch {}
+  if (!groups.length) groups = sugg.map((_, i) => [i + 1]); // fallback: each its own
+  const seen = new Set<number>();
+  for (const g of groups) {
+    const ids = g.filter((n) => !seen.has(n)).map((n) => { seen.add(n); return sugg[n - 1].id; });
+    if (!ids.length) continue;
+    const cid = ids[0];
+    for (const id of ids) db.prepare("UPDATE kb_suggestions SET cluster_id=? WHERE id=?").run(cid, id);
+  }
+  // any bullet the model dropped → its own cluster
+  for (let i = 0; i < sugg.length; i++) if (!seen.has(i + 1)) db.prepare("UPDATE kb_suggestions SET cluster_id=? WHERE id=?").run(sugg[i].id, sugg[i].id);
+}
+
+// Re-cluster every item that has pending bullets.
+export async function reclusterAll(): Promise<number> {
+  const items = getDb().prepare("SELECT DISTINCT item_id FROM kb_suggestions WHERE status='pending' AND item_id IS NOT NULL").all() as any[];
+  for (const { item_id } of items) await reclusterItem(item_id);
+  return items.length;
 }
 // Scans are recorded as crawl_runs (type='scan') so they show in the Crawl Shell with
 // live step logs. These map run rows back to the shape the KB page expects.
@@ -199,6 +244,8 @@ export async function redraftItem(itemId: number): Promise<void> {
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 800, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
   addSuggestions(itemId, (Array.isArray(j.bullets) ? j.bullets : []).map((b: string) => ({ section: "project", bullet: String(b) })));
+  // re-evaluate every bullet for this item so new ones merge into the right cluster
+  await reclusterItem(itemId);
 }
 
 // ---------- folder scan ----------
