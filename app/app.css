@@ -866,9 +866,15 @@ table.ledger-table tr:hover td { background: var(--card); }
 
 /* kanban board */
 .board { display: flex; gap: 12px; overflow-x: auto; padding: 8px 2px 24px; }
-.board-col { flex: 1 1 195px; min-width: 195px; max-width: 320px; min-height: 200px; border: 1.5px solid var(--rule-faint); background: transparent; padding: 8px; transition: background .15s, border-color .15s; }
+.board-col { display: flex; flex-direction: column; flex: 1 1 195px; min-width: 195px; max-width: 320px; height: calc(100vh - 240px); min-height: 320px; max-height: 760px; border: 1.5px solid var(--rule-faint); background: transparent; padding: 8px; transition: background .15s, border-color .15s; }
 .board-col.over { background: var(--card); border-color: var(--vermillion); }
-.board-col-head { display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; padding: 4px 4px 8px; border-bottom: 1.5px solid var(--rule); margin-bottom: 8px; color: currentColor; }
+.board-col-head { flex: none; display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; padding: 4px 4px 8px; border-bottom: 1.5px solid var(--rule); margin-bottom: 8px; color: currentColor; }
+/* fixed-height column → its card list scrolls on its own */
+.board-col-body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; min-height: 0; padding: 1px 6px 1px 1px; scrollbar-width: thin; scrollbar-color: var(--rule-faint) transparent; }
+.board-col-body::-webkit-scrollbar { width: 9px; }
+.board-col-body::-webkit-scrollbar-track { background: transparent; }
+.board-col-body::-webkit-scrollbar-thumb { background: var(--rule-faint); border: 2px solid transparent; background-clip: padding-box; }
+.board-col-body::-webkit-scrollbar-thumb:hover { background: var(--ink); background-clip: padding-box; }
 .board-count { color: var(--ink-faint); }
 .board-card { border: 1.5px solid var(--ink); background: var(--paper); padding: 10px; margin-bottom: 8px; cursor: grab; box-shadow: 3px 3px 0 -1px rgba(26,23,20,.12); }
 .board-card:active { cursor: grabbing; }

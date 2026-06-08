@@ -82,20 +82,22 @@ export default function Board({ loaderData }: Route.ComponentProps) {
                 <span>{labels[s]}</span>
                 <span className="board-count">{jobs.length}</span>
               </div>
-              {jobs.map((j) => (
-                <div
-                  key={j.id}
-                  className="board-card"
-                  draggable
-                  onDragStart={() => setDragId(j.id)}
-                  onDragEnd={() => setDragId(null)}
-                >
-                  <Link to={`/jobs/${j.id}`} className="board-card-title">{j.company}</Link>
-                  <div className="board-card-role">{j.role}</div>
-                  <div className="board-card-fit">fit {j.fit_score} · {j.category}</div>
-                </div>
-              ))}
-              {jobs.length === 0 && <div className="board-empty">—</div>}
+              <div className="board-col-body">
+                {jobs.map((j) => (
+                  <div
+                    key={j.id}
+                    className="board-card"
+                    draggable
+                    onDragStart={() => setDragId(j.id)}
+                    onDragEnd={() => setDragId(null)}
+                  >
+                    <Link to={`/jobs/${j.id}`} className="board-card-title">{j.company}</Link>
+                    <div className="board-card-role">{j.role}</div>
+                    <div className="board-card-fit">fit {j.fit_score} · {j.category}</div>
+                  </div>
+                ))}
+                {jobs.length === 0 && <div className="board-empty">—</div>}
+              </div>
             </div>
           );
         })}
