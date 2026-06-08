@@ -119,9 +119,9 @@ export function Sidebar() {
           <span className="sb-ico">{theme === "night" ? <Sun size={18} strokeWidth={1.7} /> : <Moon size={18} strokeWidth={1.7} />}</span>
           <span className="sb-label">{theme === "night" ? "Day Press" : "Night Press"}</span>
         </button>
-        <button className="sb-item" onClick={togglePin} title={pinned ? "Unpin sidebar" : "Pin sidebar open"}>
+        <button className="sb-item" onClick={togglePin} title={pinned ? "Collapse sidebar" : "Expand sidebar"}>
           <span className="sb-ico">{pinned ? <PanelLeftClose size={18} strokeWidth={1.7} /> : <PanelLeftOpen size={18} strokeWidth={1.7} />}</span>
-          <span className="sb-label">{pinned ? "Unpin" : "Pin open"}</span>
+          <span className="sb-label">{pinned ? "Collapse" : "Expand"}</span>
         </button>
       </div>
     </aside>

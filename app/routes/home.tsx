@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useFetcher, redirect } from "react-router";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Archive } from "lucide-react";
 import type { Route } from "./+types/home";
 import { Shell } from "../components/Shell";
 import { getSetting } from "../sqlite.server";
 import { ensureScheduler } from "../services/scheduler.server";
-import { getLedger, updateNotes, setStage } from "../db.server";
+import { getLedger, updateNotes, setStage, archiveJob } from "../db.server";
 import { QUICK_STAGES, STAGE_LABEL, type Job, type Stage, type Category } from "../stages";
 
 export function meta(_: Route.MetaArgs) {
@@ -27,6 +27,7 @@ export async function action({ request }: Route.ActionArgs) {
   const intent = form.get("intent");
   const id = String(form.get("id") || "");
   if (intent === "stage") setStage(id, String(form.get("stage")) as Stage);
+  else if (intent === "archive") archiveJob(id);
   else if (intent === "notes") updateNotes(id, String(form.get("notes") || ""));
   return { ok: true };
 }
@@ -92,6 +93,10 @@ function StageDropdown({
       if (s === "applied" || s === "interview" || s === "offer") onStamp(STAGE_LABEL[s]);
     }
   }
+  function archive() {
+    onOpenChange(false);
+    fetcher.submit({ intent: "archive", id: job.id }, { method: "post" });
+  }
   return (
     <div className={`dd st-${current}`} data-open={open ? "" : undefined} onClick={(e) => e.stopPropagation()}>
       <button type="button" className="dd-btn" aria-haspopup="listbox" aria-expanded={open} onClick={() => onOpenChange(!open)}>
@@ -107,6 +112,9 @@ function StageDropdown({
               {STAGE_LABEL[s]}
             </li>
           ))}
+          <li role="option" className="dd-archive" onClick={archive}>
+            <Archive size={13} /> Archive
+          </li>
         </ul>
       )}
     </div>

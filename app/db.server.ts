@@ -102,6 +102,13 @@ export function getArchive(q?: string): Job[] {
   return getDb().prepare(`${SELECT_JOB} WHERE j.active = 0 ORDER BY j.last_seen DESC`).all() as Job[];
 }
 
+// Archive a job by hand — removes it from the ledger/board but keeps it in the Archive
+// (active=0), where it can be restored later.
+export function archiveJob(id: string): void {
+  getDb().prepare("UPDATE jobs SET active=0, updated_at=? WHERE id=?").run(new Date().toISOString(), id);
+  try { addEvent(id, "archived", {}); } catch {}
+}
+
 // Bring an archived job back to the active ledger.
 export function restoreJob(id: string): void {
   getDb().prepare("UPDATE jobs SET active=1, last_seen=?, updated_at=? WHERE id=?").run(new Date().toISOString(), new Date().toISOString(), id);

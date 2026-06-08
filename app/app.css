@@ -492,6 +492,8 @@ a {
 .dd-menu li[aria-selected="true"] { font-weight: 600; }
 .dd-menu li[aria-selected="true"]::after { content: "✓"; margin-left: auto; color: var(--vermillion); }
 .dd-menu li:hover::after { color: var(--paper); }
+.dd-menu li.dd-archive { gap: 8px; border-top: 1.5px solid var(--rule); color: var(--ink-faint); font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.dd-menu li.dd-archive svg { flex: none; }
 
 /* stage color tokens */
 .st-saved { --st: var(--ink-faint); }
@@ -527,14 +529,12 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
   overflow: hidden;
   transition: width 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.sidebar:hover,
 .sidebar.pinned { width: 214px; }
 .sb-top { display: flex; align-items: center; gap: 11px; padding: 14px 13px; min-height: 56px; border-bottom: 1.5px solid var(--rule); }
 .sb-brand { font-family: var(--display); font-weight: 900; font-size: 16px; color: var(--vermillion); text-decoration: none; width: 30px; height: 30px; display: grid; place-items: center; flex: none; }
 .sb-word { font-family: var(--display); font-weight: 700; font-size: 15px; line-height: 1.05; color: var(--ink); opacity: 0; transition: opacity 0.15s; }
 .sb-pin { margin-left: auto; background: transparent; border: 0; color: var(--ink-faint); cursor: pointer; opacity: 0; transition: opacity 0.15s; padding: 4px; display: grid; place-items: center; }
-.sidebar:hover .sb-word, .sidebar.pinned .sb-word,
-.sidebar:hover .sb-pin, .sidebar.pinned .sb-pin { opacity: 1; }
+.sidebar.pinned .sb-word, .sidebar.pinned .sb-pin { opacity: 1; }
 .sidebar.pinned .sb-pin { color: var(--vermillion); }
 .sb-nav { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 10px 8px; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; -ms-overflow-style: none; }
 .sb-nav::-webkit-scrollbar { width: 0; height: 0; display: none; }
@@ -563,7 +563,7 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 .sb-ico { flex: none; width: 22px; height: 20px; display: grid; place-items: center; }
 .sb-ico svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .sb-label { opacity: 0; transition: opacity 0.15s; }
-.sidebar:hover .sb-label, .sidebar.pinned .sb-label { opacity: 1; }
+.sidebar.pinned .sb-label { opacity: 1; }
 .sb-bottom { border-top: 1.5px solid var(--rule); padding: 8px; }
 @media (max-width: 640px) { body { padding-left: 78px; } .sidebar { width: 52px; } }
 
@@ -572,7 +572,7 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 .sb-amp { color: var(--vermillion); font-style: italic; }
 .sb-group + .sb-group { margin-top: 4px; }
 .sb-group-title { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.26em; text-transform: uppercase; color: var(--ink-faint); padding: 13px 12px 5px; white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
-.sidebar:hover .sb-group-title, .sidebar.pinned .sb-group-title { opacity: 1; }
+.sidebar.pinned .sb-group-title { opacity: 1; }
 .sb-item { position: relative; }
 .sb-item:hover { transform: translateX(2px); }
 .sb-item.active { background: color-mix(in srgb, var(--vermillion) 13%, transparent); }
@@ -588,7 +588,7 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
   animation: blink 1.6s ease-in-out infinite;
 }
 .sb-foot { padding: 10px 13px 12px; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; opacity: 0; transition: opacity 0.15s; }
-.sidebar:hover .sb-foot, .sidebar.pinned .sb-foot { opacity: 1; }
+.sidebar.pinned .sb-foot { opacity: 1; }
 
 /* ledger card discovered date */
 .num .disc { color: var(--ink-faint); }
