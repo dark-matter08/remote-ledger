@@ -23,7 +23,7 @@ import {
 import { getDefaultProfile } from "../resume/profiles.server";
 import { draftSessionAnswers, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields } from "./apply.server";
-import { resolveLive } from "./scrape.server";
+import { resolveLive, renderWaitFor } from "./scrape.server";
 
 const SHOT_DIR = resolve(process.cwd(), "data", "apply");
 const UA =
@@ -125,7 +125,7 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
         const page = await browser.newPage({ userAgent: UA });
         try {
           await page.goto(job.apply_url, { waitUntil: "domcontentloaded", timeout: 30000 });
-          await page.waitForTimeout(1800);
+          await page.waitForTimeout(renderWaitFor(job.apply_url));
           shot = resolve(SHOT_DIR, `s${sessionId}-${sjId}.png`);
           await page.screenshot({ path: shot, fullPage: true });
           addLog(sessionId, "screenshot", { jobId: job.id, text: "Captured application page", shot });

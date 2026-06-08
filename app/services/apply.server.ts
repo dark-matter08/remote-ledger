@@ -6,7 +6,7 @@
 import { getJob, getMeta, setMeta, addEvent, markClosed, setApplyUrl, jobApplyActivity, answerBank } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { latestVersion } from "../resume/versions.server";
-import { verifyApplyUrl } from "./scrape.server";
+import { verifyApplyUrl, renderWaitFor } from "./scrape.server";
 import type { ResumeContact } from "../resume/types";
 
 const UA =
@@ -49,7 +49,7 @@ export async function detectFormFields(url: string): Promise<FormField[]> {
     browser = await chromium.launch();
     const page = await browser.newPage({ userAgent: UA });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(1800);
+    await page.waitForTimeout(renderWaitFor(url));
     const fields = (await page.evaluate(EXTRACT_FIELDS)) as FormField[];
     return fields;
   } catch {
@@ -180,7 +180,7 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
     browser = await chromium.launch({ headless: false }); // headed: you watch + submit
     const page = await browser.newPage({ userAgent: UA });
     await page.goto(job.apply_url, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(ats === "Ashby" ? 3500 : 2200); // React ATSes need a beat
+    await page.waitForTimeout(renderWaitFor(job.apply_url)); // React ATSes need a beat to hydrate
 
     const handles = await page.$$("input, textarea");
     for (const el of handles) {

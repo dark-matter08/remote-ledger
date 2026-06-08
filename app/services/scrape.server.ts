@@ -7,6 +7,11 @@ import { getJob, setJd, addEvent } from "../db.server";
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
 
+// JS-heavy SPA ATSes hydrate their content client-side and need longer to paint;
+// give them extra render time so we don't misread a live posting as "thin".
+const SLOW_ATS = /(ashbyhq|greenhouse|lever\.co|workable|myworkdayjobs|workday|smartrecruiters|icims|inhire|teamtailor|recruitee|bamboohr|breezy|jobvite|pinpointhq|rippling|join\.com)/i;
+export const renderWaitFor = (url: string): number => (SLOW_ATS.test(url) ? 5000 : 3000);
+
 export interface Scraped {
   title: string;
   text: string;
@@ -124,7 +129,7 @@ async function scrapeWithBrowser(browser: any, url: string): Promise<Scraped> {
   const page = await browser.newPage({ userAgent: UA });
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(1800); // let SPA job portals (Lever/Ashby/Greenhouse/Workday) render
+    await page.waitForTimeout(renderWaitFor(url)); // let SPA job portals (Lever/Ashby/Greenhouse/Workday) render
     const data = await page.evaluate(PICK_JD);
     const text = clean((data.meta ? data.meta + "\n\n" : "") + data.text);
     return { title: data.title, text, html: sanitizeJdHtml(data.html), ok: text.length > 60 };
@@ -279,7 +284,7 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
       try {
         const resp = await page.goto(cur, { waitUntil: "domcontentloaded", timeout: 30000 });
         status = resp ? resp.status() : 0;
-        await page.waitForTimeout(1600);
+        await page.waitForTimeout(renderWaitFor(cur));
         finalUrl = page.url();
         const cap = await page.evaluate(PICK_JD);
         bodyText = cap.bodyText || "";

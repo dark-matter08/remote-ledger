@@ -51,7 +51,9 @@ export async function loader() {
       schedulerEnabled: getSetting("scheduler_enabled") !== "false",
       scrapeJds: getSetting("scrape_jds") !== "false",
       scrapeLimit: getSetting("scrape_limit") || "12",
+      crawlMode: getSetting("crawl_mode") || "time",
       crawlTimeout: getSetting("crawl_timeout_min") || "15",
+      crawlTarget: getSetting("crawl_target_count") || "5",
       searchPrompt: getSetting("search_prompt") || defaultPrompt(),
       defaultStyle: getSetting("default_resume_style") || "letterpress",
       profileLocation: getSetting("profile_location") || "",
@@ -93,7 +95,9 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "save-scheduler") {
     save("scheduler_interval_hours");
     save("scrape_limit");
+    save("crawl_mode");
     save("crawl_timeout_min");
+    save("crawl_target_count");
     setSetting("scheduler_enabled", form.get("scheduler_enabled") ? "true" : "false");
     setSetting("scrape_jds", form.get("scrape_jds") ? "true" : "false");
     return { ok: true, msg: "Scheduler settings saved." };
@@ -118,6 +122,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
+  const [crawlMode, setCrawlMode] = useState(settings.crawlMode);
   const cliRunners = runners.filter((r) => r.kind === "cli");
   const availRunners = runners.filter((r) => r.available);
 
@@ -216,9 +221,33 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
             <div className="field"><label>Max postings to scrape per crawl</label><input type="number" min="0" name="scrape_limit" defaultValue={settings.scrapeLimit} /></div>
           </div>
           <div className="row2">
-            <div className="field"><label>Find-crawl timeout (minutes)</label><input type="number" min="2" max="60" name="crawl_timeout_min" defaultValue={settings.crawlTimeout} /></div>
-            <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><span className="hint" style={{ margin: 0 }}>How long the research agent may run before it's stopped. The prompt tells it to return results well within this.</span></div>
+            <div className="field">
+              <label>How the find-crawl stops</label>
+              <Select
+                name="crawl_mode"
+                value={crawlMode}
+                onChange={(v) => setCrawlMode(v)}
+                options={[
+                  { value: "time", label: "Time budget — run for N minutes" },
+                  { value: "count", label: "Goal — run until N solid jobs (no time limit)" },
+                ]}
+              />
+            </div>
+            {crawlMode === "time" ? (
+              <div className="field"><label>Find-crawl timeout (minutes)</label><input key="timeout" type="number" min="2" max="60" name="crawl_timeout_min" defaultValue={settings.crawlTimeout} /></div>
+            ) : (
+              <div className="field"><label>Target verified jobs</label><input key="target" type="number" min="1" max="25" name="crawl_target_count" defaultValue={settings.crawlTarget} /></div>
+            )}
           </div>
+          {/* keep the hidden field for the inactive mode so its saved value is preserved */}
+          {crawlMode === "time"
+            ? <input type="hidden" name="crawl_target_count" value={settings.crawlTarget} />
+            : <input type="hidden" name="crawl_timeout_min" value={settings.crawlTimeout} />}
+          <p className="hint" style={{ marginTop: 0 }}>
+            {crawlMode === "time"
+              ? "Time budget: the agent self-paces by an action cap derived from this timeout, and is hard-stopped only at 2× if it runs away."
+              : "Goal mode: the agent keeps searching and following links to employer pages over several rounds until it has this many verified-open roles. No time limit (a per-round safety net still applies)."}
+          </p>
           <div style={{ display: "flex", gap: 10 }}>
             <button className="btn" disabled={saving}>Save</button>
             <button className="ghost-btn" name="intent" value="crawl-now" formNoValidate>{saving ? "Crawling…" : "Run crawl now"}</button>

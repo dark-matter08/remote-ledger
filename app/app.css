@@ -513,7 +513,10 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
-  height: 70vh;
+  /* grows with the number of nav items, but never taller than 87vh (then .sb-nav scrolls) */
+  height: auto;
+  min-height: min(70vh, 560px);
+  max-height: 87vh;
   width: 56px;
   z-index: 55;
   background: var(--paper);

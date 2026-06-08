@@ -11,15 +11,21 @@ export interface Opt {
 export function Select({
   name,
   defaultValue,
+  value: controlled,
+  onChange,
   options,
   placeholder = "Select…",
 }: {
   name: string;
   defaultValue?: string;
+  value?: string;            // when provided, the Select is controlled by the parent
+  onChange?: (value: string) => void;
   options: Opt[];
   placeholder?: string;
 }) {
-  const [value, setValue] = useState(defaultValue ?? options[0]?.value ?? "");
+  const [internal, setInternal] = useState(defaultValue ?? options[0]?.value ?? "");
+  const value = controlled !== undefined ? controlled : internal;
+  const choose = (v: string) => { setInternal(v); onChange?.(v); setOpen(false); };
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -62,8 +68,7 @@ export function Select({
               className={o.disabled ? "disabled" : ""}
               onClick={() => {
                 if (o.disabled) return;
-                setValue(o.value);
-                setOpen(false);
+                choose(o.value);
               }}
             >
               <span>{o.label}</span>
