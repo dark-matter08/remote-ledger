@@ -19,6 +19,7 @@ import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
+import { loggedTask } from "../services/crawl.server";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -90,7 +91,10 @@ export async function action({ request, params }: Route.ActionArgs) {
     if (intent === "tailor") {
       if (!base) return { error: "Upload a base résumé first (Résumés page)." };
       const style = (String(form.get("style") || "letterpress") as ResumeStyle);
-      const t = await tailorResume(base, ctx(job));
+      const t = await loggedTask("tailor", `Tailor résumé · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Rewriting your résumé for this role (anti-hallucination guard on)…");
+        return tailorResume(base, ctx(job));
+      });
       const vid = createVersion({
         jobId: job.id,
         profileId: String(form.get("profileId") || ""),
@@ -109,29 +113,43 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (intent === "cover") {
       if (!base) return { error: "Upload a base résumé first." };
-      const c = await coverLetter(base, ctx(job));
+      const c = await loggedTask("cover", `Cover letter · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Drafting a cover letter from your résumé + the JD…");
+        return coverLetter(base, ctx(job));
+      });
       createVersion({ jobId: job.id, kind: "cover-letter", content_md: c.text, llmCallId: c.callId ?? null });
       addEvent(job.id, "cover_generated", {});
       return { ok: true, msg: "Cover letter generated." };
     }
     if (intent === "match") {
       if (!base) return { error: "Upload a base résumé first." };
-      const m = await analyzeMatch(base, ctx(job));
+      const m = await loggedTask("match", `Match analysis · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Comparing your résumé against the job description…");
+        return analyzeMatch(base, ctx(job));
+      });
       setMeta(`match:${job.id}`, JSON.stringify(m.match));
       return { ok: true, msg: `Match analyzed (${m.match.score}).` };
     }
     if (intent === "interview") {
       if (!base) return { error: "Upload a base résumé first." };
-      const p = await interviewPrep(base, ctx(job));
+      const p = await loggedTask("prep", `Interview prep · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Generating likely questions + talking points…");
+        return interviewPrep(base, ctx(job));
+      });
       setMeta(`prep:${job.id}`, p.text);
       addEvent(job.id, "interview_prep", {});
       return { ok: true, msg: "Interview prep generated." };
     }
     if (intent === "draft-answers") {
       if (!base) return { error: "Upload a base résumé first." };
-      const fields = await detectFormFields(job.apply_url);
-      const qs = questionFields(fields);
-      const a = await applicationAnswers(base, ctx(job), qs);
+      const { fields, qs, a } = await loggedTask("answers", `Draft answers · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Reading the application form…");
+        const fields = await detectFormFields(job.apply_url);
+        const qs = questionFields(fields);
+        L("step", `Drafting answers for ${qs.length} question(s)…`);
+        const a = await applicationAnswers(base, ctx(job), qs);
+        return { fields, qs, a };
+      });
       setMeta(`answers:${job.id}`, JSON.stringify({ fieldCount: fields.length, detected: qs.length, answers: a.answers }));
       addEvent(job.id, "answers_drafted", { questions: a.answers.length, formFields: fields.length });
       return { ok: true, msg: `Drafted ${a.answers.length} answer(s)${fields.length ? ` from ${fields.length} detected form fields` : " (form not readable — used generic questions)"}.` };
@@ -155,6 +173,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
   const [tab, setTab] = useState<Tab>("Overview");
   const nav = useNavigation();
   const busy = nav.state !== "idle";
+  const running = nav.formData?.get("intent")?.toString(); // which action is in flight
   const resumeVersions = versions.filter((v) => v.kind === "resume");
   const coverVersions = versions.filter((v) => v.kind === "cover-letter");
   const catCls = job.category === "high" ? "sh-high" : job.category === "medium" ? "sh-medium" : "sh-stretch";
@@ -180,7 +199,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
 
       {actionData?.error && <div className="notice err">{actionData.error}</div>}
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}
-      {busy && <div className="notice warn">Working… AI calls can take a moment.</div>}
+      {busy && <div className="notice warn">Working… AI calls can take a moment. Watch progress in the <Link to="/crawl" className="entry-title-link">Crawl Shell</Link>.</div>}
 
       <div className="tabs">
         {TABS.map((t) => (
@@ -195,7 +214,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <p className="hint">Captured from the posting and rendered in Heritage Press. Powers tailoring, match &amp; prep.</p>
             <Form method="post" style={{ display: "inline-block", marginBottom: 12 }}>
               <input type="hidden" name="intent" value="scrape-jd" />
-              <button className="ghost-btn" disabled={busy}>{busy ? "Fetching…" : "⟳ Fetch from posting"}</button>
+              <button className="ghost-btn" disabled={busy}>{running === "scrape-jd" ? "Fetching…" : "⟳ Fetch from posting"}</button>
             </Form>
             {job.jd_html ? (
               <div className="jd-rendered" dangerouslySetInnerHTML={{ __html: job.jd_html }} />
@@ -214,7 +233,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               </Form>
             </details>
           </div>
-          <MatchPanel match={storedMatch} busy={busy} profiles={profiles} defaultProfileId={defaultProfileId} />
+          <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
         </>
       )}
 
@@ -238,7 +257,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 <Select name="style" defaultValue={defaultStyle} options={styles.map((s) => ({ value: s, label: s }))} />
               </div>
             </div>
-            <button className="btn" disabled={busy || profiles.length === 0}>{busy ? "Tailoring…" : "Tailor & build PDF"}</button>
+            <button className="btn" disabled={busy || profiles.length === 0}>{running === "tailor" ? "Tailoring…" : "Tailor & build PDF"}</button>
           </Form>
 
           {resumeVersions.length === 0 ? (
@@ -269,7 +288,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
       {tab === "Cover" && (
         <div className="panel">
           <h3>Cover letter</h3>
-          <Form method="post"><input type="hidden" name="intent" value="cover" /><button className="btn" disabled={busy}>{busy ? "Writing…" : "Generate cover letter"}</button></Form>
+          <Form method="post"><input type="hidden" name="intent" value="cover" /><button className="btn" disabled={busy}>{running === "cover" ? "Writing…" : "Generate cover letter"}</button></Form>
           {coverVersions.map((v) => (
             <div key={v.id} className="version">
               <div className="version-head"><strong>v{v.id}</strong> · {v.created_at.slice(0, 16).replace("T", " ")}</div>
@@ -287,8 +306,8 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             posting in a real browser and prefill it. <strong>It never submits</strong> — you review and click submit.
           </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "12px 0" }}>
-            <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><button className="btn" disabled={busy}>{busy ? "Working…" : "Detect form & draft answers"}</button></Form>
-            <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy || !storedAnswers}>Open &amp; prefill in browser ▸</button></Form>
+            <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><button className="btn" disabled={busy}>{running === "draft-answers" ? "Drafting…" : "Detect form & draft answers"}</button></Form>
+            <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy || !storedAnswers}>{running === "assist-apply" ? "Opening…" : "Open & prefill in browser ▸"}</button></Form>
           </div>
 
           {assist && (
@@ -380,7 +399,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
       {tab === "Prep" && (
         <div className="panel">
           <h3>Interview prep</h3>
-          <Form method="post"><input type="hidden" name="intent" value="interview" /><button className="btn" disabled={busy}>{busy ? "Preparing…" : "Generate prep"}</button></Form>
+          <Form method="post"><input type="hidden" name="intent" value="interview" /><button className="btn" disabled={busy}>{running === "interview" ? "Preparing…" : "Generate prep"}</button></Form>
           {storedPrep ? <pre className="letter">{storedPrep}</pre> : <p className="hint" style={{ marginTop: 12 }}>No prep yet.</p>}
         </div>
       )}
@@ -439,14 +458,14 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
   );
 }
 
-function MatchPanel({ match, busy, profiles, defaultProfileId }: any) {
+function MatchPanel({ match, busy, running, profiles, defaultProfileId }: any) {
   return (
     <div className="panel">
       <h3>Match &amp; gap</h3>
       <Form method="post" style={{ marginBottom: 12 }}>
         <input type="hidden" name="intent" value="match" />
         <input type="hidden" name="profileId" value={defaultProfileId || ""} />
-        <button className="ghost-btn" disabled={busy || profiles.length === 0}>Analyze match</button>
+        <button className="ghost-btn" disabled={busy || profiles.length === 0}>{running === "match" ? "Analyzing…" : "Analyze match"}</button>
       </Form>
       {match ? (
         <>

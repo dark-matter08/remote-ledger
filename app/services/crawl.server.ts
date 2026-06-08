@@ -166,6 +166,30 @@ export function isCrawlRunning(): boolean {
   return running || !!activeCrawl();
 }
 
+// Wrap any short LLM task as a crawl_run so it's monitorable in the Crawl Shell
+// (status + step logs + history). Runs inline; the run row commits immediately so a
+// shell open in another tab sees it live. Returns the task's result.
+export async function loggedTask<T>(
+  type: string,
+  label: string,
+  fn: (log: (kind: string, text: string) => void) => Promise<T>
+): Promise<T> {
+  const runId = createCrawlRun(type, "job");
+  updateCrawlRun(runId, { note: label });
+  const L = (kind: string, text: string) => crawlLog(runId, kind, text);
+  L("note", `${label} — started`);
+  try {
+    const r = await fn(L);
+    L("note", "Done.");
+    updateCrawlRun(runId, { status: "done", ended_at: new Date().toISOString() });
+    return r;
+  } catch (e: any) {
+    L("error", String(e?.message || e).slice(0, 300));
+    updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: label });
+    throw e;
+  }
+}
+
 async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
