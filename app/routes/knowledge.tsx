@@ -1,8 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Form, Link, useNavigation, useRevalidator } from "react-router";
 import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
 import { FolderScan } from "../components/FolderScan";
+import { GraphView } from "../components/graph/GraphView";
+import { buildGraph } from "../services/graph.server";
 import {
   kbItems,
   kbOpenQuestions,
@@ -34,6 +36,7 @@ export async function loader() {
     suggestions: kbSuggestions("pending"),
     scans: kbScans(),
     scanning: !!activeScan(),
+    graph: buildGraph(),
   };
 }
 
@@ -78,6 +81,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();
+  const [view, setView] = useState<"manage" | "graph">("manage");
 
   useEffect(() => {
     if (!kb.scanning) return;
@@ -100,6 +104,14 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
       {!kb.hasRunner && <div className="notice warn">Connect an AI runner in <Link to="/settings" className="entry-title-link">Settings</Link> to build your knowledge base.</div>}
       {!kb.hasProfile && <div className="notice warn">Upload a base résumé on <Link to="/resume" className="entry-title-link">Résumés</Link> so accepted bullets have somewhere to land.</div>}
 
+      <div className="tabs">
+        <button className={`tab ${view === "manage" ? "on" : ""}`} onClick={() => setView("manage")}>Manage</button>
+        <button className={`tab ${view === "graph" ? "on" : ""}`} onClick={() => setView("graph")}>Graph</button>
+      </div>
+
+      {view === "graph" && <GraphView data={kb.graph as any} />}
+
+      <div style={{ display: view === "manage" ? "block" : "none" }}>
       <div className="panel kb">
         <h3>
           Add to your knowledge{" "}
@@ -199,6 +211,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
             </div>
           ))
         )}
+      </div>
       </div>
     </Shell>
   );
