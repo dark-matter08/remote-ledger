@@ -17,12 +17,13 @@ import {
   addQuestion,
   lookupAnswer,
   setJd,
+  setMeta,
   markClosed,
   setApplyUrl,
 } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { draftSessionAnswers, type JobCtx } from "../resume/ai.server";
-import { detectFormFields, questionFields } from "./apply.server";
+import { detectFormFields, questionFields, prefillJobOnPage, APPLY_HEADLESS } from "./apply.server";
 import { resolveLive, renderWaitFor } from "./scrape.server";
 
 const SHOT_DIR = resolve(process.cwd(), "data", "apply");
@@ -88,12 +89,19 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
     return;
   }
 
+  // ASSIST mode opens a VISIBLE browser and actually prefills each form (you submit);
+  // DRAFT mode runs headless and only captures + drafts answers. (APPLY_HEADLESS=1
+  // forces headless everywhere for servers/testing.)
+  const headed = mode === "assist" && !APPLY_HEADLESS;
   let browser: any;
   try {
     const { chromium } = await import("playwright");
-    browser = await chromium.launch();
+    browser = await chromium.launch({ headless: !headed });
   } catch (e: any) {
     addLog(sessionId, "error", { text: `Browser unavailable: ${e.message}` });
+  }
+  if (mode === "assist") {
+    addLog(sessionId, "note", { text: headed ? "Assist mode: opening a visible browser and prefilling each form — review and click Submit yourself." : "Assist mode (headless): prefilling forms and saving a screenshot of each." });
   }
 
   let processed = 0,
@@ -118,11 +126,14 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
         if (live.finalUrl && live.finalUrl !== job.apply_url) { setApplyUrl(job.id, live.finalUrl); job.apply_url = live.finalUrl; }
       }
 
-      // 1) screenshot the application page + (optionally) capture the JD
+      // 1) open the application page + (optionally) capture the JD. In assist mode we
+      // KEEP this page open so we can prefill it and leave it for you to submit.
       let shot: string | undefined;
       let fields: any[] = [];
+      let livePage: any = null;
       if (browser) {
         const page = await browser.newPage({ userAgent: UA });
+        let keep = false;
         try {
           await page.goto(job.apply_url, { waitUntil: "domcontentloaded", timeout: 30000 });
           await page.waitForTimeout(renderWaitFor(job.apply_url));
@@ -136,8 +147,9 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
               addLog(sessionId, "action", { jobId: job.id, text: `Saved JD (${txt.length} chars)` });
             }
           }
+          if (mode === "assist") { keep = true; livePage = page; } // reuse for prefill
         } finally {
-          await page.close().catch(() => {});
+          if (!keep) await page.close().catch(() => {});
         }
       }
       fields = await detectFormFields(job.apply_url);
@@ -154,6 +166,7 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
       const { items } = await draftSessionAnswers(profile.data, ctx, qs, known);
 
       let unanswered = 0;
+      const drafted: { question: string; answer: string }[] = [];
       for (const it of items) {
         const banked = lookupAnswer(it.question);
         if (it.needsInput && !banked) {
@@ -163,10 +176,30 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
         } else {
           const ans = banked || it.answer;
           addLog(sessionId, "answer", { jobId: job.id, text: `Q: ${it.question}\nA: ${ans}` });
+          drafted.push({ question: it.question, answer: ans });
         }
       }
+
+      // 3) ASSIST mode: persist drafted answers so the prefill engine can use them,
+      // then actually prefill the open form (résumé upload, identity, cover, answers).
+      let status: string = unanswered ? "needs_input" : "drafted";
+      if (mode === "assist" && livePage) {
+        if (drafted.length) setMeta(`answers:${job.id}`, JSON.stringify({ answers: drafted }));
+        try {
+          const r = await prefillJobOnPage(job.id, livePage, (m) => addLog(sessionId, "action", { jobId: job.id, text: m }));
+          addLog(sessionId, "note", { jobId: job.id, text: r.message });
+          if (r.shot) addLog(sessionId, "screenshot", { jobId: job.id, text: `Prefilled form (${r.confidence}% ready)`, shot: r.shot });
+          shot = r.shot || shot;
+          status = r.ok ? (headed ? "prefilled" : "drafted") : status;
+        } catch (e: any) {
+          addLog(sessionId, "error", { jobId: job.id, text: `Prefill failed: ${e.message}` });
+        }
+        // headed: leave the tab open for the user to review + submit. headless: close it.
+        if (!headed) await livePage.close().catch(() => {});
+      }
+
       updateSessionJob(sjId, {
-        status: unanswered ? "needs_input" : "drafted",
+        status,
         questions: items.length,
         unanswered,
         shot_path: shot ?? null,
@@ -181,9 +214,15 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
     updateSession(sessionId, { processed, needs_input: needsInputTotal });
   }
 
-  if (browser) await browser.close().catch(() => {});
+  // Headed assist leaves the browser + prefilled tabs OPEN so you can review and submit
+  // each one; everything else closes the browser.
+  if (browser && !headed) await browser.close().catch(() => {});
   updateSession(sessionId, { status: "done", ended_at: new Date().toISOString() });
-  addLog(sessionId, "note", { text: `Session complete. ${processed} processed, ${needsInputTotal} question(s) need your input.` });
+  addLog(sessionId, "note", {
+    text: headed
+      ? `Session complete. ${processed} processed — prefilled tabs are open in the browser; review each and click Submit. ${needsInputTotal} question(s) need your input.`
+      : `Session complete. ${processed} processed, ${needsInputTotal} question(s) need your input.`,
+  });
 }
 
 // Resume a finished session after you've answered its pooled questions. Re-applies the

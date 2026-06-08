@@ -13,6 +13,7 @@ export default [
   route("analytics", "routes/analytics.tsx"),
   route("apply", "routes/apply.tsx"),
   route("apply/shot/:id", "routes/apply-shot.tsx"),
+  route("assist/shot/:id", "routes/assist-shot.tsx"),
   route("crawl", "routes/crawl.tsx"),
   route("expired", "routes/expired.tsx"),
   route("archive", "routes/archive.tsx"),

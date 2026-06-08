@@ -10,3 +10,5 @@
 /data/
 /logs/
 /tmp/
+.gstack/
+screenshots/_dummy-resume.pdf

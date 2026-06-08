@@ -156,7 +156,9 @@ export async function action({ request, params }: Route.ActionArgs) {
       return { ok: true, msg: `Drafted ${a.answers.length} answer(s)${fields.length ? ` from ${fields.length} detected form fields` : " (form not readable — used generic questions)"}.` };
     }
     if (intent === "assist-apply") {
-      const r = await assistApply(job.id);
+      const r = await loggedTask("prep", `Assisted apply · ${job.company} — ${job.role}`, async (L) =>
+        assistApply(job.id, (m) => L("step", m))
+      );
       return r.ok ? { ok: true, msg: r.message, assist: r } : { error: r.message };
     }
   } catch (e: any) {
@@ -308,7 +310,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "12px 0" }}>
             <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><button className="btn" disabled={busy}>{running === "draft-answers" ? "Drafting…" : "Detect form & draft answers"}</button></Form>
-            <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy || !storedAnswers}>{running === "assist-apply" ? "Opening…" : "Open & prefill in browser ▸"}</button></Form>
+            <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy}>{running === "assist-apply" ? "Opening browser…" : "Open & prefill in browser ▸"}</button></Form>
           </div>
 
           {assist && (
@@ -345,6 +347,13 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 </div>
               )}
               <p className="hint" style={{ marginTop: 8 }}>Review every field in the open browser, fill anything marked ○, then click Submit yourself — it never submits.</p>
+              {assist.shot && (
+                <a href={`/assist/shot/${job.id}`} target="_blank" rel="noreferrer" style={{ display: "block", marginTop: 10 }}>
+                  <img src={`/assist/shot/${job.id}?t=${encodeURIComponent(assist.at || "")}`} alt="Prefilled application form"
+                    style={{ width: "100%", border: "1.5px solid var(--rule)", boxShadow: "4px 4px 0 var(--ink)" }} />
+                  <span className="hint" style={{ display: "block", marginTop: 4 }}>Screenshot of the prefilled form — click to enlarge</span>
+                </a>
+              )}
             </div>
           )}
 

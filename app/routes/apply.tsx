@@ -92,6 +92,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 const STATUS_BADGE: Record<string, string> = {
+  prefilled: "ok",
   drafted: "ok",
   needs_input: "warn",
   failed: "on",
@@ -155,7 +156,7 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
         </div>
         <div className="row2">
           <div className="field"><label>Mode</label>
-            <Select name="mode" defaultValue="draft" options={[{ value: "draft", label: "Draft (headless, capture + answers)" }, { value: "assist", label: "Assist (also captures JD)" }]} />
+            <Select name="mode" defaultValue="draft" options={[{ value: "draft", label: "Draft — headless: capture + draft answers" }, { value: "assist", label: "Assist — opens a visible browser & prefills each form (you submit)" }]} />
           </div>
           <div className="field" style={{ display: "flex", alignItems: "flex-end" }}>
             <label style={{ margin: 0 }}><input type="checkbox" name="requireJd" defaultChecked /> Capture full JD if missing</label>
