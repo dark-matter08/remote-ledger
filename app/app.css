@@ -662,7 +662,11 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 .checkrow { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
 .checkrow label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .qpool { border-top: 1px solid var(--rule-faint); padding-top: 14px; margin-top: 14px; }
-.qpool-q { font-family: var(--serif); font-size: 15px; margin-bottom: 8px; }
+.qpool-q { font-family: var(--serif); font-size: 15px; margin-bottom: 8px; display: flex; align-items: baseline; gap: 12px; }
+.qpool-q > span:first-child { flex: 1; }
+.qpool-del { flex: none; }
+.qpool-del .back-link { color: var(--ink-faint); }
+.qpool-del .back-link:hover { color: var(--vermillion); }
 .qpool-job { color: var(--ink-faint); font-style: italic; }
 .qpool textarea { width: 100%; box-sizing: border-box; font-family: var(--serif); font-size: 14px; line-height: 1.5; border: 1.5px solid var(--ink-faint); background: var(--paper); color: var(--ink); padding: 9px 11px; min-height: 70px; margin-bottom: 8px; }
 .qpool textarea:focus { outline: none; border-color: var(--ink); }

@@ -20,6 +20,7 @@ import {
   setSourceInterval,
   addManualNote,
   answerKbQuestion,
+  deleteKbQuestion,
   redraftItem,
   acceptSuggestion,
   dismissSuggestion,
@@ -77,6 +78,7 @@ export async function action({ request }: Route.ActionArgs) {
       if (itemId) await redraftItem(itemId);
       return { ok: true, msg: "Answer saved — refreshed the drafted bullets." };
     }
+    if (intent === "kb-del-question") { deleteKbQuestion(Number(form.get("id"))); return { ok: true, msg: "Question removed." }; }
     if (intent === "kb-accept") {
       const r = acceptSuggestion(Number(form.get("id")));
       return r.ok ? { ok: true, msg: r.msg } : { error: r.msg };
@@ -227,16 +229,25 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
       {kb.questions.length > 0 && (
         <div className="panel">
           <h3>Questions for you <span className="badge warn">{kb.questions.length}</span></h3>
-          <p className="hint">Answer once — sharpens the drafted bullets and enriches the graph.</p>
+          <p className="hint">Answer the useful ones — it sharpens the drafted bullets and enriches the graph. Dismiss any that don't matter.</p>
           {kb.questions.map((q: any) => (
-            <Form method="post" key={q.id} className="qpool">
-              <input type="hidden" name="intent" value="kb-answer" />
-              <input type="hidden" name="id" value={q.id} />
-              <input type="hidden" name="itemId" value={q.item_id || ""} />
-              <div className="qpool-q">{q.question} {q.title ? <span className="qpool-job">— {q.title}</span> : null}</div>
-              <textarea name="answer" placeholder="Your answer…" />
-              <button className="ghost-btn" disabled={busy}>Save answer</button>
-            </Form>
+            <div key={q.id} className="qpool">
+              <div className="qpool-q">
+                <span>{q.question} {q.title ? <span className="qpool-job">— {q.title}</span> : null}</span>
+                <Form method="post" className="qpool-del">
+                  <input type="hidden" name="intent" value="kb-del-question" />
+                  <input type="hidden" name="id" value={q.id} />
+                  <button className="back-link" disabled={busy} title="Remove this question">✕ dismiss</button>
+                </Form>
+              </div>
+              <Form method="post">
+                <input type="hidden" name="intent" value="kb-answer" />
+                <input type="hidden" name="id" value={q.id} />
+                <input type="hidden" name="itemId" value={q.item_id || ""} />
+                <textarea name="answer" placeholder="Your answer…" />
+                <button className="ghost-btn" disabled={busy}>Save answer</button>
+              </Form>
+            </div>
           ))}
         </div>
       )}

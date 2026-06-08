@@ -64,6 +64,9 @@ const normalizeSection = (s?: string) => (["project", "experience", "skill", "su
 export function answerKbQuestion(id: number, answer: string): void {
   getDb().prepare("UPDATE kb_questions SET answer=?, answered_at=? WHERE id=?").run(answer.slice(0, 2000), NOW(), id);
 }
+export function deleteKbQuestion(id: number): void {
+  getDb().prepare("DELETE FROM kb_questions WHERE id=?").run(id);
+}
 export function dismissSuggestion(id: number): void {
   getDb().prepare("UPDATE kb_suggestions SET status='dismissed' WHERE id=?").run(id);
 }
