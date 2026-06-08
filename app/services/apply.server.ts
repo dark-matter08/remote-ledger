@@ -3,7 +3,7 @@
 // Safety: this never submits an application. It (1) reads the form to draft answers,
 // and (2) optionally opens a VISIBLE browser and prefills identity fields, resume
 // upload, and drafted answers — then leaves it for you to review and submit.
-import { getJob, getMeta, jobApplyActivity, answerBank } from "../db.server";
+import { getJob, getMeta, setMeta, addEvent, jobApplyActivity, answerBank } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { latestVersion } from "../resume/versions.server";
 import type { ResumeContact } from "../resume/types";
@@ -137,13 +137,23 @@ export interface AssistResult {
   filled: string[];
   unfilled: string[];
   ats: string;
+  confidence: number; // 0-100: share of detected fields we could prefill
+  at: string; // ISO timestamp of the run
   message: string;
+}
+
+// Persisted snapshot of the last prefill run, surfaced in the job's Apply tab.
+export function lastAssist(jobId: string): AssistResult | null {
+  const raw = getMeta(`assist:${jobId}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as AssistResult; } catch { return null; }
 }
 
 // Opens a VISIBLE browser, prefills what it safely can (ATS-aware), never submits.
 export async function assistApply(jobId: string): Promise<AssistResult> {
+  const at = new Date().toISOString();
   const job = getJob(jobId);
-  if (!job) return { ok: false, filled: [], unfilled: [], ats: "", message: "job not found" };
+  if (!job) return { ok: false, filled: [], unfilled: [], ats: "", confidence: 0, at, message: "job not found" };
   const ats = detectAts(job.apply_url);
   const contact = getDefaultProfile()?.data.contact || { name: "" };
   const pdfPath = latestVersion(jobId, "resume")?.pdf_path || null;
@@ -190,15 +200,22 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
       }
     }
     // leave the browser open for review + manual submit (NEVER submit)
-    return {
+    const total = filled.length + unfilled.length;
+    const confidence = total ? Math.round((filled.length / total) * 100) : 0;
+    const result: AssistResult = {
       ok: true,
       filled,
       unfilled,
       ats,
-      message: `Opened ${ats} and prefilled ${filled.length} field(s)${unfilled.length ? `, ${unfilled.length} need your input` : ""}. Review everything and click Submit yourself — it does not submit.`,
+      confidence,
+      at,
+      message: `${ats}: prefilled ${filled.length} field(s)${unfilled.length ? `, ${unfilled.length} need your input` : ""} — ${confidence}% ready. Review everything and click Submit yourself; it does not submit.`,
     };
+    setMeta(`assist:${jobId}`, JSON.stringify(result));
+    addEvent(jobId, "assist_prefill", { ats, filled: filled.length, unfilled: unfilled.length, confidence });
+    return result;
   } catch (e: any) {
     if (browser) await browser.close().catch(() => {});
-    return { ok: false, filled, unfilled, ats, message: `Could not open a visible browser here (${e.message}). Use the drafted answers to apply manually.` };
+    return { ok: false, filled, unfilled, ats, confidence: 0, at, message: `Could not open a visible browser here (${e.message}). Use the drafted answers to apply manually.` };
   }
 }

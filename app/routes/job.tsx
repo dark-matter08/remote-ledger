@@ -18,7 +18,7 @@ import {
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, type JobCtx } from "../resume/ai.server";
-import { detectFormFields, questionFields, assistApply } from "../services/apply.server";
+import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -42,6 +42,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     storedPrep: getMeta(`prep:${job.id}`),
     storedAnswers: getMeta(`answers:${job.id}`) ? JSON.parse(getMeta(`answers:${job.id}`)!) : null,
     applyActivity: jobApplyActivity(job.id),
+    lastAssist: lastAssist(job.id),
     styles: RESUME_STYLES,
     stages: STAGES,
     stageLabels: STAGE_LABEL,
@@ -137,7 +138,7 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (intent === "assist-apply") {
       const r = await assistApply(job.id);
-      return r.ok ? { ok: true, msg: r.message } : { error: r.message };
+      return r.ok ? { ok: true, msg: r.message, assist: r } : { error: r.message };
     }
   } catch (e: any) {
     return { error: e.message || String(e) };
@@ -149,7 +150,8 @@ const TABS = ["Overview", "Tailor", "Cover", "Apply", "Prep", "Application", "Hi
 type Tab = (typeof TABS)[number];
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, styles, stages, stageLabels, defaultStyle } = loaderData;
+  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle } = loaderData;
+  const assist = (actionData as any)?.assist || lastAssist;
   const [tab, setTab] = useState<Tab>("Overview");
   const nav = useNavigation();
   const busy = nav.state !== "idle";
@@ -277,6 +279,43 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><button className="btn" disabled={busy}>{busy ? "Working…" : "Detect form & draft answers"}</button></Form>
             <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy || !storedAnswers}>Open &amp; prefill in browser ▸</button></Form>
           </div>
+
+          {assist && (
+            <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 8 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                <h3 style={{ fontSize: 16, marginTop: 10 }}>Prefill readiness</h3>
+                <span className={`badge ${assist.confidence >= 80 ? "ok" : assist.confidence >= 50 ? "warn" : "on"}`}>
+                  {assist.ats} · {assist.confidence}% ready
+                </span>
+                <span className="hint" style={{ marginLeft: "auto" }}>
+                  {assist.at ? assist.at.slice(0, 16).replace("T", " ") : ""}
+                </span>
+              </div>
+              <div className="meter-row" style={{ margin: "8px 0 12px" }}>
+                <div className="meter">
+                  <div className="fill" style={{ ["--target" as any]: `${assist.confidence}%`, ["--accent" as any]: assist.confidence >= 80 ? "var(--ink)" : "var(--vermillion)" }} />
+                </div>
+                <span className="meter-val">{assist.confidence}%</span>
+              </div>
+              {assist.filled?.length > 0 && (
+                <div className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
+                  <strong>Filled ({assist.filled.length}):</strong>{" "}
+                  {assist.filled.map((f: string, i: number) => (
+                    <span key={i}>✓ {f}{i < assist.filled.length - 1 ? " · " : ""}</span>
+                  ))}
+                </div>
+              )}
+              {assist.unfilled?.length > 0 && (
+                <div className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, marginTop: 6, color: "var(--vermillion)" }}>
+                  <strong>Needs your input ({assist.unfilled.length}):</strong>{" "}
+                  {assist.unfilled.map((f: string, i: number) => (
+                    <span key={i}>○ {f}{i < assist.unfilled.length - 1 ? " · " : ""}</span>
+                  ))}
+                </div>
+              )}
+              <p className="hint" style={{ marginTop: 8 }}>Review every field in the open browser, fill anything marked ○, then click Submit yourself — it never submits.</p>
+            </div>
+          )}
 
           {applyActivity.sessions.length > 0 && (
             <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 8 }}>
