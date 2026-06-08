@@ -216,8 +216,9 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
 
         {lastScan && (
           <p className="hint" style={{ marginTop: 4 }}>
-            Last scan: <code>{lastScan.path}</code> — {lastScan.status}
-            {lastScan.found ? ` · ${lastScan.found} project(s)` : ""}{lastScan.note ? ` · ${lastScan.note}` : ""}
+            {kb.scanning ? "Scanning" : "Last scan"}: <code>{lastScan.path}</code> — {lastScan.status}
+            {lastScan.found ? ` · ${lastScan.found} project(s)` : ""}
+            {" · "}<Link to={`/crawl?run=${lastScan.id}`} className="entry-title-link">{kb.scanning ? "watch live logs ▸" : "view logs ▸"}</Link>
           </p>
         )}
       </div>

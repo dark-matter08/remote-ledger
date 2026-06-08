@@ -508,7 +508,9 @@ export function listCrawlRuns(limit = 25): CrawlRun[] {
   return getDb().prepare("SELECT * FROM crawl_runs ORDER BY id DESC LIMIT ?").all(limit) as CrawlRun[];
 }
 export function activeCrawl(): CrawlRun | null {
-  return (getDb().prepare("SELECT * FROM crawl_runs WHERE status='running' ORDER BY id DESC LIMIT 1").get() as CrawlRun) || null;
+  // only true crawls gate the crawl buttons / scheduler — folder scans (type='scan')
+  // also live in crawl_runs for the shell, but must not block crawling.
+  return (getDb().prepare("SELECT * FROM crawl_runs WHERE status='running' AND type IN ('find','update','full') ORDER BY id DESC LIMIT 1").get() as CrawlRun) || null;
 }
 export function crawlLogs(runId: number): { id: number; ts: string; kind: string; text: string }[] {
   return getDb().prepare("SELECT id,ts,kind,text FROM crawl_logs WHERE run_id=? ORDER BY id").all(runId) as any[];

@@ -10,6 +10,7 @@ import { join, basename, extname } from "node:path";
 import { getDb } from "../sqlite.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
 import { getDefaultProfile, saveProfile } from "../resume/profiles.server";
+import { createCrawlRun, crawlLog, updateCrawlRun } from "../db.server";
 
 const NOW = () => new Date().toISOString();
 
@@ -28,11 +29,15 @@ export function kbOpenQuestions(): KbQuestion[] {
 export function kbSuggestions(status = "pending"): KbSuggestion[] {
   return getDb().prepare("SELECT s.*, i.title FROM kb_suggestions s LEFT JOIN kb_items i ON i.id=s.item_id WHERE s.status=? ORDER BY s.created_at DESC").all(status) as any[];
 }
+// Scans are recorded as crawl_runs (type='scan') so they show in the Crawl Shell with
+// live step logs. These map run rows back to the shape the KB page expects.
 export function kbScans(limit = 5): KbScan[] {
-  return getDb().prepare("SELECT * FROM kb_scans ORDER BY started_at DESC LIMIT ?").all(limit) as any[];
+  return (getDb().prepare("SELECT * FROM crawl_runs WHERE type='scan' ORDER BY id DESC LIMIT ?").all(limit) as any[])
+    .map((r) => ({ id: r.id, path: r.note || "", status: r.status, found: r.scraped, note: null, started_at: r.started_at, ended_at: r.ended_at }));
 }
 export function activeScan(): KbScan | null {
-  return (getDb().prepare("SELECT * FROM kb_scans WHERE status='running' ORDER BY started_at DESC LIMIT 1").get() as any) || null;
+  const r = getDb().prepare("SELECT * FROM crawl_runs WHERE type='scan' AND status='running' ORDER BY id DESC LIMIT 1").get() as any;
+  return r ? { id: r.id, path: r.note || "", status: r.status, found: r.scraped, note: null, started_at: r.started_at, ended_at: r.ended_at } : null;
 }
 function safeTags(v: any): string[] { try { const t = JSON.parse(v); return Array.isArray(t) ? t : []; } catch { return []; } }
 
@@ -229,36 +234,51 @@ export function rescanSource(id: number): void { startSourceScan(id); }
 function startSourceScan(sourceId: number): number {
   const src = getDb().prepare("SELECT * FROM kb_sources WHERE id=?").get(sourceId) as KbSource | undefined;
   if (!src) return 0;
-  const scanId = Number(getDb().prepare("INSERT INTO kb_scans (path,status,started_at) VALUES (?,?,?)").run(src.path, "running", NOW()).lastInsertRowid);
-  void runSourceScan(scanId, src).catch((e: any) => {
-    try { getDb().prepare("UPDATE kb_scans SET status='error', note=?, ended_at=? WHERE id=?").run(String(e?.message || e).slice(0, 300), NOW(), scanId); } catch {}
+  // record as a crawl run so it streams in the Crawl Shell; note holds the path
+  const runId = createCrawlRun("scan", "kb");
+  updateCrawlRun(runId, { note: src.label ? `${src.label} · ${src.path}` : src.path });
+  void runSourceScan(runId, src).catch((e: any) => {
+    try { crawlLog(runId, "error", String(e?.message || e).slice(0, 300)); updateCrawlRun(runId, { status: "error", ended_at: NOW() }); } catch {}
   });
-  return scanId;
+  return runId;
 }
 
-async function runSourceScan(scanId: number, src: KbSource): Promise<void> {
+async function runSourceScan(runId: number, src: KbSource): Promise<void> {
   const db = getDb();
+  const L = (kind: string, text: string) => crawlLog(runId, kind, text);
+  L("note", `Folder scan started · ${src.kind === "company" ? "company folder" : "single project"} · ${src.path}`);
+  if (src.note) L("reasoning", `Context you gave: ${src.note}`);
+
   const dirs = src.kind === "company" ? candidateProjects(src.path) : [src.path];
   if (!dirs.length) {
-    db.prepare("UPDATE kb_scans SET status='done', note=?, ended_at=? WHERE id=?").run("No projects (README/manifest) found here.", NOW(), scanId);
+    L("error", "No projects with a README or manifest found here.");
+    updateCrawlRun(runId, { status: "done", ended_at: NOW(), note: src.path });
     db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
     return;
   }
+  L("result", `Found ${dirs.length} project folder(s) to read.`);
   const noteCtx = [src.note, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
-  let found = 0;
+
+  let found = 0, added = 0, updated = 0;
   for (const dir of dirs) {
     const g = gatherProjectText(dir);
-    if (!g) continue;
+    if (!g) { L("step", `skipped ${basename(dir)} — no readable README/manifest/source`); continue; }
+    L("step", `reading ${g.name} (${g.text.length} chars) → analyzing…`);
     try {
       const a = await analyze("project", g.name, g.text, noteCtx || undefined);
       const tags = [...a.tags]; if (src.kind === "company" && src.label) tags.push(src.label);
       const { id, isNew } = upsertScanItem({ title: a.title || g.name, summary: a.summary, tags, sourcePath: dir });
-      if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b }))); addQuestions(id, a.questions); }
+      if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b }))); addQuestions(id, a.questions); added++; }
+      else updated++;
       found++;
-      db.prepare("UPDATE kb_scans SET found=? WHERE id=?").run(found, scanId);
-    } catch { /* skip a project the runner choked on */ }
+      L("result", `${isNew ? "✓ added" : "↻ updated"} "${a.title || g.name}" · ${tags.length} skill(s)${isNew ? ` · ${a.bullets.length} bullet(s), ${a.questions.length} question(s)` : ""}`);
+      updateCrawlRun(runId, { received: dirs.length, scraped: found, inserted: added, updated });
+    } catch (e: any) {
+      L("error", `couldn't analyze ${g.name}: ${String(e?.message || e).slice(0, 80)}`);
+    }
   }
-  db.prepare("UPDATE kb_scans SET status='done', found=?, ended_at=? WHERE id=?").run(found, NOW(), scanId);
+  L("note", `Scan complete — ${found} project(s): ${added} new, ${updated} refreshed.`);
+  updateCrawlRun(runId, { status: "done", ended_at: NOW(), received: dirs.length, scraped: found, inserted: added, updated });
   db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
 }
 
