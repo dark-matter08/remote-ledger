@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Form, Link, useNavigation, useRevalidator } from "react-router";
-import { Check, X } from "lucide-react";
+import { Form, Link, useNavigation, useRevalidator, useFetcher } from "react-router";
+import { Check, X, Sparkles } from "lucide-react";
 import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -24,10 +24,12 @@ import {
   answerKbQuestion,
   deleteKbQuestion,
   redraftItem,
+  draftKbAnswer,
   acceptSuggestion,
   dismissSuggestion,
   deleteKbItem,
 } from "../services/kb.server";
+import { loggedTask } from "../services/crawl.server";
 import { availableRunners } from "../llm/runner.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 
@@ -62,7 +64,7 @@ export async function action({ request }: Route.ActionArgs) {
       return { ok: true, msg: "Captured. Drafted bullets and a few questions for you below." };
     }
     if (intent === "kb-add-source") {
-      const linkItemId = Number(form.get("linkItemId") || "0") || 0;
+      const linkRef = String(form.get("linkRef") || "");
       const r = addSource({
         path: String(form.get("path") || ""),
         label: String(form.get("label") || ""),
@@ -70,10 +72,10 @@ export async function action({ request }: Route.ActionArgs) {
         note: String(form.get("note") || ""),
         intervalHours: Number(form.get("interval") || "0") || 0,
         depth: String(form.get("depth") || "standard"),
-        linkItemId: linkItemId || undefined,
+        linkRef: linkRef && linkRef !== "0" ? linkRef : undefined,
       });
       if (r.error) return { error: r.error };
-      return { ok: true, msg: linkItemId ? "Folder linked to that project — scanning to enrich it." : "Folder added — scanning it in the background. It'll stay and can be re-scanned anytime." };
+      return { ok: true, msg: linkRef && linkRef !== "0" ? "Folder linked to that project — scanning to enrich it." : "Folder added — scanning it in the background. It'll stay and can be re-scanned anytime." };
     }
     if (intent === "kb-rescan") { rescanSource(Number(form.get("id"))); return { ok: true, msg: "Re-scanning folder…" }; }
     if (intent === "kb-remove-source") { removeSource(Number(form.get("id"))); return { ok: true, msg: "Folder removed (its findings stay in the knowledge base)." }; }
@@ -85,6 +87,11 @@ export async function action({ request }: Route.ActionArgs) {
       return { ok: true, msg: "Answer saved — refreshed the drafted bullets." };
     }
     if (intent === "kb-del-question") { deleteKbQuestion(Number(form.get("id"))); return { ok: true, msg: "Question removed." }; }
+    if (intent === "kb-ai-answer") {
+      const id = Number(form.get("id"));
+      const r = await loggedTask("answers", "AI answer (KB question)", async (L) => { L("step", "Drafting from the project's code + your résumé…"); return draftKbAnswer(id); });
+      return r.error ? { error: r.error } : { ok: true, draft: r.answer };
+    }
     if (intent === "kb-accept") {
       const r = acceptSuggestion(Number(form.get("id")));
       return r.ok ? { ok: true, msg: r.msg } : { error: r.msg };
@@ -196,9 +203,9 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
             </div>
             <div className="field">
               <label>Link to existing project (optional)</label>
-              <Select name="linkItemId" defaultValue="0" options={[
+              <Select name="linkRef" defaultValue="0" options={[
                 { value: "0", label: "— Create a new item —" },
-                ...kb.linkable.map((it: any) => ({ value: String(it.id), label: it.title })),
+                ...kb.linkable.map((it: any) => ({ value: it.value, label: it.label })),
               ]} />
               <p className="hint" style={{ marginTop: 6 }}>Enrich an item already in your knowledge base (e.g. a project from your résumé) instead of creating a duplicate.</p>
             </div>
@@ -254,25 +261,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
         <div className="panel">
           <h3>Questions for you <span className="badge warn">{kb.questions.length}</span></h3>
           <p className="hint">Answer the useful ones — it sharpens the drafted bullets and enriches the graph. Dismiss any that don't matter.</p>
-          {kb.questions.map((q: any) => (
-            <div key={q.id} className="qpool">
-              <div className="qpool-q">
-                <span>{q.question} {q.title ? <span className="qpool-job">— {q.title}</span> : null}</span>
-                <Form method="post" className="qpool-del">
-                  <input type="hidden" name="intent" value="kb-del-question" />
-                  <input type="hidden" name="id" value={q.id} />
-                  <button className="back-link" disabled={busy} title="Remove this question" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><X size={12} /> dismiss</button>
-                </Form>
-              </div>
-              <Form method="post">
-                <input type="hidden" name="intent" value="kb-answer" />
-                <input type="hidden" name="id" value={q.id} />
-                <input type="hidden" name="itemId" value={q.item_id || ""} />
-                <textarea name="answer" placeholder="Your answer…" />
-                <button className="ghost-btn" disabled={busy}>Save answer</button>
-              </Form>
-            </div>
-          ))}
+          {kb.questions.map((q: any) => <KbQuestion key={q.id} q={q} />)}
         </div>
       )}
 
@@ -320,5 +309,45 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
       </div>
       </div>
     </Shell>
+  );
+}
+
+// One KB clarifying question: answer manually, dismiss, or have the AI draft an answer
+// grounded in the project's code + your résumé.
+function KbQuestion({ q }: { q: any }) {
+  const ai = useFetcher<any>();
+  const save = useFetcher<any>();
+  const del = useFetcher<any>();
+  const [text, setText] = useState("");
+  const drafting = ai.state !== "idle";
+  const saving = save.state !== "idle";
+
+  useEffect(() => { if (ai.data?.draft) setText(ai.data.draft); }, [ai.data]);
+
+  return (
+    <div className="qpool">
+      <div className="qpool-q">
+        <span>{q.question} {q.title ? <span className="qpool-job">— {q.title}</span> : null}</span>
+        <del.Form method="post" className="qpool-del">
+          <input type="hidden" name="intent" value="kb-del-question" />
+          <input type="hidden" name="id" value={q.id} />
+          <button className="back-link" title="Remove this question" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><X size={12} /> dismiss</button>
+        </del.Form>
+      </div>
+      <save.Form method="post">
+        <input type="hidden" name="intent" value="kb-answer" />
+        <input type="hidden" name="id" value={q.id} />
+        <input type="hidden" name="itemId" value={q.item_id || ""} />
+        <textarea name="answer" value={text} onChange={(e) => setText(e.target.value)} placeholder={drafting ? "Drafting from the project's code + your résumé…" : "Your answer…"} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="ghost-btn" disabled={saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
+          <button type="button" className="ghost-btn" disabled={drafting} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            onClick={() => ai.submit({ intent: "kb-ai-answer", id: q.id }, { method: "post" })}>
+            <Sparkles size={13} /> {drafting ? "Drafting…" : "AI draft"}
+          </button>
+          {ai.data?.error && <span className="hint" style={{ margin: 0, color: "var(--vermillion)" }}>{ai.data.error}</span>}
+        </div>
+      </save.Form>
+    </div>
   );
 }

@@ -127,6 +127,27 @@ async function analyze(mode: "note" | "project", title: string, body: string, no
   };
 }
 
+// AI-draft an answer to a KB clarifying question, grounded in the project's own code
+// (re-reads the linked folder, deep) + your résumé. Reasonable, refinable, no fabricated metrics.
+export async function draftKbAnswer(questionId: number): Promise<{ answer?: string; error?: string }> {
+  const db = getDb();
+  const q = db.prepare("SELECT q.*, i.title, i.summary, i.tags, i.source_path FROM kb_questions q LEFT JOIN kb_items i ON i.id=q.item_id WHERE q.id=?").get(questionId) as any;
+  if (!q) return { error: "question not found" };
+  let projectText = q.title ? `Project: ${q.title}\nSummary: ${q.summary || ""}\nTech: ${safeTags(q.tags).join(", ")}` : "";
+  if (q.source_path && existsSync(q.source_path)) {
+    try { const g = gatherProjectText(q.source_path, "deep"); if (g) projectText += `\n\nProject files (for grounding):\n${g.text.slice(0, 30000)}`; } catch {}
+  }
+  const profile = getDefaultProfile();
+  const r = await runLLM({
+    purpose: "misc",
+    temperature: 0.4,
+    maxTokens: 500,
+    system: "You answer a clarifying question about the USER'S OWN project, in first person, to enrich their knowledge base. Ground the answer in the project's code/context and their résumé. Give a concrete, reasonable answer the user can refine. NEVER fabricate precise metrics — if a number is unknown, phrase it as an estimate or describe the outcome qualitatively.",
+    prompt: `${projectText || "(no project context available)"}\n${profile ? `\nRÉSUMÉ (JSON):\n${JSON.stringify(profile.data).slice(0, 4000)}\n` : ""}\nQUESTION:\n${q.question}\n\nWrite a concise first-person answer (1–3 sentences).`,
+  });
+  return { answer: (r.text || "").trim() };
+}
+
 // Compact KB context (your captured projects/skills) for grounding application answers.
 export function kbContext(limit = 12): string {
   const items = kbItems().slice(0, limit);
@@ -276,13 +297,13 @@ export function listSources(): KbSource[] {
 
 // Register a folder and run its first scan. kind: 'project' (whole folder = one project)
 // or 'company' (each sub-project scanned separately). note = free-text context.
-export function addSource(o: { path: string; label?: string; kind?: string; note?: string; intervalHours?: number; depth?: string; linkItemId?: number }): { id: number; error?: string } {
+export function addSource(o: { path: string; label?: string; kind?: string; note?: string; intervalHours?: number; depth?: string; linkRef?: string }): { id: number; error?: string } {
   const path = expandPath(o.path || "");
   if (!path || !existsSync(path)) return { id: 0, error: "Folder not found on this machine." };
   try { if (!statSync(path).isDirectory()) return { id: 0, error: "That path is not a folder." }; } catch { return { id: 0, error: "Cannot read that path." }; }
   const kind = o.kind === "company" ? "company" : "project";
   const depth = ["quick", "standard", "deep"].includes(String(o.depth)) ? String(o.depth) : "standard";
-  const link = o.linkItemId && Number.isFinite(o.linkItemId) ? Math.floor(o.linkItemId) : null;
+  const link = o.linkRef ? resolveLinkRef(o.linkRef) : null;
   const id = Number(getDb().prepare(
     "INSERT INTO kb_sources (path,label,kind,note,interval_hours,depth,link_item_id,created_at) VALUES (?,?,?,?,?,?,?,?)"
   ).run(path, o.label?.trim() || null, kind, o.note?.trim() || null, Math.max(0, Math.floor(o.intervalHours || 0)), depth, link, NOW()).lastInsertRowid);
@@ -290,9 +311,32 @@ export function addSource(o: { path: string; label?: string; kind?: string; note
   return { id };
 }
 
-// KB items a folder can be linked to (so a scan enriches an existing project).
-export function linkableItems(): { id: number; title: string; kind: string }[] {
-  return getDb().prepare("SELECT id, title, kind FROM kb_items ORDER BY updated_at DESC").all() as any[];
+// Things a folder can be linked to: existing KB items, AND projects from your résumé
+// (so you can attach a folder to a résumé project that isn't a KB item yet).
+export function linkableItems(): { value: string; label: string }[] {
+  const items = getDb().prepare("SELECT id, title FROM kb_items ORDER BY updated_at DESC").all() as any[];
+  const out = items.map((i) => ({ value: String(i.id), label: i.title }));
+  const have = new Set(items.map((i) => String(i.title).toLowerCase()));
+  const profile = getDefaultProfile();
+  for (const p of profile?.data.projects || []) {
+    if (p.name && !have.has(p.name.toLowerCase())) out.push({ value: `r:${p.name}`, label: `${p.name} (résumé)` });
+  }
+  return out;
+}
+
+// Resolve a link selection to a kb_items id. A 'r:<name>' ref points at a résumé project;
+// reuse a same-titled KB item if present, else create one seeded from the résumé project.
+function resolveLinkRef(ref: string): number | null {
+  if (!ref) return null;
+  if (/^\d+$/.test(ref)) { const id = Number(ref); return getDb().prepare("SELECT 1 FROM kb_items WHERE id=?").get(id) ? id : null; }
+  if (ref.startsWith("r:")) {
+    const name = ref.slice(2);
+    const ex = getDb().prepare("SELECT id FROM kb_items WHERE title=?").get(name) as any;
+    if (ex) return ex.id;
+    const p = getDefaultProfile()?.data.projects?.find((x) => x.name === name);
+    return insertItem({ kind: "project", title: name, summary: (p?.bullets || []).join(" ").slice(0, 4000), tags: [], source: "manual" });
+  }
+  return null;
 }
 
 // Merge a fresh analysis into an EXISTING item (union tags, richer summary, new bullets/
