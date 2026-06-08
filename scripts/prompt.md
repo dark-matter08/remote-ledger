@@ -21,6 +21,17 @@ search). It's fine to USE those sites to discover roles, but each item you retur
 link to one concrete posting (e.g. a Greenhouse/Lever/Ashby/Workable job URL or a
 company careers page for a single role), not to a network's homepage or a search page.
 
+🔒 HARD VERIFICATION RULE (most important):
+- Include a job ONLY if you actually OPENED its application page with WebFetch in THIS
+  session and saw the real, currently-open role on the page.
+- Set apply_url to the EXACT URL you successfully fetched (after redirects).
+- NEVER guess, construct, or pattern-match a URL. Do NOT invent Lever/Ashby/Greenhouse/
+  Workable posting IDs or slugs. If you didn't open it, you don't know it exists.
+- If the page 404s, redirects to a generic list, or shows "not found" / "no longer
+  accepting" / "position closed/filled" — EXCLUDE it.
+- Every link you return will be re-opened and verified by the system; fabricated or dead
+  links are discarded and make the whole result worthless. 6 verified jobs beat 20 guesses.
+
 ⏱ STRICT BUDGET: ~{{budget_min}} minutes and AT MOST {{max_actions}} web actions
 (searches + fetches combined). You will be hard-stopped at the deadline.
 

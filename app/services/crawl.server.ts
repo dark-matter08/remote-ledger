@@ -13,12 +13,14 @@ import {
   deactivateMissing,
   setMeta,
   getMeta,
+  setJd,
+  jobId,
   createCrawlRun,
   updateCrawlRun,
   crawlLog,
   activeCrawl,
 } from "../db.server";
-import { scrapeJds } from "./scrape.server";
+import { scrapeJds, verifyJobs } from "./scrape.server";
 
 export type CrawlType = "find" | "update" | "full";
 
@@ -151,27 +153,38 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
         setMeta("last_crawl_status", "error");
         return { ok: false, runId, ...totals, message: "no jobs parsed" };
       }
-      L("result", `Parsed ${jobs.length} candidate roles.`);
-      const res = upsertJobs(jobs, now);
       totals.received = jobs.length;
+      L("result", `Parsed ${jobs.length} candidate roles — verifying every link is a live posting…`);
+
+      // Trust nothing: open each apply_url, confirm it's a real open posting, capture
+      // the JD in the same visit. Fabricated/dead links (404, closed, redirects) are dropped.
+      const { alive, dropped } = await verifyJobs(jobs, {
+        limit: 40,
+        signal: ac.signal,
+        onLog: (line) => L("step", line),
+      });
+      L("result", `Verified ${alive.length} live · dropped ${dropped.length} (dead link, closed, or unreachable).`);
+      totals.errors += dropped.length;
+
+      const aliveJobs = alive.map((a) => a.job);
+      const res = upsertJobs(aliveJobs, now);
       totals.inserted = res.inserted;
       totals.updated = res.updated;
       totals.errors += res.errors.length;
-      L("result", `Upserted: ${res.inserted} new, ${res.updated} updated${res.errors.length ? `, ${res.errors.length} rejected` : ""}.`);
       for (const e of res.errors.slice(0, 5)) L("error", `Rejected ${e.job}: ${e.error}`);
+      // save the JD captured during verification
+      let saved = 0;
+      for (const a of alive) {
+        try { setJd(jobId(a.job.company, a.job.role), a.jd); saved++; } catch {}
+      }
+      totals.scraped = saved;
+      L("result", `Saved ${res.inserted} new, ${res.updated} updated · ${saved} JDs captured.`);
+
       deactivateMissing(now);
       const prev = getMeta("last_crawl");
       if (prev) setMeta("prev_crawl", prev);
       setMeta("last_crawl", now);
-      setMeta("last_crawl_status", res.errors.length ? "partial" : "ok");
-
-      if (getSetting("scrape_jds") !== "false") {
-        const limit = Number(getSetting("scrape_limit") || "12") || 12;
-        L("step", `Scraping full JDs for up to ${limit} new postings…`);
-        const s = await scrapeJds({ limit, onlyMissing: true, onLog: (line) => L("step", line) });
-        totals.scraped += s.scraped;
-        L("result", `Scraped ${s.scraped} JD(s)${s.failed ? `, ${s.failed} failed` : ""}.`);
-      }
+      setMeta("last_crawl_status", dropped.length ? "partial" : "ok");
     }
 
     if (type === "update" || type === "full") {

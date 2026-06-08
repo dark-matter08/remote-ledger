@@ -157,3 +157,72 @@ export async function scrapeJds(opts: {
 export async function scrapeMissingJds(limit = 12): Promise<{ scraped: number; failed: number }> {
   return scrapeJds({ limit, onlyMissing: true });
 }
+
+// Verify each crawled job actually points to a live, open posting (don't trust the
+// agent's claim). Renders the apply_url, checks HTTP status + page content for
+// dead/closed markers, and captures the JD in the same visit. Returns the live jobs
+// (with JD) and the dropped ones with a reason — so the Crawl Shell can show both.
+const DEAD = /(posting|job|position|page)\s+not\s+found|no longer (available|accepting|active|open)|position (has been|is)\s+(filled|closed)|this (job|posting|position) (is|has) (closed|expired|filled)|404 (not found|error)|we can'?t find|doesn'?t exist|page you are looking for (can'?t|cannot|could not) be found|application (is )?closed/i;
+
+export interface VerifyResult {
+  alive: { job: any; jd: string }[];
+  dropped: { company: string; role: string; url: string; reason: string }[];
+}
+
+export async function verifyJobs(
+  jobs: any[],
+  opts: { onLog?: (line: string) => void; limit?: number; signal?: AbortSignal } = {}
+): Promise<VerifyResult> {
+  const onLog = opts.onLog ?? (() => {});
+  const list = jobs.slice(0, opts.limit ?? 40);
+  const alive: VerifyResult["alive"] = [];
+  const dropped: VerifyResult["dropped"] = [];
+  let browser: any;
+  try {
+    const { chromium } = await import("playwright");
+    browser = await chromium.launch();
+  } catch {}
+
+  for (const job of list) {
+    if (opts.signal?.aborted) break;
+    const company = job.company || "?";
+    const role = job.role || "";
+    const url = String(job.apply_url || job.url || "").trim();
+    const drop = (reason: string) => { dropped.push({ company, role, url, reason }); onLog(`✗ dropped ${company} — ${reason}`); };
+
+    if (!/^https?:\/\//.test(url)) { drop("no/invalid apply URL"); continue; }
+
+    let status = 0;
+    let text = "";
+    try {
+      if (browser) {
+        const page = await browser.newPage({ userAgent: UA });
+        try {
+          const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+          status = resp ? resp.status() : 0;
+          await page.waitForTimeout(1500);
+          text = await page.evaluate(() => document.body.innerText || "");
+        } finally {
+          await page.close().catch(() => {});
+        }
+      } else {
+        const r = await fetch(url, { headers: { "user-agent": UA }, redirect: "follow" });
+        status = r.status;
+        text = (await r.text()).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
+      }
+    } catch (e: any) {
+      drop(`unreachable (${e.message?.slice(0, 40)})`);
+      continue;
+    }
+
+    const clean = text.replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
+    if (status >= 400) { drop(`HTTP ${status}`); continue; }
+    if (clean.length < 220) { drop(`page too thin (${clean.length} chars) — likely dead/redirect`); continue; }
+    if (DEAD.test(clean.slice(0, 4000))) { drop("posting closed / not found"); continue; }
+
+    alive.push({ job, jd: clean.slice(0, 16000) });
+    onLog(`✓ ${company} — verified live (${clean.length} chars)`);
+  }
+  if (browser) await browser.close().catch(() => {});
+  return { alive, dropped };
+}
