@@ -5,9 +5,59 @@
 // upload, and drafted answers — then leaves it for you to review and submit.
 import { getJob, getMeta, setMeta, addEvent, markClosed, setApplyUrl, jobApplyActivity, answerBank } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
-import { latestVersion } from "../resume/versions.server";
+import { latestVersion, createVersion, setVersionPdf } from "../resume/versions.server";
+import { tailorResume, coverLetter } from "../resume/ai.server";
+import { renderResumePdf } from "../resume/pdf.server";
 import { verifyApplyUrl, renderWaitFor } from "./scrape.server";
+import { loggedTask } from "./crawl.server";
 import type { ResumeContact } from "../resume/types";
+
+// When a form requires a résumé upload and/or cover letter that we don't yet have for
+// this job, generate them on the fly (tailor → PDF, draft cover) so the prefill can use
+// them. Each generation streams in the Crawl Shell. Returns updated paths + what we made.
+async function ensureArtifacts(
+  job: any,
+  needs: { resume: boolean; cover: boolean },
+  current: { pdfPath: string | null; cover: string | null }
+): Promise<{ pdfPath: string | null; cover: string | null; generated: string[] }> {
+  let { pdfPath, cover } = current;
+  const generated: string[] = [];
+  const profile = getDefaultProfile();
+  if (!profile) return { pdfPath, cover, generated };
+  const base = profile.data;
+  const ctx = { id: job.id, company: job.company, role: job.role, stack: job.stack, eligibility: job.eligibility, jd: job.jd };
+
+  if (needs.resume && !pdfPath) {
+    try {
+      await loggedTask("tailor", `Auto-apply résumé · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Form requires a résumé — tailoring it to this role…");
+        const t = await tailorResume(base, ctx);
+        const vid = createVersion({ jobId: job.id, profileId: profile.id, kind: "resume", style: "letterpress", data: t.resume, flags: t.flags, match: t.match, llmCallId: t.callId ?? null });
+        L("step", "Rendering the résumé PDF…");
+        const pdf = await renderResumePdf(t.resume, "letterpress", `${job.id}-v${vid}`);
+        setVersionPdf(vid, pdf.path);
+        setMeta(`match:${job.id}`, JSON.stringify(t.match));
+        addEvent(job.id, "resume_generated", { versionId: vid, style: "letterpress", score: t.match.score, via: "auto-apply" });
+        pdfPath = pdf.path;
+      });
+      generated.push("résumé PDF");
+    } catch { /* leave pdfPath null; field stays unfilled */ }
+  }
+
+  if (needs.cover && !cover) {
+    try {
+      await loggedTask("cover", `Auto-apply cover letter · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Form requires a cover letter — drafting it…");
+        const c = await coverLetter(base, ctx);
+        createVersion({ jobId: job.id, kind: "cover-letter", content_md: c.text, llmCallId: c.callId ?? null });
+        addEvent(job.id, "cover_generated", { via: "auto-apply" });
+        cover = c.text;
+      });
+      generated.push("cover letter");
+    } catch { /* leave cover null */ }
+  }
+  return { pdfPath, cover, generated };
+}
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
@@ -169,8 +219,9 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
 
   const ats = detectAts(job.apply_url);
   const contact = getDefaultProfile()?.data.contact || { name: "" };
-  const pdfPath = latestVersion(jobId, "resume")?.pdf_path || null;
-  const { qa, cover } = gatherAnswers(jobId);
+  let pdfPath = latestVersion(jobId, "resume")?.pdf_path || null;
+  let { qa, cover } = gatherAnswers(jobId);
+  const generated: string[] = [];
 
   let browser: any;
   const filled: string[] = [];
@@ -182,7 +233,9 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
     await page.goto(job.apply_url, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(renderWaitFor(job.apply_url)); // React ATSes need a beat to hydrate
 
+    // 1) read every field once (with its element handle)
     const handles = await page.$$("input, textarea");
+    const fields: { el: any; tag: string; type: string; name: string; id: string; label: string }[] = [];
     for (const el of handles) {
       try {
         const meta = await el.evaluate((node: any) => {
@@ -193,24 +246,39 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
           return { tag, type, name: node.name || "", id: node.id || "", label: String(label).replace(/\s+/g, " ").trim() };
         });
         if (["hidden", "submit", "button", "search", "checkbox", "radio"].includes(meta.type)) continue;
+        fields.push({ el, ...meta });
+      } catch { /* skip */ }
+    }
 
-        if (meta.type === "file") {
-          if (pdfPath) { await el.setInputFiles(pdfPath); filled.push("résumé (upload)"); }
+    // 2) if the form needs a résumé upload / cover letter we don't have yet, generate them
+    const isCover = (f: { label: string; name: string }) => /cover ?letter/.test(`${f.label} ${f.name}`.toLowerCase());
+    const needResume = fields.some((f) => f.type === "file");
+    const needCover = fields.some((f) => f.tag === "textarea" && isCover(f));
+    if ((needResume && !pdfPath) || (needCover && !cover)) {
+      const ens = await ensureArtifacts(job, { resume: needResume, cover: needCover }, { pdfPath, cover });
+      pdfPath = ens.pdfPath; cover = ens.cover; generated.push(...ens.generated);
+      // a generated cover letter should also be matchable; refresh the QA pool's cover
+      if (ens.generated.length) qa = gatherAnswers(jobId).qa;
+    }
+
+    // 3) fill
+    for (const f of fields) {
+      try {
+        if (f.type === "file") {
+          if (pdfPath) { await f.el.setInputFiles(pdfPath); filled.push("résumé (upload)"); }
+          else unfilled.push("résumé upload");
           continue;
         }
-        const idv = valueForIdentity(meta.label, meta.name, meta.id, contact);
-        if (idv) { await el.fill(idv); filled.push(meta.label || meta.name || "field"); continue; }
+        const idv = valueForIdentity(f.label, f.name, f.id, contact);
+        if (idv) { await f.el.fill(idv); filled.push(f.label || f.name || "field"); continue; }
 
-        if (meta.tag === "textarea") {
-          const lk = `${meta.label} ${meta.name}`.toLowerCase();
-          if (/cover ?letter/.test(lk) && cover) { await el.fill(cover); filled.push("cover letter"); continue; }
-          const a = matchAnswer(meta.label, qa);
-          if (a) { await el.fill(a); filled.push(`answer: ${meta.label.slice(0, 40)}`); continue; }
-          if (meta.label) unfilled.push(meta.label.slice(0, 50));
+        if (f.tag === "textarea") {
+          if (isCover(f) && cover) { await f.el.fill(cover); filled.push("cover letter"); continue; }
+          const a = matchAnswer(f.label, qa);
+          if (a) { await f.el.fill(a); filled.push(`answer: ${f.label.slice(0, 40)}`); continue; }
+          if (f.label) unfilled.push(f.label.slice(0, 50));
         }
-      } catch {
-        /* skip uncooperative field */
-      }
+      } catch { /* skip uncooperative field */ }
     }
     // leave the browser open for review + manual submit (NEVER submit)
     const total = filled.length + unfilled.length;
@@ -222,10 +290,10 @@ export async function assistApply(jobId: string): Promise<AssistResult> {
       ats,
       confidence,
       at,
-      message: `${ats}: prefilled ${filled.length} field(s)${unfilled.length ? `, ${unfilled.length} need your input` : ""} — ${confidence}% ready. Review everything and click Submit yourself; it does not submit.`,
+      message: `${ats}: ${generated.length ? `generated ${generated.join(" + ")}, ` : ""}prefilled ${filled.length} field(s)${unfilled.length ? `, ${unfilled.length} need your input` : ""} — ${confidence}% ready. Review everything and click Submit yourself; it does not submit.`,
     };
     setMeta(`assist:${jobId}`, JSON.stringify(result));
-    addEvent(jobId, "assist_prefill", { ats, filled: filled.length, unfilled: unfilled.length, confidence });
+    addEvent(jobId, "assist_prefill", { ats, filled: filled.length, unfilled: unfilled.length, confidence, generated });
     return result;
   } catch (e: any) {
     if (browser) await browser.close().catch(() => {});
