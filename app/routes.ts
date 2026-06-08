@@ -19,4 +19,5 @@ export default [
   route("api/crawl", "routes/api-crawl.tsx"),
   route("api/clip", "routes/api-clip.tsx"),
   route("api/pending", "routes/api-pending.tsx"),
+  route("api/dirs", "routes/api-dirs.tsx"),
 ] satisfies RouteConfig;

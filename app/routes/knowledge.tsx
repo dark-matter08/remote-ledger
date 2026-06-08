@@ -3,6 +3,7 @@ import { Form, Link, useNavigation, useRevalidator } from "react-router";
 import type { Route } from "./+types/knowledge";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { DirPicker } from "../components/DirPicker";
 import { GraphView } from "../components/graph/GraphView";
 import { buildGraph } from "../services/graph.server";
 import {
@@ -154,8 +155,8 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
         <Form method="post">
           <input type="hidden" name="intent" value="kb-add-source" />
           <div className="field">
-            <label>Folder path</label>
-            <input type="text" name="path" placeholder="/Users/you/Projects/my-app  or  ~/work/acme" />
+            <label>Folder</label>
+            <DirPicker name="path" placeholder="/Users/you/Projects/my-app  — or click Browse" />
           </div>
           <div className="row2">
             <div className="field">
