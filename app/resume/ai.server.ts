@@ -183,6 +183,41 @@ export async function applicationAnswers(
   return { answers, callId: r.callId };
 }
 
+// Choose the best option for each dropdown on an application form, picking ONLY from
+// each dropdown's real option list (so we can fill react-select/native dropdowns like
+// "years of experience", "salary band", "country of residence", "business domain").
+export async function chooseSelectOptions(
+  base: Resume,
+  job: JobCtx,
+  items: { question: string; options: string[] }[],
+  kb?: string
+): Promise<{ question: string; choice: string }[]> {
+  const useful = items.filter((i) => i.options && i.options.length).slice(0, 25);
+  if (!useful.length) return [];
+  const r = await runLLM({
+    purpose: "cover-letter",
+    jobId: job.id,
+    json: true,
+    temperature: 0.2,
+    maxTokens: 1500,
+    system:
+      "You fill dropdown menus on a job application using ONLY facts about the candidate " +
+      "(their resume + profile notes + the job). For each question choose EXACTLY ONE option " +
+      "from its provided list, copying the option text VERBATIM. Make a reasonable, honest " +
+      "choice for things like years of experience, business domain, country of residence, and " +
+      "salary band (infer a band from seniority/role if not explicitly stated). Return an empty " +
+      "string ONLY when no option could possibly apply or it would be a fabrication. NEVER " +
+      "return text that is not one of the listed options.",
+    prompt:
+      `CANDIDATE RESUME (JSON):\n${JSON.stringify(base)}\n` +
+      (kb ? `\nPROFILE NOTES:\n${kb.slice(0, 4000)}\n` : "") +
+      `\nJOB:\n${jobBlock(job)}\n\nDROPDOWNS:\n` +
+      useful.map((it, i) => `${i + 1}. ${it.question}\n   options: ${it.options.map((o) => JSON.stringify(o)).join(", ")}`).join("\n") +
+      `\n\nReturn ONLY JSON: { "picks": [ { "question": "<question text>", "choice": "<exact option text, or empty>" } ] } covering every dropdown in order.`,
+  });
+  return ((r.json?.picks as any[]) || []).filter((p) => p && p.question && typeof p.choice === "string");
+}
+
 // Like applicationAnswers, but flags questions it can't answer truthfully from the
 // resume (work authorization, salary, clearance, years with a tool not listed…) so a
 // session can pool them for the user. `known` are answers already in the answer bank.

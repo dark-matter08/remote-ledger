@@ -11,11 +11,12 @@ import { resolve } from "node:path";
 import { getJob, getMeta, setMeta, addEvent, markClosed, setApplyUrl, jobApplyActivity, answerBank } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { latestVersion, createVersion, setVersionPdf } from "../resume/versions.server";
-import { tailorResume, coverLetter } from "../resume/ai.server";
+import { tailorResume, coverLetter, chooseSelectOptions } from "../resume/ai.server";
 import { renderResumePdf } from "../resume/pdf.server";
 import { verifyApplyUrl, renderWaitFor } from "./scrape.server";
 import { loggedTask } from "./crawl.server";
-import { UA, EXTRACT_FIELDS, detectAts, questionFields, prefillPage, type FormField } from "./prefill.server";
+import { kbContext } from "./kb.server";
+import { UA, EXTRACT_FIELDS, detectAts, questionFields, prefillPage, collectDropdownOptions, type FormField } from "./prefill.server";
 
 export type { FormField } from "./prefill.server";
 export { detectAts, questionFields } from "./prefill.server";
@@ -180,7 +181,27 @@ export async function prefillJobOnPage(jobId: string, page: any, log?: (msg: str
   pdfPath = ens.pdfPath; cover = ens.cover;
   const { generated, qa } = ens;
 
-  const { filled, unfilled } = await prefillPage(page, { contact, pdfPath, qa, cover, log: say });
+  // Decide dropdown answers (years of experience, salary band, country, business domain…)
+  // by letting the LLM pick from each dropdown's REAL options, grounded in résumé + KB.
+  let picks: { label: string; value: string }[] = [];
+  try {
+    const dropdowns = (await collectDropdownOptions(page)).filter((d) => d.options.length);
+    if (dropdowns.length) {
+      const base = getDefaultProfile()?.data;
+      if (base) {
+        say(`Choosing ${dropdowns.length} dropdown answer(s) from their options…`);
+        const chosen = await chooseSelectOptions(
+          base,
+          { id: job.id, company: job.company, role: job.role, stack: job.stack, eligibility: job.eligibility, jd: job.jd },
+          dropdowns.map((d) => ({ question: d.label, options: d.options })),
+          kbContext()
+        );
+        picks = chosen.filter((c) => c.choice).map((c) => ({ label: c.question, value: c.choice }));
+      }
+    }
+  } catch (e: any) { say(`Dropdown choice skipped (${e.message}).`); }
+
+  const { filled, unfilled } = await prefillPage(page, { contact, pdfPath, qa, cover, picks, log: say });
 
   let shot: string | null = null;
   try {
