@@ -14,7 +14,7 @@ import { createCrawlRun, crawlLog, updateCrawlRun } from "../db.server";
 
 const NOW = () => new Date().toISOString();
 
-export interface KbItem { id: number; kind: string; title: string; summary: string; tags: string[]; source: string; source_path: string | null; created_at: string; updated_at: string; }
+export interface KbItem { id: number; kind: string; title: string; summary: string; tags: string[]; source: string; source_path: string | null; role: string | null; start_date: string | null; end_date: string | null; location: string | null; created_at: string; updated_at: string; }
 export interface KbQuestion { id: number; item_id: number | null; question: string; answer: string | null; title?: string | null; }
 export interface KbSuggestion { id: number; item_id: number | null; section: string; bullet: string; status: string; title?: string | null; }
 export interface KbScan { id: number; path: string; status: string; found: number; note: string | null; started_at: string; ended_at: string | null; }
@@ -111,11 +111,11 @@ export function activeScan(): KbScan | null {
 function safeTags(v: any): string[] { try { const t = JSON.parse(v); return Array.isArray(t) ? t : []; } catch { return []; } }
 
 // ---------- writes ----------
-function insertItem(o: { kind: string; title: string; summary: string; tags: string[]; source: string; source_path?: string | null }): number {
+function insertItem(o: { kind: string; title: string; summary: string; tags: string[]; source: string; source_path?: string | null; role?: string | null; start_date?: string | null; end_date?: string | null; location?: string | null }): number {
   const now = NOW();
   const info = getDb().prepare(
-    "INSERT INTO kb_items (kind,title,summary,tags,source,source_path,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)"
-  ).run(o.kind, o.title.slice(0, 200), (o.summary || "").slice(0, 4000), JSON.stringify((o.tags || []).slice(0, 30)), o.source, o.source_path ?? null, now, now);
+    "INSERT INTO kb_items (kind,title,summary,tags,source,source_path,role,start_date,end_date,location,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).run(o.kind, o.title.slice(0, 200), (o.summary || "").slice(0, 4000), JSON.stringify((o.tags || []).slice(0, 30)), o.source, o.source_path ?? null, o.role ?? null, o.start_date ?? null, o.end_date ?? null, o.location ?? null, now, now);
   return Number(info.lastInsertRowid);
 }
 function addQuestions(itemId: number, qs: string[]) {
@@ -149,7 +149,7 @@ export function deleteKbItem(id: number): void {
 // Accept a drafted bullet into the default résumé profile (you approved it).
 export function acceptSuggestion(id: number): { ok: boolean; msg: string } {
   const db = getDb();
-  const s = db.prepare("SELECT s.*, i.title, i.tags FROM kb_suggestions s LEFT JOIN kb_items i ON i.id=s.item_id WHERE s.id=?").get(id) as any;
+  const s = db.prepare("SELECT s.*, i.title, i.tags, i.kind AS item_kind, i.role, i.start_date, i.end_date, i.location FROM kb_suggestions s LEFT JOIN kb_items i ON i.id=s.item_id WHERE s.id=?").get(id) as any;
   if (!s) return { ok: false, msg: "suggestion not found" };
   const profile = getDefaultProfile();
   if (!profile) return { ok: false, msg: "No default résumé. Upload one first." };
@@ -160,8 +160,22 @@ export function acceptSuggestion(id: number): { ok: boolean; msg: string } {
     if (!exists) data.skills.push(s.bullet);
   } else if (s.section === "summary") {
     data.summary = ((data.summary || "") + " " + s.bullet).trim();
+  } else if (s.section === "experience" || s.item_kind === "experience") {
+    // company experience → ONE experience entry (company + role + dates + location)
+    data.experience = data.experience || [];
+    const company = s.title || "Experience";
+    let exp = data.experience.find((e) => (e.company || "").toLowerCase() === String(company).toLowerCase());
+    if (!exp) { exp = { company, role: s.role || "", start: s.start_date || "", end: s.end_date || "", location: s.location || "", bullets: [] }; data.experience.unshift(exp); }
+    else { // backfill metadata onto an existing entry if it was missing
+      if (!exp.role && s.role) exp.role = s.role;
+      if (!exp.start && s.start_date) exp.start = s.start_date;
+      if (!exp.end && s.end_date) exp.end = s.end_date;
+      if (!exp.location && s.location) exp.location = s.location;
+    }
+    exp.bullets = exp.bullets || [];
+    if (!exp.bullets.includes(s.bullet)) exp.bullets.push(s.bullet);
   } else {
-    // project/experience → attach to a project entry named after the KB item
+    // project → attach to a project entry named after the KB item
     data.projects = data.projects || [];
     const title = s.title || "Recent work";
     let proj = data.projects.find((p) => p.name.toLowerCase() === String(title).toLowerCase());
@@ -190,6 +204,23 @@ async function analyze(mode: "note" | "project", title: string, body: string, no
   const j = tryParseJson(r.text) || {};
   return {
     title: String(j.title || title), kind: normalizeKind(j.kind), summary: String(j.summary || ""),
+    tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
+    bullets: Array.isArray(j.bullets) ? j.bullets.map(String) : [],
+    questions: Array.isArray(j.questions) ? j.questions.map(String) : [],
+  };
+}
+
+// Analyze MULTIPLE projects built at ONE company as a single résumé EXPERIENCE entry.
+// Produces 4-6 bullets about the overall role/impact — NOT one entry per sub-project.
+async function analyzeCompany(company: string, role: string | null, combinedText: string, note?: string, deep = false): Promise<Analysis> {
+  const ctx = note ? `\n\nContext you gave: "${note}"` : "";
+  const roleLine = role ? `\nYour title there: ${role}` : "";
+  const cap = deep ? 80000 : 30000;
+  const prompt = `These are SEVERAL projects you built while working at "${company}".${roleLine}${ctx}\n\nSummarize your time at this ONE company as a SINGLE résumé EXPERIENCE entry — do NOT produce one entry per project. Synthesize across the projects: the scope of your work, the systems you built/owned, the stack, and the most impressive distinct accomplishments.\n\n"""${combinedText.slice(0, cap)}"""\n\nReturn JSON:\n{\n  "title": "${company}",\n  "kind": "experience",\n  "summary": "2-4 sentences on your overall role and impact at ${company} across these projects (first-person-friendly, factual, never vague third person)",\n  "tags": ["the most important tech/tools you used across the projects"],\n  "bullets": ["4-6 résumé bullets for this ONE company role: action-led, distinct (no two bullets about the same thing), factual; quantify ONLY where the evidence gives numbers"],\n  "questions": ["1-3 questions ONLY for genuinely missing specifics (team size, business impact); never ask who built it"]\n}`;
+  const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 2200, temperature: 0.3 });
+  const j = tryParseJson(r.text) || {};
+  return {
+    title: String(j.title || company), kind: "experience", summary: String(j.summary || ""),
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
     bullets: Array.isArray(j.bullets) ? j.bullets.map(String) : [],
     questions: Array.isArray(j.questions) ? j.questions.map(String) : [],
@@ -358,8 +389,21 @@ function upsertScanItem(o: { title: string; summary: string; tags: string[]; sou
   return { id: insertItem({ kind: "project", title: o.title, summary: o.summary, tags: o.tags, source: "scan", source_path: o.sourcePath }), isNew: true };
 }
 
+// upsert the SINGLE experience item for a company folder (keyed by its root path) so
+// re-scans refresh the one entry + its metadata instead of creating N project items.
+function upsertExperienceItem(o: { company: string; summary: string; tags: string[]; sourcePath: string; role?: string | null; start?: string | null; end?: string | null; location?: string | null }): { id: number; isNew: boolean } {
+  const db = getDb();
+  const ex = db.prepare("SELECT id FROM kb_items WHERE source='scan' AND source_path=? AND kind='experience'").get(o.sourcePath) as any;
+  if (ex) {
+    db.prepare("UPDATE kb_items SET title=?, summary=?, tags=?, role=?, start_date=?, end_date=?, location=?, updated_at=? WHERE id=?")
+      .run(o.company.slice(0, 200), o.summary.slice(0, 4000), JSON.stringify(o.tags.slice(0, 30)), o.role ?? null, o.start ?? null, o.end ?? null, o.location ?? null, NOW(), ex.id);
+    return { id: ex.id, isNew: false };
+  }
+  return { id: insertItem({ kind: "experience", title: o.company, summary: o.summary, tags: o.tags, source: "scan", source_path: o.sourcePath, role: o.role ?? null, start_date: o.start ?? null, end_date: o.end ?? null, location: o.location ?? null }), isNew: true };
+}
+
 // ---------- sources: persistent, re-scannable folders ----------
-export interface KbSource { id: number; path: string; label: string | null; kind: string; note: string | null; interval_hours: number; depth: string; link_item_id: number | null; last_scanned_at: string | null; created_at: string }
+export interface KbSource { id: number; path: string; label: string | null; kind: string; note: string | null; interval_hours: number; depth: string; link_item_id: number | null; role: string | null; start_date: string | null; end_date: string | null; location: string | null; last_scanned_at: string | null; created_at: string }
 const expandPath = (p: string) => p.trim().replace(/^~(?=\/)/, process.env.HOME || "~");
 
 export function listSources(): KbSource[] {
@@ -368,16 +412,17 @@ export function listSources(): KbSource[] {
 
 // Register a folder and run its first scan. kind: 'project' (whole folder = one project)
 // or 'company' (each sub-project scanned separately). note = free-text context.
-export function addSource(o: { path: string; label?: string; kind?: string; note?: string; intervalHours?: number; depth?: string; linkRef?: string }): { id: number; error?: string } {
+export function addSource(o: { path: string; label?: string; kind?: string; note?: string; intervalHours?: number; depth?: string; linkRef?: string; role?: string; startDate?: string; endDate?: string; location?: string }): { id: number; error?: string } {
   const path = expandPath(o.path || "");
   if (!path || !existsSync(path)) return { id: 0, error: "Folder not found on this machine." };
   try { if (!statSync(path).isDirectory()) return { id: 0, error: "That path is not a folder." }; } catch { return { id: 0, error: "Cannot read that path." }; }
   const kind = o.kind === "company" ? "company" : "project";
   const depth = ["quick", "standard", "deep"].includes(String(o.depth)) ? String(o.depth) : "standard";
   const link = o.linkRef ? resolveLinkRef(o.linkRef) : null;
+  const t = (s?: string) => (s && s.trim() ? s.trim().slice(0, 120) : null);
   const id = Number(getDb().prepare(
-    "INSERT INTO kb_sources (path,label,kind,note,interval_hours,depth,link_item_id,created_at) VALUES (?,?,?,?,?,?,?,?)"
-  ).run(path, o.label?.trim() || null, kind, o.note?.trim() || null, Math.max(0, Math.floor(o.intervalHours || 0)), depth, link, NOW()).lastInsertRowid);
+    "INSERT INTO kb_sources (path,label,kind,note,interval_hours,depth,link_item_id,role,start_date,end_date,location,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).run(path, o.label?.trim() || null, kind, o.note?.trim() || null, Math.max(0, Math.floor(o.intervalHours || 0)), depth, link, t(o.role), t(o.startDate), t(o.endDate), t(o.location), NOW()).lastInsertRowid);
   startSourceScan(id);
   return { id };
 }
@@ -464,7 +509,42 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
   L("result", `Found ${dirs.length} project folder(s) to read.`);
   const noteCtx = [src.note, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
 
-  const linkId = src.kind !== "company" && src.link_item_id ? Number(src.link_item_id) : null;
+  // COMPANY folder → ONE experience entry synthesized across all sub-projects (not N).
+  if (src.kind === "company") {
+    const company = (src.label || basename(src.path)).slice(0, 120);
+    const parts: string[] = [];
+    for (const dir of dirs) {
+      const g = gatherProjectText(dir, depth);
+      if (g) { parts.push(`### Project: ${g.name}\n${g.text}`); L("step", `read ${g.name} (${g.text.length} chars)`); }
+    }
+    if (!parts.length) {
+      L("error", "No readable projects in this company folder.");
+      updateCrawlRun(runId, { status: "done", ended_at: NOW(), note: src.path });
+      db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
+      return;
+    }
+    L("step", `Synthesizing ONE experience entry for ${company} from ${parts.length} project(s)…`);
+    try {
+      const a = await analyzeCompany(company, src.role, parts.join("\n\n"), noteCtx || undefined, depth === "deep");
+      const { id, isNew } = upsertExperienceItem({ company, summary: a.summary, tags: a.tags, sourcePath: src.path, role: src.role, start: src.start_date, end: src.end_date, location: src.location });
+      if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "experience", bullet: b }))); addQuestions(id, a.questions); }
+      else {
+        const have = new Set((db.prepare("SELECT bullet FROM kb_suggestions WHERE item_id=?").all(id) as any[]).map((r) => r.bullet));
+        addSuggestions(id, a.bullets.filter((b) => !have.has(b)).map((b) => ({ section: "experience", bullet: b })));
+      }
+      try { await reclusterItem(id); } catch {}
+      const meta = [src.role, [src.start_date, src.end_date].filter(Boolean).join("–"), src.location].filter(Boolean).join(" · ");
+      L("result", `${isNew ? "✓ added" : "↻ updated"} experience "${company}"${meta ? ` (${meta})` : ""} · ${a.bullets.length} bullet(s) synthesized from ${parts.length} project(s)`);
+    } catch (e: any) {
+      L("error", `couldn't synthesize ${company}: ${String(e?.message || e).slice(0, 100)}`);
+    }
+    L("note", `Scan complete — 1 company experience entry.`);
+    updateCrawlRun(runId, { status: "done", ended_at: NOW(), received: dirs.length, scraped: 1 });
+    db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
+    return;
+  }
+
+  const linkId = src.link_item_id ? Number(src.link_item_id) : null;
   let found = 0, added = 0, updated = 0;
   for (const dir of dirs) {
     const g = gatherProjectText(dir, depth);

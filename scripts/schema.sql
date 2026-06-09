@@ -220,6 +220,10 @@ CREATE TABLE IF NOT EXISTS kb_items (
   tags        TEXT NOT NULL DEFAULT '[]',       -- JSON array of tech/skills
   source      TEXT NOT NULL DEFAULT 'manual',   -- manual | scan
   source_path TEXT,
+  role        TEXT,                             -- experience: your title at the company
+  start_date  TEXT,                             -- experience: start (free text, e.g. 2022 or Jan 2022)
+  end_date    TEXT,                             -- experience: end (or "Present")
+  location    TEXT,                             -- experience: company location
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -260,6 +264,10 @@ CREATE TABLE IF NOT EXISTS kb_sources (
   interval_hours  INTEGER NOT NULL DEFAULT 0,        -- 0 = manual re-scan only
   depth           TEXT NOT NULL DEFAULT 'standard', -- quick | standard | deep
   link_item_id    INTEGER,                          -- link scan to an existing kb_items row
+  role            TEXT,                             -- company: your title there
+  start_date      TEXT,                             -- company: start date
+  end_date        TEXT,                             -- company: end date
+  location        TEXT,                             -- company: location
   last_scanned_at TEXT,
   created_at      TEXT NOT NULL
 );

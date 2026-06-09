@@ -106,4 +106,36 @@ test("email: strict job matching never picks the wrong application", async () =>
   assert.equal(matchJob("Globex", "")?.strength, "exact");
 });
 
+test("kb: accepting a company-experience bullet creates ONE résumé experience entry", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { saveProfile, getDefaultProfile } = await import("../app/resume/profiles.server");
+  const { acceptSuggestion } = await import("../app/services/kb.server");
+  const db = getDb();
+
+  saveProfile({ name: "Base", makeDefault: true, data: { contact: { name: "Ada" }, summary: "", skills: [], experience: [], projects: [], education: [] } });
+
+  const now = new Date().toISOString();
+  const itemId = Number(db.prepare(
+    "INSERT INTO kb_items (kind,title,summary,tags,source,source_path,role,start_date,end_date,location,created_at,updated_at) VALUES ('experience','Acme Corp','',?,'scan','/tmp/acme','Senior Engineer','2021','2024','Remote',?,?)"
+  ).run("[]", now, now).lastInsertRowid);
+  const mk = (bullet: string) => Number(db.prepare(
+    "INSERT INTO kb_suggestions (item_id,section,bullet,created_at) VALUES (?,?,?,?)"
+  ).run(itemId, "experience", bullet, now).lastInsertRowid);
+  const s1 = mk("Built the billing service handling subscriptions.");
+  const s2 = mk("Led the data pipeline migration to streaming.");
+
+  assert.ok(acceptSuggestion(s1).ok);
+  assert.ok(acceptSuggestion(s2).ok);
+
+  const exp = getDefaultProfile()!.data.experience;
+  assert.equal(exp.length, 1, "two company bullets → ONE experience entry, not two");
+  assert.equal(exp[0].company, "Acme Corp");
+  assert.equal(exp[0].role, "Senior Engineer");
+  assert.equal(exp[0].start, "2021");
+  assert.equal(exp[0].end, "2024");
+  assert.equal(exp[0].location, "Remote");
+  assert.equal(exp[0].bullets.length, 2, "both bullets land under the one company");
+  assert.equal(getDefaultProfile()!.data.projects.length, 0, "company bullets must NOT become projects");
+});
+
 test.after(cleanup);

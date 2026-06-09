@@ -31,6 +31,13 @@ export function getDb(): Database.Database {
   try { ensureColumn(db, "kb_sources", "depth", "TEXT"); } catch {} // scan depth: quick | standard | deep
   try { ensureColumn(db, "kb_sources", "link_item_id", "INTEGER"); } catch {} // link a scan to an existing KB item
   try { ensureColumn(db, "kb_suggestions", "cluster_id", "INTEGER"); } catch {} // group near-duplicate drafted bullets
+  // company-experience metadata (a company scan = ONE experience entry, not N projects)
+  for (const t of ["kb_items", "kb_sources"]) {
+    try { ensureColumn(db, t, "role", "TEXT"); } catch {}
+    try { ensureColumn(db, t, "start_date", "TEXT"); } catch {}
+    try { ensureColumn(db, t, "end_date", "TEXT"); } catch {}
+    try { ensureColumn(db, t, "location", "TEXT"); } catch {}
+  }
   // reconcile runs orphaned by a previous process: this runs once per process at
   // connection creation, before any new crawl/session can start, so it never
   // touches a run that's live in THIS process.

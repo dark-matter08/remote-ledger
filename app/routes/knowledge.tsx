@@ -76,6 +76,10 @@ export async function action({ request }: Route.ActionArgs) {
         intervalHours: Number(form.get("interval") || "0") || 0,
         depth: String(form.get("depth") || "standard"),
         linkRef: linkRef && linkRef !== "0" ? linkRef : undefined,
+        role: String(form.get("role") || ""),
+        startDate: String(form.get("startDate") || ""),
+        endDate: String(form.get("endDate") || ""),
+        location: String(form.get("location") || ""),
       });
       if (r.error) return { error: r.error };
       return { ok: true, msg: linkRef && linkRef !== "0" ? "Folder linked to that project — scanning to enrich it." : "Folder added — scanning it in the background. It'll stay and can be re-scanned anytime." };
@@ -123,6 +127,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();
   const [view, setView] = useState<"manage" | "graph">("manage");
+  const [scanKind, setScanKind] = useState<"project" | "company">("project");
 
   useEffect(() => {
     if (!kb.scanning) return;
@@ -191,8 +196,8 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
             <div className="field">
               <label>This folder is…</label>
               <div className="radiocol">
-                <label><input type="radio" name="kind" value="project" defaultChecked /> A single project I'm working on</label>
-                <label><input type="radio" name="kind" value="company" /> A company folder with several projects</label>
+                <label><input type="radio" name="kind" value="project" checked={scanKind === "project"} onChange={() => setScanKind("project")} /> A single project I'm working on</label>
+                <label><input type="radio" name="kind" value="company" checked={scanKind === "company"} onChange={() => setScanKind("company")} /> A company folder with several projects</label>
               </div>
             </div>
             <div className="field">
@@ -214,18 +219,33 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                 { value: "720", label: "Monthly" },
               ]} />
             </div>
-            <div className="field">
-              <label>Link to existing project (optional)</label>
-              <Select name="linkRef" defaultValue="0" options={[
-                { value: "0", label: "— Create a new item —" },
-                ...kb.linkable.map((it: any) => ({ value: it.value, label: it.label })),
-              ]} />
-              <p className="hint" style={{ marginTop: 6 }}>Enrich an item already in your knowledge base (e.g. a project from your résumé) instead of creating a duplicate.</p>
-            </div>
+            {scanKind === "project" ? (
+              <div className="field">
+                <label>Link to existing project (optional)</label>
+                <Select name="linkRef" defaultValue="0" options={[
+                  { value: "0", label: "— Create a new item —" },
+                  ...kb.linkable.map((it: any) => ({ value: it.value, label: it.label })),
+                ]} />
+                <p className="hint" style={{ marginTop: 6 }}>Enrich an item already in your knowledge base (e.g. a project from your résumé) instead of creating a duplicate.</p>
+              </div>
+            ) : (
+              <div className="field">
+                <label>Your role / title there</label>
+                <input type="text" name="role" placeholder="e.g. Senior Backend Engineer" />
+                <p className="hint" style={{ marginTop: 6 }}>A company folder becomes <strong>one</strong> résumé experience entry — not one entry per sub-project.</p>
+              </div>
+            )}
           </div>
+          {scanKind === "company" && (
+            <div className="row3">
+              <div className="field"><label>Start</label><input type="text" name="startDate" placeholder="e.g. Jan 2022" /></div>
+              <div className="field"><label>End</label><input type="text" name="endDate" placeholder="e.g. Present" /></div>
+              <div className="field"><label>Company location</label><input type="text" name="location" placeholder="e.g. Remote · Lagos, NG" /></div>
+            </div>
+          )}
           <div className="field">
-            <label>A few words about this folder (optional)</label>
-            <input type="text" name="label" placeholder="Label (e.g. Acme Corp)" style={{ marginBottom: 8 }} />
+            <label>{scanKind === "company" ? "Company name & context" : "A few words about this folder (optional)"}</label>
+            <input type="text" name="label" placeholder={scanKind === "company" ? "Company name (e.g. Acme Corp)" : "Label (e.g. Acme Corp)"} style={{ marginBottom: 8 }} />
             <textarea name="note" placeholder="Context for the agent — e.g. 'My work at Acme; I led the billing service and the data pipeline.'" style={{ minHeight: 64 }} />
           </div>
           <button className="btn" disabled={busy || !kb.hasRunner || kb.scanning}>{kb.scanning ? "Scanning…" : "Add & scan folder"}</button>
