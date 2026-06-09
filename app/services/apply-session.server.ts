@@ -190,7 +190,9 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
           addLog(sessionId, "note", { jobId: job.id, text: r.message });
           if (r.shot) addLog(sessionId, "screenshot", { jobId: job.id, text: `Prefilled form (${r.confidence}% ready)`, shot: r.shot });
           shot = r.shot || shot;
-          status = r.ok ? (headed ? "prefilled" : "drafted") : status;
+          // Keep needs_input if pooled questions remain (so the session stays Resumable);
+          // only mark prefilled/drafted once nothing needs your input.
+          if (r.ok && !unanswered) status = headed ? "prefilled" : "drafted";
         } catch (e: any) {
           addLog(sessionId, "error", { jobId: job.id, text: `Prefill failed: ${e.message}` });
         }
