@@ -79,4 +79,31 @@ test("db: upsert (insert+update), slug, stage + funnel", async () => {
   assert.ok(f.applied >= 1, "funnel counts applied");
 });
 
+test("email: strict job matching never picks the wrong application", async () => {
+  const { upsertJobs } = await import("../app/db.server");
+  const { matchJob } = await import("../app/services/email.server");
+  upsertJobs([
+    { company: "Northwind", role: "Senior Frontend Engineer", category: "high", fit_score: 80, apply_url: "https://n.co/fe" },
+    { company: "Northwind", role: "Backend Engineer", category: "high", fit_score: 80, apply_url: "https://n.co/be" },
+    { company: "Globex", role: "Data Scientist", category: "high", fit_score: 80, apply_url: "https://g.co/ds" },
+  ]);
+
+  // exact company + role → exact, picks the RIGHT role (not the other Northwind job)
+  const m1 = matchJob("Northwind", "Senior Frontend Engineer");
+  assert.equal(m1?.strength, "exact");
+  assert.equal(m1?.id, "northwind--senior-frontend-engineer");
+
+  // exact company, NO role, but TWO roles at that company → ambiguous → no match (the bug)
+  assert.equal(matchJob("Northwind", ""), null, "ambiguous company w/o role must not match");
+
+  // a totally different company must never match
+  assert.equal(matchJob("Initech", "Frontend Engineer"), null, "unrelated company → no match");
+
+  // generic/too-short company token must not match anything
+  assert.equal(matchJob("AI", "Engineer"), null, "too-generic company → no match");
+
+  // single role at a company, no role given → safe exact match
+  assert.equal(matchJob("Globex", "")?.strength, "exact");
+});
+
 test.after(cleanup);

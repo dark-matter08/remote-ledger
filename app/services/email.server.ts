@@ -59,8 +59,19 @@ export function applyEmailUpdate(msgId: number, auto = false): { ok: boolean; ms
   if (!m) return { ok: false, msg: "message not found" };
   if (!m.job_id || !m.proposed_stage) { getDb().prepare("UPDATE email_messages SET status='applied' WHERE id=?").run(msgId); return { ok: true, msg: "Noted (no pipeline change)." }; }
   if (!STAGES.includes(m.proposed_stage as Stage)) return { ok: false, msg: "invalid stage" };
-  if (!getJob(m.job_id)) return { ok: false, msg: "matched job no longer exists" };
-  setStage(m.job_id, m.proposed_stage as Stage, { note: `${auto ? "Auto from email" : "From email"}: ${m.subject || ""}`.slice(0, 200) });
+  const job = getJob(m.job_id);
+  if (!job) return { ok: false, msg: "matched job no longer exists" };
+  // Never let an AUTO email update pull an application BACKWARD (e.g. a late receipt
+  // re-applying "applied" to a job already at "interview"). Terminal outcomes
+  // (offer/rejected/withdrawn) may arrive at any time, so they're always allowed.
+  const TERMINAL = new Set<Stage>(["offer", "rejected", "withdrawn"]);
+  const cur = (job as any).stage as Stage | undefined;
+  const proposed = m.proposed_stage as Stage;
+  if (auto && cur && !TERMINAL.has(proposed) && STAGES.indexOf(proposed) <= STAGES.indexOf(cur)) {
+    getDb().prepare("UPDATE email_messages SET status='applied' WHERE id=?").run(msgId);
+    return { ok: true, msg: `No change — already at "${cur}" (won't move backward to "${proposed}").` };
+  }
+  setStage(m.job_id, proposed, { note: `${auto ? "Auto from email" : "From email"}: ${m.subject || ""}`.slice(0, 200) });
   if (m.interview_at) setNextAction(m.job_id, `Interview — ${m.from_name || m.from_addr || "recruiter"}`, m.interview_at);
   addEvent(m.job_id, "email_update", { category: m.category, from: m.from_addr, subject: m.subject, interviewAt: m.interview_at || null, auto });
   getDb().prepare("UPDATE email_messages SET status='applied' WHERE id=?").run(msgId);
@@ -89,20 +100,55 @@ const senderDomain = (addr: string) => { const m = /@([^>]+)/.exec(addr || ""); 
 const parseISO = (v: any): string | null => { if (!v || typeof v !== "string") return null; const t = Date.parse(v); return Number.isNaN(t) ? null : new Date(t).toISOString(); };
 
 const norm = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-function matchJob(company: string, role: string): string | null {
+const roleTokens = (s: string) => new Set(norm(s).split(" ").filter((w) => w.length > 2));
+function roleOverlap(a: string, b: string): number {
+  const x = roleTokens(a), y = roleTokens(b);
+  if (!x.size || !y.size) return 0;
+  let inter = 0; for (const t of x) if (y.has(t)) inter++;
+  return inter / Math.min(x.size, y.size);
+}
+
+// STRICT email→application matcher. A loose match here is dangerous: it can flip the
+// WRONG application's pipeline stage (e.g. to "applied"). So we only return:
+//   "exact"  — unambiguous: company matches exactly AND (role matches OR there is exactly
+//              one active application at that company). Safe to auto-apply.
+//   "strong" — company matches (exact or a long substring) and the role overlaps. Good
+//              enough to SUGGEST for review, but never auto-applied.
+//   null     — anything weaker. Don't touch any application.
+export interface JobMatch { id: string; strength: "exact" | "strong" }
+export function matchJob(company: string, role: string): JobMatch | null {
   if (!company) return null;
   const c = norm(company);
+  if (c.length < 3) return null; // too generic to match safely
   const jobs = getDb().prepare("SELECT id, company, role FROM jobs WHERE active=1").all() as any[];
-  let best: string | null = null, bestScore = 0;
+
+  // company-exact candidates first
+  const exact = jobs.filter((j) => norm(j.company) === c);
+  if (exact.length) {
+    if (role) {
+      let best: any = null, bestOv = 0;
+      for (const j of exact) { const ov = roleOverlap(role, j.role); if (ov > bestOv) { bestOv = ov; best = j; } }
+      if (best && bestOv >= 0.4) return { id: best.id, strength: "exact" };
+      // company is right but role disagrees / is ambiguous across several roles
+      return exact.length === 1 ? { id: exact[0].id, strength: "strong" } : null;
+    }
+    // no role in the email: only safe if there's exactly ONE application at this company
+    if (exact.length === 1) return { id: exact[0].id, strength: "exact" };
+    return null; // ambiguous: multiple roles at the same company, no role to disambiguate
+  }
+
+  // substring company match (e.g. "Stripe" vs "Stripe Payments") — require a meaningful
+  // length and a real role overlap, and never auto-apply on it.
+  let best: any = null, bestOv = 0;
   for (const j of jobs) {
     const jc = norm(j.company);
-    let score = 0;
-    if (jc === c) score = 3;
-    else if (jc.includes(c) || c.includes(jc)) score = 2;
-    if (score && role && norm(j.role).includes(norm(role).split(" ")[0] || "~")) score += 1;
-    if (score > bestScore) { bestScore = score; best = j.id; }
+    const contains = (jc.includes(c) || c.includes(jc)) && Math.min(jc.length, c.length) >= 5;
+    if (!contains) continue;
+    const ov = role ? roleOverlap(role, j.role) : 0;
+    if (ov > bestOv) { bestOv = ov; best = j; }
   }
-  return bestScore >= 2 ? best : null;
+  if (best && bestOv >= 0.5) return { id: best.id, strength: "strong" };
+  return null;
 }
 
 // ---------- sync ----------
@@ -196,7 +242,8 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
           continue;
         }
 
-        const jobId = matchJob(c.company || "", c.role || "");
+        const mj = matchJob(c.company || "", c.role || "");
+        const jobId = mj?.id ?? null;
         const stage = jobId ? CATEGORY_STAGE[c.category] ?? null : null;
         const interviewAt = parseISO(c.interviewAt);
         const conf = Number(c.confidence) || 0;
@@ -206,12 +253,15 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
         found++;
         if (jobId) matched++;
         const newId = Number(info.lastInsertRowid);
-        // opt-in auto-apply for high-confidence, matched stage moves (reversible; never auto-applies an application)
-        if (autoOn && newId && jobId && stage && conf >= autoMin) {
+        // opt-in auto-apply: ONLY for an UNAMBIGUOUS (exact) match + high confidence. A
+        // strong-but-not-exact match is left for you to confirm in Application Mail, so we
+        // never auto-move the wrong application's stage. (Stage moves are reversible and we
+        // never auto-advance backward — see applyEmailUpdate.)
+        if (autoOn && newId && jobId && stage && conf >= autoMin && mj?.strength === "exact") {
           const r = applyEmailUpdate(newId, true);
-          if (r.ok) { autoApplied++; L("result", `✓ ${c.category} → ${jobId} · AUTO-APPLIED (${conf}%): ${r.msg}`); continue; }
+          if (r.ok) { autoApplied++; L("result", `✓ ${c.category} → ${jobId} · AUTO-APPLIED (${conf}%, exact): ${r.msg}`); continue; }
         }
-        L("result", `✓ ${c.category || "other"}${jobId ? ` → matched ${jobId}${stage ? ` (suggest: ${stage})` : ""}` : " (no job match)"}${interviewAt ? ` · interview ${interviewAt.slice(0, 16).replace("T", " ")}` : ""}`);
+        L("result", `✓ ${c.category || "other"}${jobId ? ` → matched ${jobId} (${mj?.strength})${stage ? ` (suggest: ${stage})` : ""}` : " (no confident job match)"}${interviewAt ? ` · interview ${interviewAt.slice(0, 16).replace("T", " ")}` : ""}`);
       }
     } finally {
       lock.release();
