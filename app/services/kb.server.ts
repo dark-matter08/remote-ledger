@@ -479,6 +479,53 @@ export function setSourceInterval(id: number, hours: number): void { getDb().pre
 export function removeSource(id: number): void { getDb().prepare("DELETE FROM kb_sources WHERE id=?").run(id); }
 export function rescanSource(id: number): void { startSourceScan(id); }
 
+// Fully PURGE everything a folder produced: the KB items scanned from it (the company
+// experience and/or its projects), their drafted/accepted/dismissed bullets + questions,
+// the registered source row, AND any résumé entries (projects/experience) those items
+// created in the default profile. Scoped strictly to the given path so you can re-scan
+// fresh. Accepts a source id or an absolute folder path. Returns what was removed.
+export function purgeSource(pathOrId: string | number): { items: number; bullets: number; sources: number; titles: string[] } {
+  const db = getDb();
+  let base = "";
+  if (/^\d+$/.test(String(pathOrId))) {
+    const s = db.prepare("SELECT path FROM kb_sources WHERE id=?").get(Number(pathOrId)) as any;
+    base = s?.path || "";
+  } else {
+    base = expandPath(String(pathOrId));
+  }
+  if (!base) return { items: 0, bullets: 0, sources: 0, titles: [] };
+  const root = base.replace(/\/+$/, "");
+  // items scanned from this folder: the folder itself (company experience) + sub-projects
+  const items = db.prepare("SELECT id, title FROM kb_items WHERE source_path = ? OR source_path = ? OR source_path LIKE ?")
+    .all(base, root, root + "/%") as { id: number; title: string }[];
+  const titles = items.map((i) => i.title);
+
+  // 1) remove the résumé entries those items created (matched by title), counting bullets
+  let bullets = 0;
+  const profile = getDefaultProfile();
+  if (profile && titles.length) {
+    const data = profile.data;
+    const lc = new Set(titles.map((t) => String(t).toLowerCase()));
+    for (const p of data.projects || []) if (lc.has((p.name || "").toLowerCase())) bullets += (p.bullets || []).length;
+    for (const e of data.experience || []) if (lc.has((e.company || "").toLowerCase())) bullets += (e.bullets || []).length;
+    const beforeP = (data.projects || []).length, beforeE = (data.experience || []).length;
+    data.projects = (data.projects || []).filter((p) => !lc.has((p.name || "").toLowerCase()));
+    data.experience = (data.experience || []).filter((e) => !lc.has((e.company || "").toLowerCase()));
+    if (data.projects.length !== beforeP || data.experience.length !== beforeE) saveProfile({ id: profile.id, name: profile.name, data });
+  }
+
+  // 2) delete the KB items + their suggestions/questions
+  for (const it of items) {
+    db.prepare("DELETE FROM kb_questions WHERE item_id=?").run(it.id);
+    db.prepare("DELETE FROM kb_suggestions WHERE item_id=?").run(it.id);
+    db.prepare("DELETE FROM kb_items WHERE id=?").run(it.id);
+  }
+
+  // 3) remove the registered source row(s) for this path
+  const srcRes = db.prepare("DELETE FROM kb_sources WHERE path=? OR path=?").run(base, root);
+  return { items: items.length, bullets, sources: Number(srcRes.changes || 0), titles };
+}
+
 function startSourceScan(sourceId: number): number {
   const src = getDb().prepare("SELECT * FROM kb_sources WHERE id=?").get(sourceId) as KbSource | undefined;
   if (!src) return 0;

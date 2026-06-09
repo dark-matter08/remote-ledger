@@ -19,6 +19,7 @@ import {
   listSources,
   linkableItems,
   addSource,
+  purgeSource,
   rescanSource,
   removeSource,
   setSourceInterval,
@@ -86,6 +87,11 @@ export async function action({ request }: Route.ActionArgs) {
     }
     if (intent === "kb-rescan") { rescanSource(Number(form.get("id"))); return { ok: true, msg: "Re-scanning folder…" }; }
     if (intent === "kb-remove-source") { removeSource(Number(form.get("id"))); return { ok: true, msg: "Folder removed (its findings stay in the knowledge base)." }; }
+    if (intent === "kb-purge-source") {
+      const ref = String(form.get("path") || form.get("id") || "");
+      const r = purgeSource(ref);
+      return { ok: true, msg: `Purged ${r.items} item(s), ${r.bullets} résumé bullet(s)${r.sources ? `, removed the folder` : ""}. Re-scan to start fresh.` };
+    }
     if (intent === "kb-interval") { setSourceInterval(Number(form.get("id")), Number(form.get("interval") || "0") || 0); return { ok: true, msg: "Re-scan interval updated." }; }
     if (intent === "kb-answer") {
       answerKbQuestion(Number(form.get("id")), String(form.get("answer") || "").trim());
@@ -274,6 +280,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                     </Form>
                     <Form method="post"><input type="hidden" name="intent" value="kb-rescan" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy || kb.scanning}>rescan</button></Form>
                     <ConfirmForm method="post" title="Stop tracking folder?" confirm="This folder won't be re-scanned, but everything it already found stays in your knowledge base." confirmLabel="Stop tracking"><input type="hidden" name="intent" value="kb-remove-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy}>remove</button></ConfirmForm>
+                    <ConfirmForm method="post" title="Purge everything from this folder?" confirm="Deletes every KB item, drafted/accepted bullet, question, AND the résumé entries this folder created — so you can re-scan fresh. This cannot be undone." confirmLabel="Purge all"><input type="hidden" name="intent" value="kb-purge-source" /><input type="hidden" name="id" value={s.id} /><button className="back-link" disabled={busy} style={{ color: "var(--vermillion)" }}>purge</button></ConfirmForm>
                   </div>
                 </div>
               ))}
