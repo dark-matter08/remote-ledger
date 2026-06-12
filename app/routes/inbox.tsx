@@ -7,7 +7,7 @@ import { Select } from "../components/Select";
 import { ConfirmForm } from "../components/ConfirmForm";
 import {
   listAccounts, addAccount, removeAccount, setAccountInterval,
-  pendingEmails, recentEmails, startSync, applyEmailUpdate, dismissEmail,
+  pendingEmails, recentEmails, startSync, applyEmailUpdate, dismissEmail, rematchPending,
 } from "../services/email.server";
 import { getDb, getSetting, setSetting } from "../sqlite.server";
 import { availableRunners } from "../llm/runner.server";
@@ -56,6 +56,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "interval") { setAccountInterval(Number(form.get("id")), Number(form.get("interval") || "0") || 0); return { ok: true, msg: "Auto-sync interval updated." }; }
   if (intent === "apply") { const r = applyEmailUpdate(Number(form.get("id"))); return r.ok ? { ok: true, msg: r.msg } : { error: r.msg }; }
   if (intent === "dismiss") { dismissEmail(Number(form.get("id"))); return { ok: true, msg: "Dismissed." }; }
+  if (intent === "rematch") { const r = await rematchPending(); return { ok: true, msg: r.matched ? `Re-matched ${r.matched} of ${r.checked} unmatched email(s) to a job (incl. archived/applied).` : `Checked ${r.checked} unmatched email(s) — none matched a job.` }; }
   if (intent === "automation") {
     setSetting("email_autoapply", form.get("autoapply") ? "true" : "false");
     setSetting("email_autoapply_min", String(Number(form.get("autoMin") || "85") || 85));
@@ -180,8 +181,14 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
 
       {/* review queue */}
       <div className="panel">
-        <h3>To review {pending.length ? <span className="badge warn">{pending.length}</span> : <span className="badge ok">clear</span>}</h3>
-        <p className="hint">Classified job mail. Approve to update the matched application's stage, or dismiss.</p>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span>To review {pending.length ? <span className="badge warn">{pending.length}</span> : <span className="badge ok">clear</span>}</span>
+          <Form method="post" style={{ marginLeft: "auto" }}>
+            <input type="hidden" name="intent" value="rematch" />
+            <button className="back-link" disabled={busy} title="Re-check unmatched emails against your jobs, including archived/applied ones">{busy ? "…" : "re-check matches"}</button>
+          </Form>
+        </h3>
+        <p className="hint">Classified job mail. Approve to update the matched application's stage, or dismiss. Updates apply even to archived/applied jobs.</p>
         {pending.length === 0 ? (
           <p className="hint">Nothing waiting. Connect a mailbox and sync to populate this.</p>
         ) : (

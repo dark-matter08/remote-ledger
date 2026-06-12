@@ -28,6 +28,8 @@ export function getDb(): Database.Database {
   ensureColumn(db, "jobs", "jd", "TEXT");
   ensureColumn(db, "jobs", "jd_html", "TEXT"); // sanitized rich JD (rendered in Heritage Press)
   try { ensureColumn(db, "email_messages", "interview_at", "TEXT"); } catch {} // phase-2 (table may not exist yet on very old DBs)
+  try { ensureColumn(db, "email_messages", "company", "TEXT"); } catch {} // store classified company/role for re-matching
+  try { ensureColumn(db, "email_messages", "role", "TEXT"); } catch {}
   try { ensureColumn(db, "kb_sources", "depth", "TEXT"); } catch {} // scan depth: quick | standard | deep
   try { ensureColumn(db, "kb_sources", "link_item_id", "INTEGER"); } catch {} // link a scan to an existing KB item
   try { ensureColumn(db, "kb_suggestions", "cluster_id", "INTEGER"); } catch {} // group near-duplicate drafted bullets

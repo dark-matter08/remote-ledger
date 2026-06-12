@@ -295,6 +295,8 @@ CREATE TABLE IF NOT EXISTS email_messages (
   subject        TEXT,
   sent_at        TEXT,
   job_id         TEXT,                       -- matched application (nullable)
+  company        TEXT,                       -- classified employer (for re-matching)
+  role           TEXT,                       -- classified role (for re-matching)
   category       TEXT,                       -- receipt|recruiter|screening|interview|offer|rejection|other
   confidence     INTEGER NOT NULL DEFAULT 0,
   proposed_stage TEXT,                       -- suggested pipeline stage (nullable)

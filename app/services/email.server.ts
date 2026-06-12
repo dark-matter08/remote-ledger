@@ -11,7 +11,7 @@
 //    your primary inbox.
 import { getDb, getSetting } from "../sqlite.server";
 import { setSecret, getSecret, deleteSecret } from "../secrets.server";
-import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addEvent, getJob, upsertJobs, setJd, jobId as jobSlug } from "../db.server";
+import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addEvent, getJob, restoreJob, upsertJobs, setJd, jobId as jobSlug } from "../db.server";
 import { resolveLive } from "./scrape.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
 import { STAGES, type Stage } from "../stages";
@@ -52,6 +52,35 @@ export function recentEmails(limit = 20): EmailMessage[] {
   return getDb().prepare("SELECT * FROM email_messages WHERE status!='new' ORDER BY id DESC LIMIT ?").all(limit) as any[];
 }
 
+// Re-run job matching on queued ("new") emails that didn't match a job — e.g. older mail
+// classified before the matcher learned to see archived/applied jobs. Uses stored
+// company/role; for legacy rows that have neither, re-classifies from subject + snippet.
+export async function rematchPending(): Promise<{ checked: number; matched: number }> {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT id, from_addr, subject, snippet, company, role, category FROM email_messages WHERE job_id IS NULL AND status='new' AND category NOT IN ('alert','other')"
+  ).all() as any[];
+  let matched = 0;
+  for (const r of rows) {
+    let company = r.company as string | null, role = r.role as string | null;
+    if (!company) {
+      try {
+        const c = await classify(r.from_addr || "", r.subject || "", r.snippet || "", new Date().toISOString().slice(0, 10));
+        company = c.company || ""; role = c.role || "";
+        if (company || role) db.prepare("UPDATE email_messages SET company=?, role=? WHERE id=?").run(company || null, role || null, r.id);
+      } catch { /* leave unmatched */ }
+    }
+    if (!company) continue;
+    const mj = matchJob(company, role || "");
+    if (mj) {
+      const stage = CATEGORY_STAGE[r.category] ?? null;
+      db.prepare("UPDATE email_messages SET job_id=?, proposed_stage=? WHERE id=?").run(mj.id, stage, r.id);
+      matched++;
+    }
+  }
+  return { checked: rows.length, matched };
+}
+
 // Apply a reviewed email's proposed stage change to its matched application, and set
 // an interview reminder if the email carried a date/time.
 export function applyEmailUpdate(msgId: number, auto = false): { ok: boolean; msg: string } {
@@ -70,6 +99,13 @@ export function applyEmailUpdate(msgId: number, auto = false): { ok: boolean; ms
   if (auto && cur && !TERMINAL.has(proposed) && STAGES.indexOf(proposed) <= STAGES.indexOf(cur)) {
     getDb().prepare("UPDATE email_messages SET status='applied' WHERE id=?").run(msgId);
     return { ok: true, msg: `No change — already at "${cur}" (won't move backward to "${proposed}").` };
+  }
+  // If the matched job was archived (removed from the pipeline) but an email says it's
+  // progressing (screening/interview/offer), pull it back into the pipeline so the update
+  // is visible. Terminal outcomes (rejected/withdrawn) belong in the archive — leave them.
+  if ((job as any).active === 0 && !TERMINAL.has(proposed)) {
+    restoreJob(m.job_id);
+    addEvent(m.job_id, "email_restore", { from: "archive", reason: `email: ${proposed}` });
   }
   setStage(m.job_id, proposed, { note: `${auto ? "Auto from email" : "From email"}: ${m.subject || ""}`.slice(0, 200) });
   if (m.interview_at) setNextAction(m.job_id, `Interview — ${m.from_name || m.from_addr || "recruiter"}`, m.interview_at);
@@ -120,7 +156,14 @@ export function matchJob(company: string, role: string): JobMatch | null {
   if (!company) return null;
   const c = norm(company);
   if (c.length < 3) return null; // too generic to match safely
-  const jobs = getDb().prepare("SELECT id, company, role FROM jobs WHERE active=1").all() as any[];
+  // Include ARCHIVED/inactive jobs you've actually engaged with (applied+), so a
+  // rejection/interview email for a job you applied to then archived still matches —
+  // not just jobs currently active in the pipeline.
+  const jobs = getDb().prepare(
+    `SELECT j.id, j.company, j.role
+     FROM jobs j LEFT JOIN applications a ON a.job_id = j.id
+     WHERE j.active = 1 OR COALESCE(a.stage,'saved') <> 'saved'`
+  ).all() as any[];
 
   // company-exact candidates first
   const exact = jobs.filter((j) => norm(j.company) === c);
@@ -248,8 +291,8 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
         const interviewAt = parseISO(c.interviewAt);
         const conf = Number(c.confidence) || 0;
         const info = db.prepare(
-          "INSERT OR IGNORE INTO email_messages (account_id,uid,from_addr,from_name,subject,sent_at,job_id,category,confidence,proposed_stage,interview_at,summary,snippet,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ).run(acct.id, uid, fromAddr, fromName, subject, sentAt, jobId, c.category || "other", conf, stage, interviewAt, (c.summary || "").slice(0, 400), text.replace(/\s+/g, " ").slice(0, 240), "new", NOW());
+          "INSERT OR IGNORE INTO email_messages (account_id,uid,from_addr,from_name,subject,sent_at,job_id,company,role,category,confidence,proposed_stage,interview_at,summary,snippet,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        ).run(acct.id, uid, fromAddr, fromName, subject, sentAt, jobId, (c.company || "").slice(0, 160) || null, (c.role || "").slice(0, 200) || null, c.category || "other", conf, stage, interviewAt, (c.summary || "").slice(0, 400), text.replace(/\s+/g, " ").slice(0, 240), "new", NOW());
         found++;
         if (jobId) matched++;
         const newId = Number(info.lastInsertRowid);

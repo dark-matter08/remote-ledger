@@ -104,6 +104,15 @@ test("email: strict job matching never picks the wrong application", async () =>
 
   // single role at a company, no role given → safe exact match
   assert.equal(matchJob("Globex", "")?.strength, "exact");
+
+  // a job you APPLIED to and then ARCHIVED must still match (the rejection-email bug)
+  const { setStage, archiveJob } = await import("../app/db.server");
+  upsertJobs([{ company: "Hooli", role: "Platform Engineer", category: "high", fit_score: 80, apply_url: "https://h.co/pe" }]);
+  setStage("hooli--platform-engineer", "applied");
+  archiveJob("hooli--platform-engineer"); // active=0, removed from pipeline
+  const ma = matchJob("Hooli", "Platform Engineer");
+  assert.equal(ma?.id, "hooli--platform-engineer", "archived+applied job still matches an email");
+  assert.equal(ma?.strength, "exact");
 });
 
 test("kb: accepting a company-experience bullet creates ONE résumé experience entry", async () => {
