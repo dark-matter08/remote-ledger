@@ -17,7 +17,7 @@ import {
 } from "../db.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
-import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, type JobCtx } from "../resume/ai.server";
+import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
 import { RefreshCw, Check, X, Circle } from "lucide-react";
@@ -143,17 +143,32 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (intent === "draft-answers") {
       if (!base) return { error: "Upload a base résumé first." };
+      const generic = form.get("generic") === "1";
+      if (generic) {
+        const a = await loggedTask("answers", `Draft generic answers · ${job.company} — ${job.role}`, async (L) => {
+          L("step", `Drafting answers for ${GENERIC_QUESTIONS.length} stock question(s)…`);
+          return applicationAnswers(base, ctx(job), GENERIC_QUESTIONS);
+        });
+        setMeta(`answers:${job.id}`, JSON.stringify({ fieldCount: 0, detected: 0, generic: true, answers: a.answers }));
+        addEvent(job.id, "answers_drafted", { questions: a.answers.length, formFields: 0, generic: true });
+        return { ok: true, msg: `Drafted ${a.answers.length} generic answer(s) — these were NOT read from the form.` };
+      }
       const { fields, qs, a } = await loggedTask("answers", `Draft answers · ${job.company} — ${job.role}`, async (L) => {
         L("step", "Reading the application form…");
         const fields = await detectFormFields(job.apply_url);
         const qs = questionFields(fields);
-        L("step", `Drafting answers for ${qs.length} question(s)…`);
-        const a = await applicationAnswers(base, ctx(job), qs);
+        if (!fields.length) return { fields, qs, a: null };
+        L("step", qs.length ? `Drafting answers for ${qs.length} question(s)…` : "Form has no free-text questions.");
+        const a = qs.length ? await applicationAnswers(base, ctx(job), qs) : { answers: [] };
         return { fields, qs, a };
       });
-      setMeta(`answers:${job.id}`, JSON.stringify({ fieldCount: fields.length, detected: qs.length, answers: a.answers }));
-      addEvent(job.id, "answers_drafted", { questions: a.answers.length, formFields: fields.length });
-      return { ok: true, msg: `Drafted ${a.answers.length} answer(s)${fields.length ? ` from ${fields.length} detected form fields` : " (form not readable — used generic questions)"}.` };
+      if (!fields.length)
+        return { error: "Could not read the application form (it may sit behind an Apply button, a login, or a captcha). Nothing was drafted — open the posting to check, or use “Draft generic answers”." };
+      if (!qs.length)
+        return { ok: true, msg: `Form read (${fields.length} fields) — no free-text questions to draft. Identity fields and dropdowns are handled by the browser prefill.` };
+      setMeta(`answers:${job.id}`, JSON.stringify({ fieldCount: fields.length, detected: qs.length, answers: a!.answers }));
+      addEvent(job.id, "answers_drafted", { questions: a!.answers.length, formFields: fields.length });
+      return { ok: true, msg: `Drafted ${a!.answers.length} answer(s) from ${qs.length} question(s) on the form (${fields.length} fields detected).` };
     }
     if (intent === "assist-apply") {
       const r = await loggedTask("prep", `Assisted apply · ${job.company} — ${job.role}`, async (L) =>
@@ -311,6 +326,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "12px 0" }}>
             <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><button className="btn" disabled={busy}>{running === "draft-answers" ? "Drafting…" : "Detect form & draft answers"}</button></Form>
             <Form method="post"><input type="hidden" name="intent" value="assist-apply" /><button className="ghost-btn" disabled={busy}>{running === "assist-apply" ? "Opening browser…" : "Open & prefill in browser ▸"}</button></Form>
+            <Form method="post"><input type="hidden" name="intent" value="draft-answers" /><input type="hidden" name="generic" value="1" /><button className="ghost-btn" disabled={busy} title="Drafts answers to 5 stock questions without reading the form — for postings whose form can't be read.">Draft generic answers</button></Form>
           </div>
 
           {assist && (
@@ -392,7 +408,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
 
           {storedAnswers ? (
             <>
-              <p className="hint">{storedAnswers.detected ? `${storedAnswers.detected} question(s) detected on the form · ${storedAnswers.fieldCount} fields` : "form not readable — generic questions used"}</p>
+              <p className="hint">{storedAnswers.detected ? `${storedAnswers.detected} question(s) detected on the form · ${storedAnswers.fieldCount} fields` : "generic questions — NOT read from the form; verify against the real application"}</p>
               {storedAnswers.answers.map((qa: any, i: number) => (
                 <div key={i} className="version">
                   <div className="version-head">Q{i + 1} · {qa.question}</div>

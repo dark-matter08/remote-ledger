@@ -149,7 +149,9 @@ export async function coverLetter(base: Resume, job: JobCtx): Promise<{ text: st
 
 // ---- application answers (auto-apply) -------------------------------------
 
-const GENERIC_QUESTIONS = [
+// Stock prompts for an EXPLICIT "draft generic answers" request only — never a
+// silent fallback (answering invented questions reads as hallucination).
+export const GENERIC_QUESTIONS = [
   "Why are you interested in this role?",
   "Why do you want to work at this company?",
   "Tell us about a relevant project or achievement.",
@@ -162,7 +164,8 @@ export async function applicationAnswers(
   job: JobCtx,
   questions: string[]
 ): Promise<{ answers: { question: string; answer: string }[]; callId?: number }> {
-  const qs = (questions && questions.length ? questions : GENERIC_QUESTIONS).slice(0, 20);
+  const qs = (questions || []).slice(0, 20);
+  if (!qs.length) return { answers: [] };
   const r = await runLLM({
     purpose: "cover-letter",
     jobId: job.id,
@@ -228,6 +231,7 @@ export async function draftSessionAnswers(
   known: Record<string, string> = {}
 ): Promise<{ items: { question: string; answer: string; needsInput: boolean }[]; callId?: number }> {
   const qs = questions.slice(0, 25);
+  if (!qs.length) return { items: [] };
   const knownBlock = Object.keys(known).length
     ? `\n\nKNOWN ANSWERS (reuse verbatim where the question matches):\n${Object.entries(known).map(([q, a]) => `Q: ${q}\nA: ${a}`).join("\n")}`
     : "";

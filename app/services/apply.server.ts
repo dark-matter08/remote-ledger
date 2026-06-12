@@ -16,10 +16,10 @@ import { renderResumePdf } from "../resume/pdf.server";
 import { verifyApplyUrl, renderWaitFor } from "./scrape.server";
 import { loggedTask } from "./crawl.server";
 import { kbContext } from "./kb.server";
-import { UA, EXTRACT_FIELDS, detectAts, questionFields, prefillPage, collectDropdownOptions, type FormField } from "./prefill.server";
+import { UA, EXTRACT_FIELDS, detectAts, applyFormUrl, questionFields, prefillPage, collectDropdownOptions, type FormField } from "./prefill.server";
 
 export type { FormField } from "./prefill.server";
-export { detectAts, questionFields } from "./prefill.server";
+export { detectAts, questionFields, applyFormUrl } from "./prefill.server";
 
 const SHOT_DIR = resolve(process.cwd(), "data", "apply");
 // Headed by default (you watch + submit). Set APPLY_HEADLESS=1 for servers without a
@@ -79,9 +79,25 @@ export async function detectFormFields(url: string): Promise<FormField[]> {
     const { chromium } = await import("playwright");
     browser = await chromium.launch();
     const page = await browser.newPage({ userAgent: UA });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(renderWaitFor(url));
-    const fields = (await page.evaluate(EXTRACT_FIELDS)) as FormField[];
+    const formUrl = applyFormUrl(url);
+    await page.goto(formUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(renderWaitFor(formUrl));
+    let fields = (await page.evaluate(EXTRACT_FIELDS)) as FormField[];
+    // Unknown ATS / company site: the posting page may only carry an "Apply" link
+    // to the real form. Follow it once and re-extract.
+    if (!fields.length) {
+      const next = (await page.evaluate(() => {
+        const a = Array.from(document.querySelectorAll("a")).find(
+          (el: any) => /apply/i.test((el.textContent || "").trim()) && el.href && !el.href.startsWith("javascript:")
+        ) as HTMLAnchorElement | undefined;
+        return a && a.href !== location.href ? a.href : null;
+      })) as string | null;
+      if (next) {
+        await page.goto(next, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.waitForTimeout(renderWaitFor(next));
+        fields = (await page.evaluate(EXTRACT_FIELDS)) as FormField[];
+      }
+    }
     return fields;
   } catch {
     return [];
@@ -235,7 +251,9 @@ export async function assistApply(jobId: string, log?: (msg: string) => void): P
     return { ok: false, filled: [], unfilled: [], ats: detectAts(job.apply_url), confidence: 0, at,
       message: `This posting is no longer applyable (${gate.reason}). I've marked it closed so it won't show up for auto-apply again.` };
   }
-  const url = gate.finalUrl || job.apply_url;
+  // Navigate to the form itself (Lever/Ashby/Workable keep it on a sub-route of
+  // the posting), not the posting page — prefilling the posting finds nothing.
+  const url = applyFormUrl(gate.finalUrl || job.apply_url);
 
   let browser: any;
   try {

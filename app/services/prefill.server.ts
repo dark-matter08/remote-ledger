@@ -39,6 +39,24 @@ export function valueForIdentity(label: string, name: string, id: string, c: Res
   return null;
 }
 
+// The URL where the application FORM actually lives. Several ATSes show only an
+// "Apply" button on the posting page and keep the form on a separate route —
+// Lever: /<org>/<id>/apply · Ashby: /<org>/<id>/application · Workable: …/j/<code>/apply.
+// Detecting/prefilling on the posting page finds zero fields, so always resolve first.
+export function applyFormUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, "");
+    if (/(^|\.)jobs\.lever\.co$/i.test(u.hostname) && /^\/[^/]+\/[0-9a-f][0-9a-f-]{7,}$/i.test(path))
+      return `${u.origin}${path}/apply${u.search}`;
+    if (/(^|\.)jobs\.ashbyhq\.com$/i.test(u.hostname) && /^\/[^/]+\/[0-9a-f][0-9a-f-]{7,}$/i.test(path))
+      return `${u.origin}${path}/application${u.search}`;
+    if (/(^|\.)apply\.workable\.com$/i.test(u.hostname) && /\/j\/[^/]+$/i.test(path))
+      return `${u.origin}${path}/apply/${u.search}`;
+  } catch {}
+  return url;
+}
+
 export function detectAts(url: string): string {
   const h = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
   if (/greenhouse/.test(h)) return "Greenhouse";
@@ -76,27 +94,31 @@ export function matchAnswer(label: string, qa: { q: string; a: string }[]): stri
 }
 
 // In-page extractor for read-only field detection (no element handles).
-export const EXTRACT_FIELDS = () => {
-  const out: any[] = [];
-  const labelFor = (el: any) => {
+// A JS STRING, not a function: tsx/esbuild's keepNames transform injects
+// `__name(...)` helper calls into module-level functions, which don't exist in
+// the browser when Playwright serializes the function — evaluate() threw
+// "__name is not defined" on every page, so detection always returned [].
+export const EXTRACT_FIELDS = `(() => {
+  const out = [];
+  const labelFor = (el) => {
     if (el.id) {
-      const l = document.querySelector(`label[for="${el.id}"]`) as HTMLElement | null;
+      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
       if (l) return l.innerText;
     }
-    const wrap = el.closest("label") as HTMLElement | null;
+    const wrap = el.closest("label");
     if (wrap) return wrap.innerText;
     return el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.name || "";
   };
-  document.querySelectorAll("input, textarea, select").forEach((el: any) => {
+  document.querySelectorAll("input, textarea, select").forEach((el) => {
     const tag = el.tagName.toLowerCase();
     const type = tag === "textarea" ? "textarea" : el.type || "text";
     if (["hidden", "submit", "button", "search", "checkbox", "radio"].includes(type)) return;
-    const label = (labelFor(el) || "").replace(/\s+/g, " ").trim().slice(0, 140);
+    const label = (labelFor(el) || "").replace(/\\s+/g, " ").trim().slice(0, 140);
     if (!label) return;
     out.push({ tag, type, name: el.name || "", label, required: !!el.required });
   });
   return out.slice(0, 60);
-};
+})()`;
 
 export interface PrefillCtx {
   contact: ResumeContact;

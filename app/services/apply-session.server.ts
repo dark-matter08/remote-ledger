@@ -23,7 +23,7 @@ import {
 } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { draftSessionAnswers, type JobCtx } from "../resume/ai.server";
-import { detectFormFields, questionFields, prefillJobOnPage, APPLY_HEADLESS } from "./apply.server";
+import { detectFormFields, questionFields, prefillJobOnPage, applyFormUrl, APPLY_HEADLESS } from "./apply.server";
 import { resolveLive, renderWaitFor } from "./scrape.server";
 
 const SHOT_DIR = resolve(process.cwd(), "data", "apply");
@@ -147,7 +147,17 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
               addLog(sessionId, "action", { jobId: job.id, text: `Saved JD (${txt.length} chars)` });
             }
           }
-          if (mode === "assist") { keep = true; livePage = page; } // reuse for prefill
+          if (mode === "assist") {
+            keep = true; livePage = page; // reuse for prefill
+            // Move the kept tab to the actual application FORM (Lever/Ashby/Workable
+            // keep it on a sub-route; the posting page has no fields to prefill).
+            const formUrl = applyFormUrl(job.apply_url);
+            if (formUrl !== job.apply_url) {
+              await page.goto(formUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+              await page.waitForTimeout(renderWaitFor(formUrl));
+              addLog(sessionId, "action", { jobId: job.id, text: `Opened application form ${formUrl}` });
+            }
+          }
         } finally {
           if (!keep) await page.close().catch(() => {});
         }
