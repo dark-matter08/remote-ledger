@@ -282,6 +282,131 @@ test("kb: per-project context is stored and survives a re-read", async () => {
   assert.equal(read().context, null, "clearing it stores null, not an empty string");
 });
 
+test("trash: a blocked job cannot be resurrected by a later crawl", async () => {
+  const { upsertJobs, trashJob, listBlocks, blocklistPrompt, getJob, unblock } = await import("../app/db.server");
+
+  const mk = (company: string, role: string, url: string) => ({
+    company, role, category: "high", fit_score: 80, apply_url: url,
+  });
+
+  // --- scope: just this posting -------------------------------------------
+  upsertJobs([mk("Trashme Co", "Eng", "https://boards.example.com/1")]);
+  assert.ok(getJob("trashme-co--eng"), "seeded");
+  const one = trashJob("trashme-co--eng", { reason: "irrelevant", note: "wrong stack" });
+  assert.equal(one.removed, 1);
+  assert.equal(getJob("trashme-co--eng"), null, "the row is gone, not archived");
+
+  // the crawl finds it again — it must NOT come back
+  const again = upsertJobs([mk("Trashme Co", "Eng", "https://boards.example.com/1")]);
+  assert.equal(again.inserted, 0, "a blocked posting is never re-inserted");
+  assert.equal(again.blocked, 1, "and it is reported as blocked, not silently dropped");
+  assert.equal(getJob("trashme-co--eng"), null);
+
+  // --- scope: whole domain clears every posting from it --------------------
+  upsertJobs([
+    mk("Agency A", "Role One", "https://jobot.example/a"),
+    mk("Agency A", "Role Two", "https://jobot.example/b"),
+    mk("Agency B", "Role Three", "https://jobot.example/c"),
+    mk("Real Employer", "Keep Me", "https://greenhouse.example/x"),
+  ]);
+  const dom = trashJob("agency-a--role-one", { reason: "agency", scope: "domain" });
+  assert.equal(dom.scope, "domain");
+  assert.equal(dom.removed, 3, "one action clears every posting on that host");
+  assert.ok(getJob("real-employer--keep-me"), "a different host is untouched");
+
+  const reCrawl = upsertJobs([mk("Agency C", "Brand New", "https://jobot.example/d")]);
+  assert.equal(reCrawl.inserted, 0, "a NEW posting on a blocked domain is refused too");
+  assert.equal(reCrawl.blocked, 1);
+
+  // --- what the crawler is told -------------------------------------------
+  const prompt = blocklistPrompt();
+  assert.match(prompt, /DO NOT RETURN/i);
+  assert.match(prompt, /jobot\.example/, "blocked domains are named");
+  assert.match(prompt, /wrong stack/, "your own note is passed through");
+  assert.match(prompt, /staffing agency/i, "the reason becomes a rule");
+
+  // --- un-blocking lets it be found again ---------------------------------
+  const blk = listBlocks().find((b: any) => b.scope === "domain")!;
+  unblock(blk.id);
+  const after = upsertJobs([mk("Agency C", "Brand New", "https://jobot.example/d")]);
+  assert.equal(after.inserted, 1, "un-blocking restores discovery");
+});
+
+test("trash: blocking a company keeps its user-facing history honest", async () => {
+  const { upsertJobs, trashJob, setStage, getJob } = await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  upsertJobs([{ company: "Gone Corp", role: "Dev", category: "high", fit_score: 70, apply_url: "https://x.example/1" }]);
+  setStage("gone-corp--dev", "applied");
+  db.prepare("INSERT INTO llm_calls (ts,runner,model,purpose,job_id,in_tok,out_tok,cost_usd,metered,status) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(new Date().toISOString(), "claude-cli", "m", "match", "gone-corp--dev", 10, 10, 0, 0, "ok");
+
+  trashJob("gone-corp--dev", { reason: "not-remote", scope: "company" });
+
+  assert.equal(getJob("gone-corp--dev"), null, "job removed");
+  assert.equal(
+    (db.prepare("SELECT count(*) c FROM applications WHERE job_id=?").get("gone-corp--dev") as any).c, 0,
+    "pipeline row removed with it"
+  );
+  const call = db.prepare("SELECT job_id FROM llm_calls WHERE purpose='match'").get() as any;
+  assert.equal(call.job_id, null, "spend history survives with a null job_id — it really happened");
+});
+
+test("ats: recognises company boards from posting URLs", async () => {
+  const { detectBoard } = await import("../app/services/ats.server");
+
+  assert.deepEqual(detectBoard("https://job-boards.greenhouse.io/remotecom/jobs/5922893003"), { ats: "greenhouse", slug: "remotecom" });
+  assert.deepEqual(detectBoard("https://boards.greenhouse.io/similarweb/jobs/1"), { ats: "greenhouse", slug: "similarweb" });
+  assert.deepEqual(detectBoard("https://jobs.lever.co/oowlish/abc-def"), { ats: "lever", slug: "oowlish" });
+  assert.deepEqual(detectBoard("https://jobs.ashbyhq.com/railway/6ddcfe47"), { ats: "ashby", slug: "railway" });
+  assert.deepEqual(detectBoard("https://holepunch.recruitee.com/o/engineer"), { ats: "recruitee", slug: "holepunch" });
+
+  // a company's own careers page has no feed, and must not be mistaken for one
+  assert.equal(detectBoard("https://careers.bitfinex.com/jobs/123"), null);
+  assert.equal(detectBoard("https://jobot.com/whatever"), null);
+  assert.equal(detectBoard(""), null);
+});
+
+test("ats: the registry seeds itself from jobs already in the ledger", async () => {
+  const { upsertJobs } = await import("../app/db.server");
+  const { bootstrapCompaniesFromJobs, listCompanies, addCompany } = await import("../app/services/ats.server");
+
+  upsertJobs([
+    { company: "Railway", role: "Backend Eng", category: "high", fit_score: 90, apply_url: "https://jobs.ashbyhq.com/railway/aaa" },
+    { company: "Railway", role: "Frontend Eng", category: "high", fit_score: 88, apply_url: "https://jobs.ashbyhq.com/railway/bbb" },
+    { company: "Oowlish", role: "Node Dev", category: "medium", fit_score: 70, apply_url: "https://jobs.lever.co/oowlish/ccc" },
+    { company: "Bitfinex", role: "Rust Dev", category: "medium", fit_score: 60, apply_url: "https://careers.bitfinex.com/jobs/1" },
+  ]);
+
+  const first = bootstrapCompaniesFromJobs();
+  assert.equal(first.boards, 2, "two distinct boards, not four jobs");
+  assert.equal(first.added, 2);
+  const names = listCompanies().map((c: any) => `${c.ats}:${c.slug}`);
+  assert.ok(names.includes("ashby:railway") && names.includes("lever:oowlish"));
+  assert.ok(!names.some((n: string) => n.includes("bitfinex")), "a bespoke careers page yields no board");
+
+  // running it again must not duplicate
+  const second = bootstrapCompaniesFromJobs();
+  assert.equal(second.added, 0, "bootstrap is idempotent");
+  assert.equal(listCompanies().length, 2);
+
+  // and the same board cannot be added twice by hand
+  const dup = addCompany({ name: "Railway", ats: "ashby", slug: "railway" });
+  assert.ok(dup.error, "duplicate board is rejected");
+
+  // a bespoke careers page is allowed, and a board URL pasted in is understood
+  assert.ok(addCompany({ name: "Bitfinex", careersUrl: "https://careers.bitfinex.com" }).id);
+  const pasted = addCompany({ name: "Deel", careersUrl: "https://jobs.ashbyhq.com/deel" });
+  assert.ok(pasted.id);
+  const deel = listCompanies().find((c: any) => c.name === "Deel")!;
+  assert.equal(deel.ats, "ashby");
+  assert.equal(deel.slug, "deel", "pasting a board URL fills in the ATS and slug");
+
+  assert.ok(addCompany({ name: "" }).error, "a name is required");
+  assert.ok(addCompany({ name: "Nope" }).error, "a board or careers URL is required");
+});
+
 test("resume builder: composes from picked KB entries without losing identity", async () => {
   const { composeFromKb, rankKbForJob, buildResumeFromKb, kbBuildSources, kbAllSkills } =
     await import("../app/resume/build.server");

@@ -18,10 +18,19 @@ import {
   updateCrawlRun,
   crawlLog,
   activeCrawl,
+  blocklistPrompt,
 } from "../db.server";
 import { scrapeJds, verifyJobs } from "./scrape.server";
+import {
+  activeCompanies,
+  fetchBoard,
+  markCompanyChecked,
+  boardUrl,
+  type AtsPosting,
+  type Company,
+} from "./ats.server";
 
-export type CrawlType = "find" | "update" | "full";
+export type CrawlType = "find" | "update" | "full" | "careers";
 
 export interface CrawlResult {
   ok: boolean;
@@ -79,7 +88,7 @@ function buildPrompt(o: PromptOpts): string {
       `limit.` +
       (exclude.length ? `\n\nDo NOT repeat these already-found roles:\n- ${exclude.join("\n- ")}` : "") +
       `\n\nWhen you have ${want} verified role(s), output ONLY the JSON array and stop.`;
-    return body + footer;
+    return body + blocklistPrompt() + footer;
   }
 
   const timeoutMin = o.timeoutMin ?? 15;
@@ -90,7 +99,7 @@ function buildPrompt(o: PromptOpts): string {
     .replaceAll("{{budget_min}}", String(timeoutMin))
     .replaceAll("{{max_actions}}", String(maxActions));
   const footer = `\n\n[RUNTIME BUDGET — STRICT] You have about ${timeoutMin} minute(s) and AT MOST ${maxActions} web actions (searches + fetches combined). You cannot perceive time, so COUNT your actions: the moment you reach ${maxActions}, stop searching and output the final JSON array. Ending your turn WITHOUT the JSON array is a complete failure — when unsure, output what you have now.`;
-  return body + footer;
+  return body + blocklistPrompt() + footer;
 }
 
 // Run the research agent once and return its raw text. Streams live steps to the
@@ -190,6 +199,185 @@ export async function loggedTask<T>(
   }
 }
 
+// --- career pages ------------------------------------------------------------
+// Public ATS feeds are exact and free, so finding roles needs no agent at all. The
+// model is still needed to JUDGE a role against the candidate, but that is one
+// batched call over pre-filtered rows instead of an hour of browsing.
+
+const MAX_PER_COMPANY = 25;   // one big board must not crowd out every other company
+const MAX_CANDIDATES = 120;   // ceiling on what we pay to score
+const SCORE_BATCH = 20;
+const BOARD_CONCURRENCY = 6;
+
+const REMOTE_RE = /\b(remote|anywhere|worldwide|global|distributed|work from home|wfh)\b/i;
+const ENGINEERING_RE =
+  /\b(engineer|engineering|developer|programmer|architect|sre|devops|platform|full[- ]?stack|back[- ]?end|front[- ]?end|software|data|infrastructure)\b/i;
+
+// A board that says remote:false is believed. Silence is not a no, so fall back to
+// reading the location and title.
+function remoteEligible(p: AtsPosting): boolean {
+  if (p.remote === true) return true;
+  if (p.remote === false) return false;
+  return REMOTE_RE.test(`${p.location || ""} ${p.title}`);
+}
+
+function stackTokens(stack: string): string[] {
+  return stack
+    .split(/[,/·|]+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => t.length > 1);
+}
+
+function looksRelevant(p: AtsPosting, tokens: string[]): boolean {
+  if (ENGINEERING_RE.test(p.title)) return true;
+  const hay = `${p.title} ${p.description || ""}`.toLowerCase();
+  return tokens.some((t) => hay.includes(t));
+}
+
+async function pooled<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+  }
+  return out;
+}
+
+interface Candidate { company: Company; posting: AtsPosting }
+
+// Judge a batch of real postings. They are known to exist, so the model is only
+// scoring fit — it is never asked for a URL and cannot invent one.
+async function scoreCandidates(
+  batch: Candidate[],
+  loc: string,
+  stack: string,
+  L: (k: string, t: string) => void
+): Promise<any[]> {
+  const listing = batch
+    .map((c, i) =>
+      `${i}. ${c.company.name} — ${c.posting.title}\n   location: ${c.posting.location || "unstated"}\n   ${(c.posting.description || "").slice(0, 600)}`
+    )
+    .join("\n\n");
+
+  const r = await runLLM({
+    purpose: "job-research",
+    json: true,
+    temperature: 0.2,
+    maxTokens: 3000,
+    system:
+      "You score real, already-verified job postings against one candidate. Every posting below exists and its link is known good, so never invent, alter or return a URL. Judge fit only, and be honest: a bad match scored highly wastes the candidate's time.",
+    prompt: `CANDIDATE\n- Based in: ${loc}. Needs roles workable remotely from there.\n- Target stack: ${stack}\n\nPOSTINGS\n${listing}\n\nFor each posting return an entry. DROP anything that is not a software engineering role the candidate could do, or that cannot be worked remotely from their location.\nReturn ONLY JSON: { "jobs": [ { "i": 0, "category": "high|medium|stretch", "fit_score": 0-100, "stack": "short tech fine-print e.g. 'TS · Node · Postgres'", "eligibility": "short note e.g. 'Open worldwide'", "seniority": "Mid|Senior|Contract|Varies" } ] }\nOmit an entry entirely to drop that posting. "high" means strong stack match AND clearly eligible from ${loc}.`,
+  });
+
+  const parsed = (r.json?.jobs || []) as any[];
+  const out: any[] = [];
+  for (const row of parsed) {
+    const c = batch[Number(row?.i)];
+    if (!c) continue;
+    out.push({
+      company: c.company.name,
+      role: c.posting.title,
+      category: String(row.category || "medium").toLowerCase(),
+      fit_score: Number(row.fit_score) || 0,
+      stack: row.stack || null,
+      eligibility: row.eligibility || null,
+      seniority: row.seniority || null,
+      apply_url: c.posting.url,
+      source: c.company.ats ? `${c.company.name} (${c.company.ats})` : c.company.name,
+    });
+  }
+  L("step", `Scored ${batch.length} posting(s) → kept ${out.length}.`);
+  return out;
+}
+
+async function runCareersCrawl(
+  signal: AbortSignal,
+  L: (kind: string, text: string) => void
+): Promise<{ received: number; inserted: number; updated: number; errors: number }> {
+  const loc = getSetting("profile_location") || "remote";
+  const stack = getSetting("profile_stack") || "software engineering";
+  const tokens = stackTokens(stack);
+  const companies = activeCompanies();
+  const boards = companies.filter((c) => c.ats && c.slug);
+  const pages = companies.filter((c) => !c.ats && c.careers_url);
+
+  if (!companies.length) {
+    L("error", "No companies tracked yet. Add some in Settings, or seed them from your ledger.");
+    return { received: 0, inserted: 0, updated: 0, errors: 0 };
+  }
+  L("reasoning", `Reading ${boards.length} company board(s) straight from their ATS feeds — no agent, no tokens. ${pages.length} bespoke careers page(s) will fall back to the agent.`);
+
+  // --- deterministic pass -----------------------------------------------------
+  let received = 0, errors = 0;
+  const candidates: Candidate[] = [];
+  await pooled(boards, BOARD_CONCURRENCY, async (c) => {
+    if (signal.aborted) return;
+    try {
+      const posts = await fetchBoard(c.ats as any, c.slug!);
+      received += posts.length;
+      const keep = posts.filter((p) => remoteEligible(p) && looksRelevant(p, tokens)).slice(0, MAX_PER_COMPANY);
+      markCompanyChecked(c.id, keep.length);
+      for (const p of keep) candidates.push({ company: c, posting: p });
+      L("step", `${c.name}: ${posts.length} open → ${keep.length} remote + relevant`);
+    } catch (e: any) {
+      errors++;
+      markCompanyChecked(c.id, 0);
+      L("error", `${c.name} (${c.ats}:${c.slug}) — ${String(e?.message || e).slice(0, 80)}`);
+    }
+  });
+
+  L("result", `${received} open posting(s) across ${boards.length} board(s) → ${candidates.length} worth scoring.`);
+
+  // --- judge, in batches ------------------------------------------------------
+  const scored: any[] = [];
+  const shortlist = candidates.slice(0, MAX_CANDIDATES);
+  if (candidates.length > shortlist.length)
+    L("note", `Scoring the first ${shortlist.length} of ${candidates.length} candidates this run; the rest will be picked up next time.`);
+  for (let i = 0; i < shortlist.length && !signal.aborted; i += SCORE_BATCH) {
+    try {
+      scored.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, L)));
+    } catch (e: any) {
+      errors++;
+      L("error", `Scoring batch failed: ${String(e?.message || e).slice(0, 100)}`);
+    }
+  }
+
+  // --- bespoke careers pages, via the agent -----------------------------------
+  if (pages.length && !signal.aborted) {
+    L("step", `Asking the agent to read ${pages.length} careers page(s) with no machine-readable feed…`);
+    const list = pages.map((c) => `- ${c.name}: ${c.careers_url}`).join("\n");
+    const prompt =
+      `Open each careers page below and list the currently-open REMOTE software roles a candidate based in ${loc} could work, matching: ${stack}.\n\n${list}\n\n` +
+      `Open every page. Follow through to each individual role's own posting URL — never return the careers index itself. Skip a company rather than guessing.\n\n` +
+      `Return ONLY a JSON array: [{"company","role","category":"high|medium|stretch","fit_score":0-100,"stack","eligibility","seniority","apply_url","source"}]`;
+    try {
+      const text = await invokeAgent(prompt, 10 * 60000, signal, L);
+      const parsed = tryParseJson(text);
+      const rows = Array.isArray(parsed) ? parsed : parsed?.jobs || [];
+      if (Array.isArray(rows) && rows.length) {
+        received += rows.length;
+        // the agent could have imagined these, so they go through link verification
+        const { alive, dropped } = await verifyJobs(rows, { limit: 25, signal, onLog: (l) => L("step", l) });
+        errors += dropped.length;
+        scored.push(...alive.map((a) => a.job));
+        L("result", `Careers pages: ${alive.length} verified, ${dropped.length} dropped.`);
+      }
+    } catch (e: any) {
+      errors++;
+      L("error", `Careers-page pass failed: ${String(e?.message || e).slice(0, 100)}`);
+    }
+  }
+
+  if (!scored.length) {
+    L("note", "Nothing new cleared the bar this run.");
+    return { received, inserted: 0, updated: 0, errors };
+  }
+  const res = upsertJobs(scored);
+  for (const e of res.errors.slice(0, 5)) L("error", `Rejected ${e.job}: ${e.error}`);
+  if (res.blocked) L("note", `${res.blocked} posting(s) skipped — you trashed them before.`);
+  L("result", `Saved ${res.inserted} new, ${res.updated} refreshed from company career pages.`);
+  return { received, inserted: res.inserted, updated: res.updated, errors: errors + res.errors.length };
+}
+
 async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
@@ -285,6 +473,15 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
         setMeta("last_crawl", now);
         setMeta("last_crawl_status", totals.errors ? "partial" : "ok");
       }
+    }
+
+    if (type === "careers") {
+      const r = await runCareersCrawl(ac.signal, L);
+      totals.received += r.received;
+      totals.inserted += r.inserted;
+      totals.updated += r.updated;
+      totals.errors += r.errors;
+      setMeta("last_careers_crawl", now);
     }
 
     if (type === "update" || type === "full") {

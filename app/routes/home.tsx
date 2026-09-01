@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useFetcher, redirect } from "react-router";
-import { ChevronDown, Archive } from "lucide-react";
+import { ChevronDown, Archive, Trash2 } from "lucide-react";
 import type { Route } from "./+types/home";
 import { Shell } from "../components/Shell";
 import { getSetting } from "../sqlite.server";
 import { ensureScheduler } from "../services/scheduler.server";
-import { getLedger, updateNotes, setStage, archiveJob } from "../db.server";
+import { getLedger, updateNotes, setStage, archiveJob, trashJob } from "../db.server";
+import { TrashDialog } from "../components/TrashDialog";
+import type { BlockScope } from "../trash";
 import { QUICK_STAGES, STAGE_LABEL, type Job, type Stage, type Category } from "../stages";
 
 export function meta(_: Route.MetaArgs) {
@@ -28,6 +30,14 @@ export async function action({ request }: Route.ActionArgs) {
   const id = String(form.get("id") || "");
   if (intent === "stage") setStage(id, String(form.get("stage")) as Stage);
   else if (intent === "archive") archiveJob(id);
+  else if (intent === "trash") {
+    const r = trashJob(id, {
+      reason: String(form.get("reason") || "other"),
+      note: String(form.get("note") || ""),
+      scope: String(form.get("scope") || "job") as BlockScope,
+    });
+    return { ok: true, removed: r.removed };
+  }
   else if (intent === "notes") updateNotes(id, String(form.get("notes") || ""));
   return { ok: true };
 }
@@ -77,11 +87,13 @@ function StageDropdown({
   open,
   onOpenChange,
   onStamp,
+  onTrash,
 }: {
   job: Job;
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onStamp: (label: string) => void;
+  onTrash: () => void;
 }) {
   const fetcher = useFetcher();
   const pending = fetcher.formData?.get("stage") as Stage | undefined;
@@ -96,6 +108,10 @@ function StageDropdown({
   function archive() {
     onOpenChange(false);
     fetcher.submit({ intent: "archive", id: job.id }, { method: "post" });
+  }
+  function trash() {
+    onOpenChange(false);
+    onTrash();
   }
   return (
     <div className={`dd st-${current}`} data-open={open ? "" : undefined} onClick={(e) => e.stopPropagation()}>
@@ -115,6 +131,9 @@ function StageDropdown({
           <li role="option" className="dd-archive" onClick={archive}>
             <Archive size={13} /> Archive
           </li>
+          <li role="option" className="dd-archive" onClick={trash} style={{ color: "var(--vermillion)" }}>
+            <Trash2 size={13} /> Trash &amp; block
+          </li>
         </ul>
       )}
     </div>
@@ -124,6 +143,7 @@ function StageDropdown({
 function Entry({ job, index, openId, setOpenId }: { job: Job; index: number; openId: string | null; setOpenId: (id: string | null) => void }) {
   const open = openId === job.id;
   const [stamp, setStamp] = useState<{ label: string; key: number } | null>(null);
+  const [trashing, setTrashing] = useState(false);
   const closed = job.stage === "rejected" || job.stage === "withdrawn";
   const standing =
     job.stage === "applied" || job.stage === "interview" || job.stage === "offer" ? STAGE_LABEL[job.stage] : null;
@@ -151,9 +171,10 @@ function Entry({ job, index, openId, setOpenId }: { job: Job; index: number; ope
       </div>
       <div className="actions">
         <a className="stamp" href={job.apply_url} target="_blank" rel="noreferrer">Apply ▸</a>
-        <StageDropdown job={job} open={open} onOpenChange={(o) => setOpenId(o ? job.id : null)} onStamp={(l) => setStamp({ label: l, key: Date.now() })} />
+        <StageDropdown job={job} open={open} onOpenChange={(o) => setOpenId(o ? job.id : null)} onStamp={(l) => setStamp({ label: l, key: Date.now() })} onTrash={() => setTrashing(true)} />
         <Link to={`/jobs/${job.id}`} className="ghost-btn">Open ▸</Link>
       </div>
+      {trashing && <TrashDialog job={job} onClose={() => setTrashing(false)} />}
     </article>
   );
 }
