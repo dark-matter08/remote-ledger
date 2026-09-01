@@ -1,7 +1,8 @@
 import { Form, Link, useNavigation } from "react-router";
 import type { Route } from "./+types/archive";
 import { Shell } from "../components/Shell";
-import { getArchive, restoreJob } from "../db.server";
+import { getArchive, restoreJob, listBlocks, unblock } from "../db.server";
+import { REASON_LABEL } from "../trash";
 
 export function meta(_: Route.MetaArgs) {
   return [{ title: "Archive · The Remote Ledger" }];
@@ -9,7 +10,7 @@ export function meta(_: Route.MetaArgs) {
 
 export async function loader({ request }: Route.LoaderArgs) {
   const q = new URL(request.url).searchParams.get("q") || "";
-  return { jobs: getArchive(q), q };
+  return { jobs: getArchive(q), blocks: listBlocks(), q };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -18,11 +19,15 @@ export async function action({ request }: Route.ActionArgs) {
     restoreJob(String(form.get("id")));
     return { ok: true, msg: "Restored to the ledger." };
   }
+  if (form.get("intent") === "unblock") {
+    unblock(Number(form.get("id")));
+    return { ok: true, msg: "Un-blocked. Future crawls may surface it again." };
+  }
   return { ok: true };
 }
 
 export default function Archive({ loaderData, actionData }: Route.ComponentProps) {
-  const { jobs, q } = loaderData;
+  const { jobs, blocks, q } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
 
@@ -30,7 +35,7 @@ export default function Archive({ loaderData, actionData }: Route.ComponentProps
     <Shell>
       <div className="page-head">
         <h1>Archive</h1>
-        <div className="sub">Found jobs no longer on the ledger · revisit or restore</div>
+        <div className="sub">Found jobs no longer on the ledger · revisit, restore, or review what you blocked</div>
       </div>
       <hr className="rule double" />
 
@@ -60,6 +65,35 @@ export default function Archive({ loaderData, actionData }: Route.ComponentProps
                   <td style={{ display: "flex", gap: 10 }}>
                     <Form method="post"><input type="hidden" name="intent" value="restore" /><input type="hidden" name="id" value={j.id} /><button className="back-link" disabled={busy}>restore</button></Form>
                     <Link to={`/jobs/${j.id}`} className="back-link">open</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="panel">
+        <h3>Blocked {blocks.length ? <span className="badge warn">{blocks.length}</span> : <span className="badge off">none</span>}</h3>
+        <p className="hint">
+          Trashed jobs are deleted, not archived, so no crawl can bring them back. Every entry here is
+          also fed to the crawler as something you rejected and why. Un-block to let it be found again.
+        </p>
+        {blocks.length === 0 ? (
+          <p className="hint">Nothing blocked. Trash a job from the ledger to teach the crawler what to skip.</p>
+        ) : (
+          <table className="ledger-table">
+            <thead><tr><th>Blocked</th><th>Scope</th><th>Why</th><th>Your note</th><th>When</th><th></th></tr></thead>
+            <tbody>
+              {blocks.map((b: any) => (
+                <tr key={b.id}>
+                  <td>{b.scope === "domain" ? b.value : b.company || b.value}{b.scope === "job" && b.role ? <span className="hint" style={{ margin: 0 }}> — {b.role}</span> : null}</td>
+                  <td>{b.scope === "job" ? "this posting" : b.scope === "company" ? "whole company" : "whole domain"}</td>
+                  <td>{REASON_LABEL.get(b.reason) || b.reason}</td>
+                  <td>{b.note || "—"}</td>
+                  <td>{b.created_at ? b.created_at.slice(0, 10) : "—"}</td>
+                  <td>
+                    <Form method="post"><input type="hidden" name="intent" value="unblock" /><input type="hidden" name="id" value={b.id} /><button className="back-link" disabled={busy}>un-block</button></Form>
                   </td>
                 </tr>
               ))}
