@@ -9,12 +9,13 @@ import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, basename, extname, relative } from "node:path";
 import { getDb } from "../sqlite.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
+import { HUMAN_STYLE, stripAiTells } from "../llm/style";
 import { getDefaultProfile, saveProfile } from "../resume/profiles.server";
 import { createCrawlRun, crawlLog, updateCrawlRun } from "../db.server";
 
 const NOW = () => new Date().toISOString();
 
-export interface KbItem { id: number; kind: string; title: string; summary: string; tags: string[]; source: string; source_path: string | null; role: string | null; start_date: string | null; end_date: string | null; location: string | null; created_at: string; updated_at: string; }
+export interface KbItem { id: number; kind: string; title: string; summary: string; tags: string[]; source: string; source_path: string | null; role: string | null; start_date: string | null; end_date: string | null; location: string | null; context: string | null; created_at: string; updated_at: string; }
 export interface KbQuestion { id: number; item_id: number | null; question: string; answer: string | null; title?: string | null; }
 export interface KbSuggestion { id: number; item_id: number | null; section: string; bullet: string; status: string; title?: string | null; }
 export interface KbScan { id: number; path: string; status: string; found: number; note: string | null; started_at: string; ended_at: string | null; }
@@ -22,6 +23,12 @@ export interface KbScan { id: number; path: string; status: string; found: numbe
 // ---------- reads ----------
 export function kbItems(): KbItem[] {
   return (getDb().prepare("SELECT * FROM kb_items ORDER BY updated_at DESC").all() as any[]).map((r) => ({ ...r, tags: safeTags(r.tags) }));
+}
+// Facts only the user knows about a project (deployed? who uses it? how big did it
+// get?). Fed to every draft for this item, and to the next scan of its folder.
+export function setItemContext(itemId: number, context: string): void {
+  getDb().prepare("UPDATE kb_items SET context=?, updated_at=? WHERE id=?")
+    .run(context.trim().slice(0, 4000) || null, NOW(), itemId);
 }
 export function kbOpenQuestions(): KbQuestion[] {
   return getDb().prepare("SELECT q.*, i.title FROM kb_questions q LEFT JOIN kb_items i ON i.id=q.item_id WHERE q.answer IS NULL ORDER BY q.created_at").all() as any[];
@@ -191,7 +198,7 @@ export function acceptSuggestion(id: number): { ok: boolean; msg: string } {
 // ---------- LLM extraction ----------
 // This is the USER'S OWN work — attribute everything to them ("you"), don't hedge about
 // collaborators or claim the role is unclear; assume ownership unless evidence clearly says otherwise.
-const SYSTEM = "You build a developer's personal knowledge base from THEIR OWN projects, for résumé writing. The folder and notes belong to the user — treat the user as the owner/primary author and write about it as their work ('you'/'your'). Do NOT speculate that the role is unclear or that collaborators may have done it; assume the user built it unless the evidence clearly contradicts that. Be concrete about WHAT the project is and DOES (purpose, what problem it solves, architecture, stack) — infer this from the code when the README is thin. Only invent nothing; when a specific metric/scope is genuinely unknown, put it in a question. Output ONLY valid JSON.";
+const SYSTEM = "You build a developer's personal knowledge base from THEIR OWN projects, for résumé writing. The folder and notes belong to the user — treat the user as the owner/primary author and write about it as their work ('you'/'your'). Do NOT speculate that the role is unclear or that collaborators may have done it; assume the user built it unless the evidence clearly contradicts that. Be concrete about WHAT the project is and DOES (purpose, what problem it solves, architecture, stack) — infer this from the code when the README is thin. Only invent nothing; when a specific metric/scope is genuinely unknown, put it in a question. Output ONLY valid JSON.\n\n" + HUMAN_STYLE;
 
 interface Analysis { title: string; kind: string; summary: string; tags: string[]; bullets: string[]; questions: string[] }
 
@@ -203,10 +210,10 @@ async function analyze(mode: "note" | "project", title: string, body: string, no
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 1800, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
   return {
-    title: String(j.title || title), kind: normalizeKind(j.kind), summary: String(j.summary || ""),
+    title: String(j.title || title), kind: normalizeKind(j.kind), summary: stripAiTells(String(j.summary || "")),
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
-    bullets: Array.isArray(j.bullets) ? j.bullets.map(String) : [],
-    questions: Array.isArray(j.questions) ? j.questions.map(String) : [],
+    bullets: Array.isArray(j.bullets) ? j.bullets.map((b: unknown) => stripAiTells(String(b))) : [],
+    questions: Array.isArray(j.questions) ? j.questions.map((q: unknown) => stripAiTells(String(q))) : [],
   };
 }
 
@@ -220,32 +227,44 @@ async function analyzeCompany(company: string, role: string | null, combinedText
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 2200, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
   return {
-    title: String(j.title || company), kind: "experience", summary: String(j.summary || ""),
+    title: String(j.title || company), kind: "experience", summary: stripAiTells(String(j.summary || "")),
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
-    bullets: Array.isArray(j.bullets) ? j.bullets.map(String) : [],
-    questions: Array.isArray(j.questions) ? j.questions.map(String) : [],
+    bullets: Array.isArray(j.bullets) ? j.bullets.map((b: unknown) => stripAiTells(String(b))) : [],
+    questions: Array.isArray(j.questions) ? j.questions.map((q: unknown) => stripAiTells(String(q))) : [],
   };
 }
 
 // AI-draft an answer to a KB clarifying question, grounded in the project's own code
 // (re-reads the linked folder, deep) + your résumé. Reasonable, refinable, no fabricated metrics.
-export async function draftKbAnswer(questionId: number): Promise<{ answer?: string; error?: string }> {
+export async function draftKbAnswer(questionId: number, notes?: string): Promise<{ answer?: string; error?: string }> {
   const db = getDb();
-  const q = db.prepare("SELECT q.*, i.title, i.summary, i.tags, i.source_path FROM kb_questions q LEFT JOIN kb_items i ON i.id=q.item_id WHERE q.id=?").get(questionId) as any;
+  const q = db.prepare("SELECT q.*, i.title, i.summary, i.tags, i.source_path, i.context FROM kb_questions q LEFT JOIN kb_items i ON i.id=q.item_id WHERE q.id=?").get(questionId) as any;
   if (!q) return { error: "question not found" };
   let projectText = q.title ? `Project: ${q.title}\nSummary: ${q.summary || ""}\nTech: ${safeTags(q.tags).join(", ")}` : "";
   if (q.source_path && existsSync(q.source_path)) {
     try { const g = gatherProjectText(q.source_path, "deep"); if (g) projectText += `\n\nProject files (for grounding):\n${g.text.slice(0, 30000)}`; } catch {}
   }
   const profile = getDefaultProfile();
+  // Facts the user typed beat anything inferred from code. The code says what the
+  // project IS; only the user knows whether it is deployed, who uses it, how big it
+  // got. Without these the model has to guess, which is where drafts go wrong.
+  const owner = String(q.context || "").trim();
+  const started = String(notes || "").trim();
+  const authoritative = [
+    owner ? `WHAT YOU TOLD US ABOUT THIS PROJECT (authoritative — trust this over anything inferred from the code):\n${owner.slice(0, 4000)}` : "",
+    started ? `WHAT YOU ALREADY STARTED WRITING (authoritative facts from you — keep every one of them, expand into a full answer, do not contradict or drop any):\n${started.slice(0, 2000)}` : "",
+  ].filter(Boolean).join("\n\n");
+
   const r = await runLLM({
     purpose: "misc",
     temperature: 0.4,
     maxTokens: 500,
-    system: "You answer a clarifying question about the USER'S OWN project, in first person, to enrich their knowledge base. Ground the answer in the project's code/context and their résumé. Give a concrete, reasonable answer the user can refine. NEVER fabricate precise metrics — if a number is unknown, phrase it as an estimate or describe the outcome qualitatively.",
-    prompt: `${projectText || "(no project context available)"}\n${profile ? `\nRÉSUMÉ (JSON):\n${JSON.stringify(profile.data).slice(0, 4000)}\n` : ""}\nQUESTION:\n${q.question}\n\nWrite a concise first-person answer (1–3 sentences).`,
+    system:
+      "You answer a clarifying question about the USER'S OWN project, in first person, to enrich their knowledge base. Ground the answer in the project's code/context and their résumé. Give a concrete, reasonable answer the user can refine. NEVER fabricate precise metrics — if a number is unknown, phrase it as an estimate or describe the outcome qualitatively. Anything the user states about their own project is ground truth: never override it with a guess from the code, and never restate it back as uncertain.\n\n" +
+      HUMAN_STYLE,
+    prompt: `${projectText || "(no project context available)"}\n${profile ? `\nRÉSUMÉ (JSON):\n${JSON.stringify(profile.data).slice(0, 4000)}\n` : ""}${authoritative ? `\n${authoritative}\n` : ""}\nQUESTION:\n${q.question}\n\nWrite a concise first-person answer (1–3 sentences).`,
   });
-  return { answer: (r.text || "").trim() };
+  return { answer: stripAiTells((r.text || "").trim()) };
 }
 
 // Compact KB context (your captured projects/skills) for grounding application answers.
@@ -274,7 +293,7 @@ export async function redraftItem(itemId: number): Promise<void> {
   const prompt = `Project: ${item.title}\nSummary: ${item.summary}\nTech: ${safeTags(item.tags).join(", ")}\n\nThe developer answered clarifying questions:\n${qas.map((q) => `Q: ${q.question}\nA: ${q.answer}`).join("\n")}\n\nUsing ONLY these facts, write 2-3 stronger résumé bullets. Return JSON: {"bullets":["..."]}`;
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 800, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
-  addSuggestions(itemId, (Array.isArray(j.bullets) ? j.bullets : []).map((b: string) => ({ section: "project", bullet: String(b) })));
+  addSuggestions(itemId, (Array.isArray(j.bullets) ? j.bullets : []).map((b: string) => ({ section: "project", bullet: stripAiTells(String(b)) })));
   // re-evaluate every bullet for this item so new ones merge into the right cluster
   await reclusterItem(itemId);
 }
@@ -564,7 +583,11 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
     return;
   }
   L("result", `Found ${dirs.length} project folder(s) to read.`);
-  const noteCtx = [src.note, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
+  // a re-scan must not forget what the user already told us about this project
+  const priorCtx = (db.prepare(
+    "SELECT context FROM kb_items WHERE source_path=? AND trim(coalesce(context,'')) <> '' ORDER BY id DESC LIMIT 1"
+  ).get(src.path) as { context?: string } | undefined)?.context;
+  const noteCtx = [src.note, priorCtx, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
 
   // COMPANY folder → ONE experience entry synthesized across all sub-projects (not N).
   if (src.kind === "company") {

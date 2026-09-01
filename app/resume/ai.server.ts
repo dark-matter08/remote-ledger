@@ -1,6 +1,7 @@
 // AI operations on a resume against a job: tailor (with anti-hallucination
 // guard), match/gap analysis, cover letter, interview prep.
 import { runLLM } from "../llm/runner.server";
+import { HUMAN_STYLE, stripAiTells, cleanResumeProse } from "../llm/style";
 import { RESUME_JSON_SHAPE, type Resume, type MatchAnalysis, type TailorFlag } from "./types";
 
 export interface JobCtx {
@@ -67,11 +68,13 @@ export async function tailorResume(
     temperature: 0.3,
     maxTokens: 4096,
     system:
-      "You are an expert resume editor. You tailor an existing resume to a job by REORDERING, REWEIGHTING, and REWORDING existing content to surface the most relevant experience and keywords. ABSOLUTE RULE: never invent employers, titles, dates, degrees, or metrics. Only use facts present in the base resume. You may rephrase and emphasize, not fabricate.",
+      "You are an expert resume editor. You tailor an existing resume to a job by REORDERING, REWEIGHTING, and REWORDING existing content to surface the most relevant experience and keywords. ABSOLUTE RULE: never invent employers, titles, dates, degrees, or metrics. Only use facts present in the base resume. You may rephrase and emphasize, not fabricate.\n\n" +
+      HUMAN_STYLE,
     prompt: `BASE RESUME (JSON):\n${JSON.stringify(base)}\n\nTARGET JOB:\n${jobBlock(job)}\n\nReturn ONLY JSON of this shape:\n{ "resume": ${RESUME_JSON_SHAPE}, "match": { "score": 0, "matched": ["..."], "missing": ["..."], "atsKeywords": ["..."] } }\nThe resume must be the tailored version (same factual content, reordered/reworded). match.score is 0-100 fit. matched = requirements the candidate clearly meets; missing = gaps; atsKeywords = exact keywords from the JD the resume should include.`,
   });
   const out = r.json || {};
-  const resume: Resume = out.resume || base;
+  // clean only what the model wrote; `base` is the user's own text
+  const resume: Resume = out.resume ? cleanResumeProse(out.resume as Resume) : base;
   const match: MatchAnalysis = out.match || { score: 0, matched: [], missing: [], atsKeywords: [] };
   const flags = guardTailored(base, resume);
   return { resume, match, flags, callId: r.callId };
@@ -85,10 +88,11 @@ export async function draftAnswer(base: Resume, question: string, job?: JobCtx, 
     temperature: 0.4,
     maxTokens: 600,
     system:
-      "You answer a job-application question in the candidate's voice (first person), using ONLY facts from their résumé AND their knowledge base (recent projects they've captured). Prefer the most relevant and recent evidence. Be specific and concise. NEVER invent employers, projects, dates, or metrics. If the evidence lacks the detail, give an honest, reasonable answer without fabricating specifics.",
+      "You answer a job-application question in the candidate's voice (first person), using ONLY facts from their résumé AND their knowledge base (recent projects they've captured). Prefer the most relevant and recent evidence. Be specific and concise. NEVER invent employers, projects, dates, or metrics. If the evidence lacks the detail, give an honest, reasonable answer without fabricating specifics.\n\n" +
+      HUMAN_STYLE,
     prompt: `CANDIDATE RÉSUMÉ (JSON):\n${JSON.stringify(base)}\n${kb ? `\nKNOWLEDGE BASE — recent projects & skills the candidate captured (use these too, they may be newer than the résumé):\n${kb}\n` : ""}${job ? `\nROLE: ${job.company} — ${job.role}\n${job.jd ? `JOB DESCRIPTION (excerpt):\n${job.jd.slice(0, 1500)}\n` : ""}` : ""}\nAPPLICATION QUESTION:\n${question}\n\nWrite a strong, truthful answer (2–4 sentences) in first person. Plain text only.`,
   });
-  return { text: (r.text || "").trim(), callId: r.callId };
+  return { text: stripAiTells((r.text || "").trim()), callId: r.callId };
 }
 
 // ---- conversational résumé edit -------------------------------------------
@@ -114,7 +118,7 @@ export async function editResume(current: Resume, instruction: string): Promise<
     projects: Array.isArray(jr.projects) ? jr.projects : current.projects,
     education: Array.isArray(jr.education) ? jr.education : current.education,
   };
-  return { resume, summary: (out.summary || "Updated your résumé.").toString(), callId: r.callId };
+  return { resume: cleanResumeProse(resume), summary: (out.summary || "Updated your résumé.").toString(), callId: r.callId };
 }
 
 // ---- match-only -----------------------------------------------------------
@@ -141,10 +145,11 @@ export async function coverLetter(base: Resume, job: JobCtx): Promise<{ text: st
     temperature: 0.6,
     maxTokens: 1200,
     system:
-      "You write concise, specific cover letters in the candidate's voice. 3 short paragraphs, no clichés, only facts from the resume. Plain text.",
+      "You write concise, specific cover letters in the candidate's voice. 3 short paragraphs, no clichés, only facts from the resume. Plain text.\n\n" +
+      HUMAN_STYLE,
     prompt: `CANDIDATE RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}\n\nWrite a tailored cover letter (max ~250 words). Plain text only.`,
   });
-  return { text: r.text.trim(), callId: r.callId };
+  return { text: stripAiTells(r.text.trim()), callId: r.callId };
 }
 
 // ---- application answers (auto-apply) -------------------------------------
@@ -177,12 +182,15 @@ export async function applicationAnswers(
       "Posture: 'I'm choosing you' — confident, selective, never arrogant. Rules: 2-4 sentences each; " +
       "specific and concrete (reference something REAL from the JD and something REAL from the resume); " +
       "no fluff ('passionate about', 'would love the opportunity'); the hook is the proof, not the claim. " +
-      "Use ONLY facts from the resume — never invent. Answer in the language of the JD (default English).",
+      "Use ONLY facts from the resume — never invent. Answer in the language of the JD (default English).\n\n" +
+      HUMAN_STYLE,
     prompt: `RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}\n\nQUESTIONS:\n${qs
       .map((q, i) => `${i + 1}. ${q}`)
       .join("\n")}\n\nReturn ONLY JSON: { "answers": [ { "question": "...", "answer": "..." } ] } covering every question in order.`,
   });
-  const answers = (r.json?.answers || []).filter((a: any) => a && a.question && a.answer);
+  const answers = (r.json?.answers || [])
+    .filter((a: any) => a && a.question && a.answer)
+    .map((a: any) => ({ ...a, answer: stripAiTells(String(a.answer)) }));
   return { answers, callId: r.callId };
 }
 
@@ -243,14 +251,15 @@ export async function draftSessionAnswers(
     maxTokens: 3000,
     system:
       "You draft job-application answers in the candidate's voice ('I'm choosing you' — confident, selective, specific, no fluff, proof over claims). " +
-      "Use ONLY facts from the resume. CRITICAL: if a question cannot be answered truthfully from the resume — e.g. work authorization, visa, salary expectation, security clearance, years with a specific tool not in the resume, demographic questions — set answer to \"\" and needsInput to true. Never guess these.",
+      "Use ONLY facts from the resume. CRITICAL: if a question cannot be answered truthfully from the resume — e.g. work authorization, visa, salary expectation, security clearance, years with a specific tool not in the resume, demographic questions — set answer to \"\" and needsInput to true. Never guess these.\n\n" +
+      HUMAN_STYLE,
     prompt: `RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}${knownBlock}\n\nQUESTIONS:\n${qs
       .map((q, i) => `${i + 1}. ${q}`)
       .join("\n")}\n\nReturn ONLY JSON: { "items": [ { "question": "...", "answer": "...", "needsInput": false } ] } covering every question in order.`,
   });
   const items = (r.json?.items || []).map((x: any) => ({
     question: String(x.question || ""),
-    answer: String(x.answer || ""),
+    answer: stripAiTells(String(x.answer || "")),
     needsInput: !!x.needsInput || !String(x.answer || "").trim(),
   }));
   return { items, callId: r.callId };

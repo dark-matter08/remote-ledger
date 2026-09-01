@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS kb_items (
   start_date  TEXT,                             -- experience: start (free text, e.g. 2022 or Jan 2022)
   end_date    TEXT,                             -- experience: end (or "Present")
   location    TEXT,                             -- experience: company location
+  context     TEXT,                             -- facts only you know, fed to every AI draft
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
