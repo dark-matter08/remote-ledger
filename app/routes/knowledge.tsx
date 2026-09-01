@@ -28,6 +28,7 @@ import {
   deleteKbQuestion,
   redraftItem,
   draftKbAnswer,
+  setItemContext,
   acceptSuggestion,
   dismissSuggestion,
   deleteKbItem,
@@ -100,9 +101,15 @@ export async function action({ request }: Route.ActionArgs) {
       return { ok: true, msg: "Answer saved — refreshed the drafted bullets." };
     }
     if (intent === "kb-del-question") { deleteKbQuestion(Number(form.get("id"))); return { ok: true, msg: "Question removed." }; }
+    if (intent === "kb-item-context") {
+      setItemContext(Number(form.get("id")), String(form.get("context") || ""));
+      return { ok: true, msg: "Saved. AI drafts for this project will use it." };
+    }
     if (intent === "kb-ai-answer") {
       const id = Number(form.get("id"));
-      const r = await loggedTask("answers", "AI answer (KB question)", async (L) => { L("step", "Drafting from the project's code + your résumé…"); return draftKbAnswer(id); });
+      // whatever you already typed is authoritative — the draft expands it
+      const notes = String(form.get("notes") || "");
+      const r = await loggedTask("answers", "AI answer (KB question)", async (L) => { L("step", "Drafting from your notes + the project's code + your résumé…"); return draftKbAnswer(id, notes); });
       return r.error ? { error: r.error } : { ok: true, draft: r.answer };
     }
     if (intent === "kb-accept") {
@@ -337,12 +344,49 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
               </div>
               <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
               {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
+              <ItemContext item={it} busy={busy} />
             </div>
           ))
         )}
       </div>
       </div>
     </Shell>
+  );
+}
+
+// Facts only you know about a project: whether it is deployed, who actually uses it,
+// how big it got. The scanner reads the code, which cannot answer any of that, so
+// without this the drafts have to guess — and guessing is where they go wrong.
+function ItemContext({ item, busy }: { item: any; busy: boolean }) {
+  const fetcher = useFetcher<any>();
+  const saved: string = item.context || "";
+  const [text, setText] = useState(saved);
+  const saving = fetcher.state !== "idle";
+  const dirty = text.trim() !== saved.trim();
+
+  // adopt the server's copy once a save round-trips
+  useEffect(() => { setText(saved); }, [saved]);
+
+  return (
+    <fetcher.Form method="post" className="field" style={{ margin: "10px 0 0" }}>
+      <input type="hidden" name="intent" value="kb-item-context" />
+      <input type="hidden" name="id" value={item.id} />
+      <label htmlFor={`ctx-${item.id}`}>What only you know</label>
+      <textarea
+        id={`ctx-${item.id}`}
+        name="context"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        style={{ minHeight: 62 }}
+        placeholder={"Deployed at\u2026, used by\u2026, roughly N users. Anything the code cannot tell the AI."}
+      />
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
+        <button className="ghost-btn" disabled={busy || saving || !dirty}>{saving ? "Saving\u2026" : "Save context"}</button>
+        <span className="hint" style={{ margin: 0 }}>
+          {dirty ? "Unsaved" : "Used by every AI draft for this project."}
+        </span>
+      </div>
+    </fetcher.Form>
   );
 }
 
@@ -376,8 +420,8 @@ function KbQuestion({ q }: { q: any }) {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button className="ghost-btn" disabled={saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
           <button type="button" className="ghost-btn" disabled={drafting} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-            onClick={() => ai.submit({ intent: "kb-ai-answer", id: q.id }, { method: "post" })}>
-            <Sparkles size={13} /> {drafting ? "Drafting…" : "AI draft"}
+            onClick={() => ai.submit({ intent: "kb-ai-answer", id: q.id, notes: text }, { method: "post" })}>
+            <Sparkles size={13} /> {drafting ? "Drafting…" : text.trim() ? "AI draft from my notes" : "AI draft"}
           </button>
           {ai.data?.error && <span className="hint" style={{ margin: 0, color: "var(--vermillion)" }}>{ai.data.error}</span>}
         </div>

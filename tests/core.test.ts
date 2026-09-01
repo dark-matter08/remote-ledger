@@ -218,4 +218,68 @@ test("kb: a scan names an unlabelled folder, but never renames one you named", a
   assert.equal(read(blank).label, null, "a blank title does not set a label");
 });
 
+test("style: strips AI tells without touching real content", async () => {
+  const { stripAiTells, cleanResumeProse } = await import("../app/llm/style");
+
+  // the headline complaint: em/en dashes used as prose punctuation
+  assert.equal(
+    stripAiTells("Built for a roster of ~15 \u2014 the dev DB holds fifteen \u2014 and it works."),
+    "Built for a roster of ~15, the dev DB holds fifteen, and it works."
+  );
+
+  // date ranges are real typography, not a tell
+  assert.equal(
+    stripAiTells("At Acme (2021\u20132024) I led the rewrite \u2013 it cut latency 40%."),
+    "At Acme (2021\u20132024) I led the rewrite, it cut latency 40%."
+  );
+  assert.match(stripAiTells("Shipped 2022\u2014Present."), /2022\u2014Present/);
+
+  // numbers in prose must survive the range-parking pass
+  assert.equal(
+    stripAiTells("I recorded 89 point events across an 8-week season for 15 players."),
+    "I recorded 89 point events across an 8-week season for 15 players."
+  );
+
+  // assistant preamble and sign-off
+  assert.equal(stripAiTells("Certainly! I built the scoring engine. I hope this helps!"), "I built the scoring engine.");
+  assert.equal(stripAiTells("Great question \u2014 I owned the API."), "I owned the API.");
+
+  // stray markdown in what is meant to be plain text
+  assert.equal(stripAiTells("I built the **room engine** and scoring."), "I built the room engine and scoring.");
+
+  // idempotent: running it again is a no-op
+  const once = stripAiTells("A roster of 15 \u2014 live at example.com.");
+  assert.equal(stripAiTells(once), once);
+  assert.equal(stripAiTells(""), "");
+
+  // résumé: only prose is cleaned, identifiers are left exactly as written
+  const r = cleanResumeProse({
+    summary: "Engineer \u2014 I ship production systems.",
+    experience: [{ company: "Acme \u2014 Inc", start: "2021", end: "2024", bullets: ["Led the rewrite \u2014 cut latency 40%."] }],
+    projects: [],
+  } as any) as any;
+  assert.equal(r.summary, "Engineer, I ship production systems.");
+  assert.equal(r.experience[0].bullets[0], "Led the rewrite, cut latency 40%.");
+  assert.equal(r.experience[0].company, "Acme \u2014 Inc", "company names are the user's own text, never rewritten");
+});
+
+test("kb: per-project context is stored and survives a re-read", async () => {
+  const { setItemContext, kbItems } = await import("../app/services/kb.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+  const now = new Date().toISOString();
+  const id = Number(
+    db
+      .prepare("INSERT INTO kb_items (kind,title,summary,tags,source,source_path,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run("project", "Ctx Test", "s", "[]", "manual", "/tmp/ledger-test-ctx", now, now).lastInsertRowid
+  );
+
+  setItemContext(id, "  Live at example.com. Roster of 15.  ");
+  const read = () => (kbItems().find((i: any) => i.id === id) as any);
+  assert.equal(read().context, "Live at example.com. Roster of 15.", "trimmed and persisted");
+
+  setItemContext(id, "   ");
+  assert.equal(read().context, null, "clearing it stores null, not an empty string");
+});
+
 test.after(cleanup);
