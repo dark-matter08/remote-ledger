@@ -217,6 +217,23 @@ CREATE INDEX IF NOT EXISTS idx_cl_run ON crawl_logs(run_id);
 -- Jobs you threw out, and why. The tombstone is the point: deleting the jobs row
 -- alone would let the very next crawl re-insert the same posting. Scope decides how
 -- wide the block reaches, and the reasons are fed back into the crawl prompt.
+-- Company career pages worth watching. ATS boards (greenhouse/lever/ashby/recruitee)
+-- publish open roles as public JSON, so those are polled directly with no agent and
+-- no tokens. A company with only a careers_url falls back to the agent.
+CREATE TABLE IF NOT EXISTS companies (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT NOT NULL,
+  ats             TEXT,                       -- greenhouse | lever | ashby | recruitee | NULL
+  slug            TEXT,                       -- board slug on that ATS
+  careers_url     TEXT,                       -- bespoke careers page (agent fallback)
+  active          INTEGER NOT NULL DEFAULT 1,
+  last_checked_at TEXT,
+  last_found      INTEGER NOT NULL DEFAULT 0,
+  note            TEXT,
+  created_at      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_board ON companies(ats, slug);
+
 CREATE TABLE IF NOT EXISTS job_blocks (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   scope      TEXT NOT NULL,              -- job | company | domain

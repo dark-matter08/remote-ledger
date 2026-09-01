@@ -353,4 +353,58 @@ test("trash: blocking a company keeps its user-facing history honest", async () 
   assert.equal(call.job_id, null, "spend history survives with a null job_id — it really happened");
 });
 
+test("ats: recognises company boards from posting URLs", async () => {
+  const { detectBoard } = await import("../app/services/ats.server");
+
+  assert.deepEqual(detectBoard("https://job-boards.greenhouse.io/remotecom/jobs/5922893003"), { ats: "greenhouse", slug: "remotecom" });
+  assert.deepEqual(detectBoard("https://boards.greenhouse.io/similarweb/jobs/1"), { ats: "greenhouse", slug: "similarweb" });
+  assert.deepEqual(detectBoard("https://jobs.lever.co/oowlish/abc-def"), { ats: "lever", slug: "oowlish" });
+  assert.deepEqual(detectBoard("https://jobs.ashbyhq.com/railway/6ddcfe47"), { ats: "ashby", slug: "railway" });
+  assert.deepEqual(detectBoard("https://holepunch.recruitee.com/o/engineer"), { ats: "recruitee", slug: "holepunch" });
+
+  // a company's own careers page has no feed, and must not be mistaken for one
+  assert.equal(detectBoard("https://careers.bitfinex.com/jobs/123"), null);
+  assert.equal(detectBoard("https://jobot.com/whatever"), null);
+  assert.equal(detectBoard(""), null);
+});
+
+test("ats: the registry seeds itself from jobs already in the ledger", async () => {
+  const { upsertJobs } = await import("../app/db.server");
+  const { bootstrapCompaniesFromJobs, listCompanies, addCompany } = await import("../app/services/ats.server");
+
+  upsertJobs([
+    { company: "Railway", role: "Backend Eng", category: "high", fit_score: 90, apply_url: "https://jobs.ashbyhq.com/railway/aaa" },
+    { company: "Railway", role: "Frontend Eng", category: "high", fit_score: 88, apply_url: "https://jobs.ashbyhq.com/railway/bbb" },
+    { company: "Oowlish", role: "Node Dev", category: "medium", fit_score: 70, apply_url: "https://jobs.lever.co/oowlish/ccc" },
+    { company: "Bitfinex", role: "Rust Dev", category: "medium", fit_score: 60, apply_url: "https://careers.bitfinex.com/jobs/1" },
+  ]);
+
+  const first = bootstrapCompaniesFromJobs();
+  assert.equal(first.boards, 2, "two distinct boards, not four jobs");
+  assert.equal(first.added, 2);
+  const names = listCompanies().map((c: any) => `${c.ats}:${c.slug}`);
+  assert.ok(names.includes("ashby:railway") && names.includes("lever:oowlish"));
+  assert.ok(!names.some((n: string) => n.includes("bitfinex")), "a bespoke careers page yields no board");
+
+  // running it again must not duplicate
+  const second = bootstrapCompaniesFromJobs();
+  assert.equal(second.added, 0, "bootstrap is idempotent");
+  assert.equal(listCompanies().length, 2);
+
+  // and the same board cannot be added twice by hand
+  const dup = addCompany({ name: "Railway", ats: "ashby", slug: "railway" });
+  assert.ok(dup.error, "duplicate board is rejected");
+
+  // a bespoke careers page is allowed, and a board URL pasted in is understood
+  assert.ok(addCompany({ name: "Bitfinex", careersUrl: "https://careers.bitfinex.com" }).id);
+  const pasted = addCompany({ name: "Deel", careersUrl: "https://jobs.ashbyhq.com/deel" });
+  assert.ok(pasted.id);
+  const deel = listCompanies().find((c: any) => c.name === "Deel")!;
+  assert.equal(deel.ats, "ashby");
+  assert.equal(deel.slug, "deel", "pasting a board URL fills in the ATS and slug");
+
+  assert.ok(addCompany({ name: "" }).error, "a name is required");
+  assert.ok(addCompany({ name: "Nope" }).error, "a board or careers URL is required");
+});
+
 test.after(cleanup);

@@ -10,6 +10,15 @@ import { listRunners } from "../llm/runner.server";
 import { discoverModels } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
+import {
+  listCompanies,
+  addCompany,
+  removeCompany,
+  setCompanyActive,
+  bootstrapCompaniesFromJobs,
+} from "../services/ats.server";
+// the component renders these, so they must come from the client-safe module
+import { boardUrl, ATS_KINDS } from "../ats";
 
 const KEY_FIELDS = [
   { name: "anthropic_api_key", label: "Anthropic" },
@@ -39,6 +48,7 @@ export async function loader() {
     })
   );
   return {
+    companies: listCompanies(),
     runners,
     modelOptions,
     keys: KEY_FIELDS.map((k) => ({ ...k, set: hasSecret(k.name) })),
@@ -111,14 +121,33 @@ export async function action({ request }: Route.ActionArgs) {
     save("search_prompt");
     return { ok: true, msg: "Prompt saved." };
   }
+  if (intent === "company-add") {
+    const r = addCompany({
+      name: String(form.get("name") || ""),
+      ats: String(form.get("ats") || "") || null,
+      slug: String(form.get("slug") || "") || null,
+      careersUrl: String(form.get("careers_url") || "") || null,
+    });
+    return r.error ? { ok: false, msg: r.error } : { ok: true, msg: "Company added." };
+  }
+  if (intent === "company-remove") { removeCompany(Number(form.get("id"))); return { ok: true, msg: "Company removed." }; }
+  if (intent === "company-toggle") {
+    setCompanyActive(Number(form.get("id")), String(form.get("active")) === "1");
+    return { ok: true, msg: "Updated." };
+  }
+  if (intent === "company-bootstrap") {
+    const r = bootstrapCompaniesFromJobs();
+    return { ok: true, msg: `Scanned ${r.scanned} job(s), found ${r.boards} company board(s), added ${r.added} new.` };
+  }
+  if (intent === "careers-now") { startCrawl("careers", "manual"); return redirect("/crawl"); }
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "Scheduler", "Profile", "Prompt"] as const;
+const TABS = ["Runners", "Keys", "Scheduler", "Companies", "Profile", "Prompt"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings } = loaderData;
+  const { runners, modelOptions, keys, settings, companies } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -268,6 +297,86 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         </Form>
       )}
 
+      {tab === "Companies" && (
+        <div className="panel">
+          <h3>Company career pages <span className="badge ok">{companies.filter((c: any) => c.active).length}</span></h3>
+          <p className="hint">
+            Roles are posted on a company&rsquo;s own board before they reach any aggregator. Greenhouse,
+            Lever, Ashby and Recruitee publish theirs as public JSON, so those are read directly: exact,
+            instant, and effectively free. A company with a bespoke careers page falls back to the agent.
+          </p>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+            <Form method="post">
+              <input type="hidden" name="intent" value="company-bootstrap" />
+              <button className="ghost-btn" disabled={saving}>Find boards in my ledger</button>
+            </Form>
+            <Form method="post">
+              <input type="hidden" name="intent" value="careers-now" />
+              <button className="btn" disabled={saving || !companies.some((c: any) => c.active)}>Check career pages now</button>
+            </Form>
+          </div>
+
+          <Form method="post" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+            <input type="hidden" name="intent" value="company-add" />
+            <div className="field" style={{ margin: 0, flex: "1 1 160px" }}>
+              <label>Company</label>
+              <input type="text" name="name" placeholder="Acme" required />
+            </div>
+            <div className="field" style={{ margin: 0, flex: "0 0 130px" }}>
+              <label>ATS</label>
+              <Select name="ats" options={[{ value: "", label: "none / custom" }, ...ATS_KINDS.map((a) => ({ value: a, label: a }))]} />
+            </div>
+            <div className="field" style={{ margin: 0, flex: "1 1 140px" }}>
+              <label>Board slug</label>
+              <input type="text" name="slug" placeholder="acme" />
+            </div>
+            <div className="field" style={{ margin: 0, flex: "1 1 200px" }}>
+              <label>or careers page URL</label>
+              <input type="text" name="careers_url" placeholder="https://acme.com/careers" />
+            </div>
+            <button className="ghost-btn" disabled={saving}>Add</button>
+          </Form>
+
+          {companies.length === 0 ? (
+            <p className="hint">None tracked yet. &ldquo;Find boards in my ledger&rdquo; seeds this from jobs you already have.</p>
+          ) : (
+            <table className="ledger-table">
+              <thead><tr><th>Company</th><th>Board</th><th>Last checked</th><th>Kept</th><th></th></tr></thead>
+              <tbody>
+                {companies.map((c: any) => (
+                  <tr key={c.id} style={c.active ? undefined : { opacity: 0.5 }}>
+                    <td>{c.name}</td>
+                    <td>
+                      {c.ats ? (
+                        <a href={boardUrl(c.ats, c.slug)} target="_blank" rel="noreferrer" className="back-link">{c.ats}:{c.slug}</a>
+                      ) : (
+                        <a href={c.careers_url} target="_blank" rel="noreferrer" className="back-link">careers page</a>
+                      )}
+                    </td>
+                    <td>{c.last_checked_at ? c.last_checked_at.slice(0, 10) : "\u2014"}</td>
+                    <td>{c.last_checked_at ? c.last_found : "\u2014"}</td>
+                    <td style={{ display: "flex", gap: 10 }}>
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="company-toggle" />
+                        <input type="hidden" name="id" value={c.id} />
+                        <input type="hidden" name="active" value={c.active ? "0" : "1"} />
+                        <button className="back-link" disabled={saving}>{c.active ? "pause" : "resume"}</button>
+                      </Form>
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="company-remove" />
+                        <input type="hidden" name="id" value={c.id} />
+                        <button className="back-link" disabled={saving} style={{ color: "var(--vermillion)" }}>remove</button>
+                      </Form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       {tab === "Prompt" && (
         <Form method="post" className="panel">
           <input type="hidden" name="intent" value="save-prompt" />
@@ -277,6 +386,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           <button className="btn" disabled={saving}>Save</button>
         </Form>
       )}
+
     </Shell>
   );
 }
