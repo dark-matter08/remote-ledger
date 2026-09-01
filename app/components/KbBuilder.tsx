@@ -19,6 +19,29 @@ export interface KbSourceView {
   bullets: string[];
 }
 
+// Defined at module scope on purpose: a component declared inside the render body is
+// a new type on every render, so React unmounts and remounts the entire list each
+// time you tick a box.
+function PickRow({ s, checked, onToggle }: { s: KbSourceView; checked: boolean; onToggle: () => void }) {
+  return (
+    <label
+      className="kb-pick"
+      style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderTop: "1px solid var(--rule-faint)", cursor: "pointer" }}
+    >
+      <input type="checkbox" name="itemId" value={s.id} checked={checked} onChange={onToggle} style={{ marginTop: 4 }} />
+      <span style={{ flex: 1 }}>
+        <strong>{s.title}</strong>{" "}
+        {s.role ? <span className="hint" style={{ margin: 0 }}>{s.role}</span> : null}
+        {s.start_date ? <span className="hint" style={{ margin: 0 }}> · {s.start_date}{s.end_date ? `-${s.end_date}` : ""}</span> : null}
+        <span className="hint" style={{ margin: 0, display: "block", textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
+          {s.bullets.length} bullet{s.bullets.length === 1 ? "" : "s"}
+          {s.tags.length ? ` · ${s.tags.slice(0, 6).join(", ")}` : ""}
+        </span>
+      </span>
+    </label>
+  );
+}
+
 export function KbBuilder({
   sources,
   skills,
@@ -61,32 +84,6 @@ export function KbBuilder({
     );
   }
 
-  const Row = ({ s }: { s: KbSourceView }) => (
-    <label
-      key={s.id}
-      className="kb-pick"
-      style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderTop: "1px solid var(--rule-faint)", cursor: "pointer" }}
-    >
-      <input
-        type="checkbox"
-        name="itemId"
-        value={s.id}
-        checked={picked.has(s.id)}
-        onChange={() => toggle(picked, s.id, setPicked)}
-        style={{ marginTop: 4 }}
-      />
-      <span style={{ flex: 1 }}>
-        <strong>{s.title}</strong>{" "}
-        {s.role ? <span className="hint" style={{ margin: 0 }}>{s.role}</span> : null}
-        {s.start_date ? <span className="hint" style={{ margin: 0 }}> · {s.start_date}{s.end_date ? `-${s.end_date}` : ""}</span> : null}
-        <span className="hint" style={{ margin: 0, display: "block", textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-          {s.bullets.length} bullet{s.bullets.length === 1 ? "" : "s"}
-          {s.tags.length ? ` · ${s.tags.slice(0, 6).join(", ")}` : ""}
-        </span>
-      </span>
-    </label>
-  );
-
   return (
     <div className="panel">
       <h3>
@@ -116,13 +113,13 @@ export function KbBuilder({
           {experience.length > 0 && (
             <>
               <div className="field" style={{ marginBottom: 0 }}><label>Experience</label></div>
-              {experience.map((s) => <Row key={s.id} s={s} />)}
+              {experience.map((s) => <PickRow key={s.id} s={s} checked={picked.has(s.id)} onToggle={() => toggle(picked, s.id, setPicked)} />)}
             </>
           )}
           {projects.length > 0 && (
             <>
               <div className="field" style={{ marginBottom: 0, marginTop: 14 }}><label>Projects</label></div>
-              {projects.map((s) => <Row key={s.id} s={s} />)}
+              {projects.map((s) => <PickRow key={s.id} s={s} checked={picked.has(s.id)} onToggle={() => toggle(picked, s.id, setPicked)} />)}
             </>
           )}
 
@@ -207,7 +204,9 @@ export function KbBuilder({
               {busy ? "Building…" : "Build résumé"}
             </button>
             <span className="hint" style={{ margin: 0 }}>
-              {picked.size} entr{picked.size === 1 ? "y" : "ies"}, {pickedSkills.size} skill{pickedSkills.size === 1 ? "" : "s"} selected
+              {picked.size === 0 && pickedSkills.size === 0
+                ? "Tick at least one entry or skill to enable this"
+                : `${picked.size} entr${picked.size === 1 ? "y" : "ies"}, ${pickedSkills.size} skill${pickedSkills.size === 1 ? "" : "s"} selected`}
             </span>
           </div>
         </Form>
