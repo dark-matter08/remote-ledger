@@ -1,6 +1,6 @@
 // Client-safe shared types + constants (NO server imports). Both server modules
 // and client components import from here, so the broadsheet/board/job pages can use
-// stage labels without pulling better-sqlite3 into the browser bundle.
+// stage labels without pulling the server-only DB layer into the browser bundle.
 
 export type Category = "high" | "medium" | "stretch";
 

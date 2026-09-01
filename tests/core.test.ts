@@ -147,4 +147,75 @@ test("kb: accepting a company-experience bullet creates ONE résumé experience 
   assert.equal(getDefaultProfile()!.data.projects.length, 0, "company bullets must NOT become projects");
 });
 
+test("crawl runs: reconcile only clears runs whose owning process is gone", async () => {
+  const { spawn } = await import("node:child_process");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  const insert = (pid: number | null) =>
+    Number(
+      db
+        .prepare("INSERT INTO crawl_runs (type,started_at,status,trigger,owner_pid) VALUES (?,?,?,?,?)")
+        .run("find", new Date().toISOString(), "running", "manual", pid).lastInsertRowid
+    );
+
+  // a real, still-alive process that is NOT us — stands in for `npm run crawl`
+  // running while the app is open (the case that used to get clobbered)
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+  await new Promise<void>((r) => child.once("spawn", () => r()));
+  const liveId = insert(child.pid!);
+
+  // a process that has already exited — a genuine orphan
+  const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await new Promise<void>((r) => gone.once("exit", () => r()));
+  const deadId = insert(gone.pid!);
+
+  // a row written before owner_pid existed — also a genuine orphan
+  const legacyId = insert(null);
+
+  // drop the cached handle so the next getDb() reconciles, as a new process would
+  delete (global as any).__ledgerDb;
+  const db2 = getDb();
+  const statusOf = (id: number) =>
+    (db2.prepare("SELECT status FROM crawl_runs WHERE id=?").get(id) as { status: string }).status;
+
+  assert.equal(statusOf(liveId), "running", "a crawl live in ANOTHER process must survive");
+  assert.equal(statusOf(deadId), "error", "a crawl whose owner exited is reset");
+  assert.equal(statusOf(legacyId), "error", "a pre-owner_pid row is treated as orphaned");
+
+  child.kill();
+});
+
+test("kb: a scan names an unlabelled folder, but never renames one you named", async () => {
+  const { nameSourceFromScan } = await import("../app/services/kb.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const { createCrawlRun, getCrawlRun } = await import("../app/db.server");
+  const db = getDb();
+
+  const mkSource = (label: string | null, path: string) =>
+    Number(
+      db
+        .prepare("INSERT INTO kb_sources (path,label,kind,interval_hours,depth,created_at) VALUES (?,?,?,?,?,?)")
+        .run(path, label, "project", 0, "deep", new Date().toISOString()).lastInsertRowid
+    );
+  const read = (id: number) => db.prepare("SELECT * FROM kb_sources WHERE id=?").get(id) as any;
+
+  // a folder you added without typing a name gets the name the scan inferred
+  const unnamed = mkSource(null, "/tmp/ledger-test-unnamed");
+  const runA = createCrawlRun("scan", "kb");
+  nameSourceFromScan(runA, read(unnamed), "The Ezz Show");
+  assert.equal(read(unnamed).label, "The Ezz Show", "inferred name fills an empty label");
+  assert.match(getCrawlRun(runA)!.note!, /^The Ezz Show · /, "crawl shell shows the name, not a bare path");
+
+  // a name you typed yourself survives every future re-scan
+  const named = mkSource("My Own Name", "/tmp/ledger-test-named");
+  nameSourceFromScan(createCrawlRun("scan", "kb"), read(named), "Something Else");
+  assert.equal(read(named).label, "My Own Name", "a label you set is never renamed by a scan");
+
+  // nothing usable inferred -> leave it unnamed rather than writing junk
+  const blank = mkSource(null, "/tmp/ledger-test-blank");
+  nameSourceFromScan(createCrawlRun("scan", "kb"), read(blank), "   ");
+  assert.equal(read(blank).label, null, "a blank title does not set a label");
+});
+
 test.after(cleanup);

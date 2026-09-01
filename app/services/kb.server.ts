@@ -476,6 +476,16 @@ export function setSourceDepth(id: number, depth: string): void {
   getDb().prepare("UPDATE kb_sources SET depth=? WHERE id=?").run(d, id);
 }
 export function setSourceInterval(id: number, hours: number): void { getDb().prepare("UPDATE kb_sources SET interval_hours=? WHERE id=?").run(Math.max(0, Math.floor(hours || 0)), id); }
+// The scan infers what the project actually is; persist that name as the folder's
+// label so the tracked-folder row (and the Crawl Shell) stop showing a bare path.
+// Only ever FILLS AN EMPTY label — a name you typed yourself is never overwritten.
+export function nameSourceFromScan(runId: number, src: KbSource, name: string | null | undefined): void {
+  const label = (name || "").trim().slice(0, 120);
+  if (!label || (src.label || "").trim()) return;
+  getDb().prepare("UPDATE kb_sources SET label=? WHERE id=?").run(label, src.id);
+  src.label = label; // keep the in-flight scan's own view consistent
+  try { updateCrawlRun(runId, { note: `${label} · ${src.path}` }); } catch {}
+}
 export function removeSource(id: number): void { getDb().prepare("DELETE FROM kb_sources WHERE id=?").run(id); }
 export function rescanSource(id: number): void { startSourceScan(id); }
 
@@ -580,6 +590,7 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
         addSuggestions(id, a.bullets.filter((b) => !have.has(b)).map((b) => ({ section: "experience", bullet: b })));
       }
       try { await reclusterItem(id); } catch {}
+      nameSourceFromScan(runId, src, company);
       const meta = [src.role, [src.start_date, src.end_date].filter(Boolean).join("–"), src.location].filter(Boolean).join(" · ");
       L("result", `${isNew ? "✓ added" : "↻ updated"} experience "${company}"${meta ? ` (${meta})` : ""} · ${a.bullets.length} bullet(s) synthesized from ${parts.length} project(s)`);
     } catch (e: any) {
@@ -603,10 +614,17 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
       if (linkId) {
         // link mode: enrich the existing KB item instead of creating a new one
         const ok = mergeIntoItem(linkId, a, dir);
-        if (ok) { updated++; found++; L("result", `🔗 linked & enriched existing item #${linkId} · ${tags.length} skill(s)`); }
+        if (ok) {
+          updated++; found++;
+          const li = db.prepare("SELECT title FROM kb_items WHERE id=?").get(linkId) as { title?: string } | undefined;
+          if (dirs.length === 1) nameSourceFromScan(runId, src, li?.title);
+          L("result", `🔗 linked & enriched existing item #${linkId} · ${tags.length} skill(s)`);
+        }
         else L("error", `linked item #${linkId} no longer exists — skipped`);
       } else {
         const { id, isNew } = upsertScanItem({ title: a.title || g.name, summary: a.summary, tags, sourcePath: dir });
+        // a company folder holds N projects, so no single title can name the folder
+        if (dirs.length === 1) nameSourceFromScan(runId, src, a.title || g.name);
         if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b }))); addQuestions(id, a.questions); added++; }
         else updated++;
         found++;

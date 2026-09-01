@@ -1,7 +1,7 @@
 // Shared DB helper for node scripts (seed + upsert). Plain ESM so launchd/claude
 // headless can run it without a build step. The RR7 app uses app/db.server.ts,
 // which talks to the SAME sqlite file and schema.
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -13,10 +13,23 @@ const ROOT = resolve(HERE, "..");
 export const DB_PATH = process.env.JOBS_DB_PATH || resolve(ROOT, "data", "jobs.db");
 const SCHEMA = readFileSync(resolve(HERE, "schema.sql"), "utf8");
 
+// node:sqlite has no db.transaction(); wrap BEGIN/COMMIT by hand.
+function transaction(db, fn) {
+  db.exec("BEGIN");
+  try {
+    const out = fn();
+    db.exec("COMMIT");
+    return out;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw e;
+  }
+}
+
 export function openDb() {
   mkdirSync(dirname(DB_PATH), { recursive: true });
-  const db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
+  const db = new DatabaseSync(DB_PATH);
+  db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
   return db;
 }
@@ -70,8 +83,8 @@ export function upsertJobs(db, jobs, now = new Date().toISOString()) {
     updated = 0;
   const errors = [];
 
-  const run = db.transaction((rows) => {
-    for (const raw of rows) {
+  transaction(db, () => {
+    for (const raw of jobs) {
       try {
         const company = (raw.company || "").trim();
         const role = (raw.role || "").trim();
@@ -115,7 +128,6 @@ export function upsertJobs(db, jobs, now = new Date().toISOString()) {
     }
   });
 
-  run(jobs);
   return { inserted, updated, errors };
 }
 

@@ -6,7 +6,7 @@
 // form. It NEVER clicks submit.
 //
 // A `Page` here is a Playwright Page; we keep it as `any` so this file stays free of
-// the native better-sqlite3 graph and can be exercised by a standalone headless test.
+// the server-only DB graph and can be exercised by a standalone headless test.
 import type { ResumeContact } from "../resume/types";
 
 export const UA =
