@@ -16,19 +16,40 @@ import {
 import { listAllVersions } from "../resume/versions.server";
 import { editResume } from "../resume/ai.server";
 import { ResumeChat } from "../components/ResumeChat";
+import { KbBuilder } from "../components/KbBuilder";
+import { kbBuildSources, kbAllSkills, buildResumeFromKb, type BuildInclude } from "../resume/build.server";
 
 export function meta(_: Route.MetaArgs) {
   return [{ title: "Resume · The Remote Ledger" }];
 }
 
 export async function loader() {
-  return { profiles: listProfiles(), generated: listAllVersions("resume"), hasProfile: !!getDefaultProfile() };
+  return {
+    profiles: listProfiles(),
+    generated: listAllVersions("resume"),
+    hasProfile: !!getDefaultProfile(),
+    kbSources: kbBuildSources(),
+    kbSkills: kbAllSkills(),
+  };
 }
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = form.get("intent");
   try {
+    if (intent === "kb-build") {
+      const r = buildResumeFromKb({
+        mode: String(form.get("mode")) === "merge" ? "merge" : "new",
+        baseProfileId: String(form.get("baseProfileId") || "") || null,
+        targetProfileId: String(form.get("targetProfileId") || "") || null,
+        include: (String(form.get("include") || "base-plus") as BuildInclude),
+        name: String(form.get("name") || ""),
+        itemIds: form.getAll("itemId").map((v) => Number(v)).filter(Boolean),
+        skills: form.getAll("skill").map(String),
+      });
+      if (r.error) return { error: r.error };
+      return { ok: true, msg: `Résumé built from ${r.added} knowledge-base entr${r.added === 1 ? "y" : "ies"}.` };
+    }
     if (intent === "upload") {
       const file = form.get("file") as File | null;
       const name = String(form.get("name") || "").trim();
@@ -86,7 +107,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function ResumePage({ loaderData, actionData }: Route.ComponentProps) {
-  const { profiles, generated, hasProfile } = loaderData;
+  const { profiles, generated, hasProfile, kbSources, kbSkills } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
 
@@ -101,10 +122,7 @@ export default function ResumePage({ loaderData, actionData }: Route.ComponentPr
       {actionData?.error && <div className="notice err">{actionData.error}</div>}
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}
 
-      <div className="notice ok" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <span>Keep building your résumé from what you've worked on.</span>
-        <Link to="/knowledge" className="entry-title-link">Open Knowledge Base ▸</Link>
-      </div>
+      <KbBuilder sources={kbSources} skills={kbSkills} profiles={profiles} busy={busy} />
 
       <div className="panel">
         <h3>Upload a résumé (PDF)</h3>

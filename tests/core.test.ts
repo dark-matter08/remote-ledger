@@ -282,4 +282,82 @@ test("kb: per-project context is stored and survives a re-read", async () => {
   assert.equal(read().context, null, "clearing it stores null, not an empty string");
 });
 
+test("resume builder: composes from picked KB entries without losing identity", async () => {
+  const { composeFromKb, rankKbForJob, buildResumeFromKb, kbBuildSources, kbAllSkills } =
+    await import("../app/resume/build.server");
+  const { saveProfile, getProfile } = await import("../app/resume/profiles.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  const mkItem = (kind: string, title: string, tags: string[], role?: string) =>
+    Number(
+      db.prepare("INSERT INTO kb_items (kind,title,summary,tags,source,created_at,updated_at,role) VALUES (?,?,?,?,?,?,?,?)")
+        .run(kind, title, `${title} summary`, JSON.stringify(tags), "scan", now, now, role || null).lastInsertRowid
+    );
+  const mkBullet = (itemId: number, bullet: string, status = "pending") =>
+    db.prepare("INSERT INTO kb_suggestions (item_id,section,bullet,status,created_at) VALUES (?,?,?,?,?)")
+      .run(itemId, "project", bullet, status, now);
+
+  const proj = mkItem("project", "Sleeping Beauty", ["TypeScript", "Socket.IO", "Postgres"]);
+  mkBullet(proj, "Built a real-time scoring engine.");
+  mkBullet(proj, "Rejected idea", "dismissed");
+  const exp = mkItem("experience", "KwikNkap", ["NestJS", "React Native"], "Software Engineer");
+  mkBullet(exp, "Owned the payments service.");
+  const unrelated = mkItem("project", "Woodworking Blog", ["Jekyll"]);
+  mkBullet(unrelated, "Wrote about chisels.");
+
+  const sources = kbBuildSources();
+  const pick = (t: string) => sources.find((s: any) => s.title === t)!;
+  assert.deepEqual(pick("Sleeping Beauty").bullets, ["Built a real-time scoring engine."], "dismissed bullets are excluded");
+  assert.ok(kbAllSkills().includes("TypeScript"));
+
+  const base = {
+    contact: { name: "Lucien", email: "l@example.com" },
+    summary: "Engineer.",
+    skills: ["Docker"],
+    experience: [{ company: "Old Corp", role: "Dev", bullets: ["Did a thing."] }],
+    projects: [],
+    education: [{ school: "Some University", degree: "BSc" }],
+  } as any;
+
+  // base-plus keeps what was already there
+  const plus = composeFromKb(base, [pick("Sleeping Beauty"), pick("KwikNkap")], ["TypeScript"], "base-plus");
+  assert.equal(plus.contact.name, "Lucien");
+  assert.equal(plus.education.length, 1, "education is never dropped");
+  assert.ok(plus.experience.some((e: any) => e.company === "Old Corp"), "existing history survives");
+  assert.ok(plus.experience.some((e: any) => e.company === "KwikNkap" && e.role === "Software Engineer"));
+  assert.ok(plus.projects.some((p: any) => p.name === "Sleeping Beauty"));
+  assert.deepEqual(plus.skills, ["Docker", "TypeScript"], "skills merge, base first, no duplicates");
+
+  // kb-only rebuilds the content but still knows who you are
+  const only = composeFromKb(base, [pick("Sleeping Beauty")], ["TypeScript"], "kb-only");
+  assert.equal(only.contact.name, "Lucien", "identity is kept");
+  assert.equal(only.education.length, 1, "education is kept");
+  assert.equal(only.experience.length, 0, "base history is replaced, as asked");
+  assert.deepEqual(only.skills, ["TypeScript"]);
+
+  // building twice must not duplicate an entry
+  const twice = composeFromKb(plus, [pick("KwikNkap")], [], "base-plus");
+  assert.equal(twice.experience.filter((e: any) => e.company === "KwikNkap").length, 1, "merge is idempotent");
+
+  // relevance ranking is deterministic and ignores unrelated work
+  const ranked = rankKbForJob("Senior Engineer building real-time services in TypeScript with Postgres and Socket.IO");
+  const titles = ranked.map((r: any) => r.source.title);
+  assert.equal(titles[0], "Sleeping Beauty", "the closest match ranks first");
+  assert.ok(!titles.includes("Woodworking Blog"), "irrelevant work is not suggested");
+  assert.deepEqual(rankKbForJob(""), [], "no job text means no guesses");
+
+  // end to end through a real profile
+  saveProfile({ name: "Base", data: base, makeDefault: true });
+  const built = buildResumeFromKb({ mode: "new", name: "For The Job", itemIds: [pick("KwikNkap").id], skills: ["Rust"] });
+  assert.ok(built.profileId && !built.error);
+  const saved = getProfile(built.profileId!)!;
+  assert.equal(saved.name, "For The Job");
+  assert.equal(saved.data.contact.name, "Lucien", "identity carried over from the base profile");
+  assert.ok(saved.data.skills.includes("Rust"));
+
+  assert.ok(buildResumeFromKb({ mode: "new", itemIds: [], skills: [] }).error, "picking nothing is refused");
+});
+
 test.after(cleanup);
