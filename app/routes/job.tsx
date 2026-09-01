@@ -17,6 +17,8 @@ import {
 } from "../db.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
+import { kbBuildSources, kbAllSkills, rankKbForJob, buildResumeFromKb, type BuildInclude } from "../resume/build.server";
+import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
@@ -40,6 +42,12 @@ export async function loader({ params }: Route.LoaderArgs) {
     versions: listVersions(job.id),
     profiles: listProfiles(),
     defaultProfileId: getDefaultProfile()?.id ?? null,
+    kbSources: kbBuildSources(),
+    kbSkills: kbAllSkills(),
+    // ranked against this posting so the useful entries arrive pre-ticked
+    kbSuggested: rankKbForJob(
+      [job.role, job.company, job.stack, job.jd].filter(Boolean).join(" ")
+    ).map((r) => r.source.id),
     storedMatch: getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!) : null,
     storedPrep: getMeta(`prep:${job.id}`),
     storedAnswers: getMeta(`answers:${job.id}`) ? JSON.parse(getMeta(`answers:${job.id}`)!) : null,
@@ -62,6 +70,19 @@ export async function action({ request, params }: Route.ActionArgs) {
   const job = getJob(params.id);
   if (!job) throw new Response("Not found", { status: 404 });
   try {
+    if (intent === "kb-build") {
+      const r = buildResumeFromKb({
+        mode: String(form.get("mode")) === "merge" ? "merge" : "new",
+        baseProfileId: String(form.get("baseProfileId") || "") || null,
+        targetProfileId: String(form.get("targetProfileId") || "") || null,
+        include: String(form.get("include") || "base-plus") as BuildInclude,
+        name: String(form.get("name") || "") || `${job.company} — ${job.role}`,
+        itemIds: form.getAll("itemId").map((v) => Number(v)).filter(Boolean),
+        skills: form.getAll("skill").map(String),
+      });
+      if (r.error) return { error: r.error };
+      return { ok: true, msg: `Built from ${r.added} knowledge-base entr${r.added === 1 ? "y" : "ies"} — pick it as the base profile below and tailor.` };
+    }
     if (intent === "save-jd") {
       setJd(job.id, String(form.get("jd") || ""), null); // manual paste → plain text, clear rich render
       return { ok: true, msg: "Job description saved." };
@@ -186,7 +207,7 @@ const TABS = ["Overview", "Tailor", "Cover", "Apply", "Prep", "Application", "Hi
 type Tab = (typeof TABS)[number];
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle } = loaderData;
+  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
   const [tab, setTab] = useState<Tab>("Overview");
   const nav = useNavigation();
@@ -256,6 +277,15 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
       )}
 
       {tab === "Tailor" && (
+        <>
+        <KbBuilder
+          sources={kbSources}
+          skills={kbSkills}
+          profiles={profiles}
+          busy={busy}
+          jobTitle={`${job.company} — ${job.role}`}
+          suggestedIds={kbSuggested}
+        />
         <div className="panel">
           <h3>Tailor a résumé</h3>
           <p className="hint">Reorders & rewords your base résumé for this role. Never invents facts — a guard flags anything new.</p>
@@ -301,6 +331,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             ))
           )}
         </div>
+        </>
       )}
 
       {tab === "Cover" && (
