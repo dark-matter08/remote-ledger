@@ -47,7 +47,7 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TYPE_LABEL: Record<string, string> = { find: "Find new jobs", update: "Update descriptions", full: "Full refresh", scan: "Folder scan", email: "Email sync", match: "Match analysis", tailor: "Résumé tailor", cover: "Cover letter", prep: "Interview prep", answers: "Draft answers" };
+const TYPE_LABEL: Record<string, string> = { find: "Find new jobs", careers: "Company career pages", update: "Update descriptions", full: "Full refresh", scan: "Folder scan", email: "Email sync", match: "Match analysis", tailor: "Résumé tailor", cover: "Cover letter", prep: "Interview prep", answers: "Draft answers" };
 
 export default function Crawl({ loaderData, actionData }: Route.ComponentProps) {
   const { runs, active, selected, logs, hasRunner } = loaderData;
@@ -81,9 +81,9 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
 
       <div className="panel">
         <h3>Run a crawl {active && <span className="badge warn">running #{active.id}</span>}</h3>
-        <p className="hint">Find pulls fresh roles from the web. Update re-scrapes descriptions for jobs already on file. Full does both.</p>
+        <p className="hint">Find pulls fresh roles from the web. Company career pages reads your tracked companies\u2019 own ATS feeds directly, which is exact and costs almost nothing. Update re-scrapes descriptions for jobs already on file. Full does both.</p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          {(["find", "update", "full"] as CrawlType[]).map((t) => (
+          {(["find", "careers", "update", "full"] as CrawlType[]).map((t) => (
             <Form method="post" key={t}>
               <input type="hidden" name="intent" value="start" />
               <input type="hidden" name="type" value={t} />
