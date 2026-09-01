@@ -18,6 +18,7 @@ import {
   updateCrawlRun,
   crawlLog,
   activeCrawl,
+  blocklistPrompt,
 } from "../db.server";
 import { scrapeJds, verifyJobs } from "./scrape.server";
 
@@ -79,7 +80,7 @@ function buildPrompt(o: PromptOpts): string {
       `limit.` +
       (exclude.length ? `\n\nDo NOT repeat these already-found roles:\n- ${exclude.join("\n- ")}` : "") +
       `\n\nWhen you have ${want} verified role(s), output ONLY the JSON array and stop.`;
-    return body + footer;
+    return body + blocklistPrompt() + footer;
   }
 
   const timeoutMin = o.timeoutMin ?? 15;
@@ -90,7 +91,7 @@ function buildPrompt(o: PromptOpts): string {
     .replaceAll("{{budget_min}}", String(timeoutMin))
     .replaceAll("{{max_actions}}", String(maxActions));
   const footer = `\n\n[RUNTIME BUDGET — STRICT] You have about ${timeoutMin} minute(s) and AT MOST ${maxActions} web actions (searches + fetches combined). You cannot perceive time, so COUNT your actions: the moment you reach ${maxActions}, stop searching and output the final JSON array. Ending your turn WITHOUT the JSON array is a complete failure — when unsure, output what you have now.`;
-  return body + footer;
+  return body + blocklistPrompt() + footer;
 }
 
 // Run the research agent once and return its raw text. Streams live steps to the

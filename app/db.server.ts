@@ -1,7 +1,9 @@
 // Job + application data layer. Uses the shared connection in sqlite.server.ts.
 // Stage/Category/Job + label constants live in the client-safe ./stages module.
+import { unlinkSync } from "node:fs";
 import { getDb, transaction } from "./sqlite.server";
 import { STAGES, type Stage, type Category, type Job } from "./stages";
+import { REASON_RULE, hostOf, type BlockScope } from "./trash";
 
 export { STAGES, QUICK_STAGES, STAGE_LABEL } from "./stages";
 export type { Stage, Category, Job } from "./stages";
@@ -137,6 +139,113 @@ export function setJd(id: string, jd: string, html?: string | null): void {
 export function markClosed(id: string, reason: string): void {
   getDb().prepare("UPDATE jobs SET active=0, updated_at=? WHERE id=?").run(new Date().toISOString(), id);
   try { addEvent(id, "posting_closed", { reason }); } catch {}
+}
+
+// --- trash + blocklist ------------------------------------------------------
+// Archiving only sets active=0, and a crawl that finds the posting again flips it
+// straight back to 1. Trashing writes a tombstone so it can never come back.
+
+export type { BlockScope } from "./trash";
+export { TRASH_REASONS } from "./trash";
+
+export interface JobBlock {
+  id: number; scope: BlockScope; value: string; reason: string;
+  note: string | null; company: string | null; role: string | null; created_at: string;
+}
+
+export function listBlocks(): JobBlock[] {
+  return getDb().prepare("SELECT * FROM job_blocks ORDER BY created_at DESC").all() as JobBlock[];
+}
+export function unblock(blockId: number): void {
+  getDb().prepare("DELETE FROM job_blocks WHERE id=?").run(blockId);
+}
+
+// Everything currently on the ledger that a given block covers. Domains have to be
+// matched in JS because the hostname lives inside apply_url.
+function jobsCoveredBy(scope: BlockScope, value: string): string[] {
+  const db = getDb();
+  if (scope === "job") return [value];
+  const rows = db.prepare("SELECT id, company, apply_url FROM jobs").all() as
+    { id: string; company: string; apply_url: string }[];
+  return rows
+    .filter((j) => (scope === "company" ? slugify(j.company) === value : hostOf(j.apply_url) === value))
+    .map((j) => j.id);
+}
+
+// Remove one job and everything that only exists because of it. Cost history and
+// mail survive with a null job_id: those record things that actually happened.
+function purgeJob(id: string): void {
+  const db = getDb();
+  const pdfs = (db.prepare("SELECT pdf_path FROM resume_versions WHERE job_id=? AND pdf_path IS NOT NULL").all(id) as
+    { pdf_path: string }[]).map((r) => r.pdf_path);
+  db.prepare("UPDATE llm_calls SET job_id=NULL WHERE job_id=?").run(id);
+  db.prepare("UPDATE email_messages SET job_id=NULL WHERE job_id=?").run(id);
+  for (const t of ["applications", "application_events", "apply_session_jobs", "apply_logs", "apply_questions", "resume_versions"]) {
+    try { db.prepare(`DELETE FROM ${t} WHERE job_id=?`).run(id); } catch {}
+  }
+  db.prepare("DELETE FROM jobs WHERE id=?").run(id);
+  for (const f of pdfs) { try { unlinkSync(f); } catch {} }
+}
+
+/**
+ * Throw a job out for good, and remember why.
+ * scope "company" or "domain" also clears every other job the block covers, which is
+ * how one action kills all of an aggregator's postings at once.
+ */
+export function trashJob(
+  id: string,
+  o: { reason?: string; note?: string; scope?: BlockScope } = {}
+): { ok: boolean; removed: number; scope: BlockScope; value: string } {
+  const db = getDb();
+  const job = db.prepare("SELECT id, company, role, apply_url FROM jobs WHERE id=?").get(id) as
+    { id: string; company: string; role: string; apply_url: string } | undefined;
+  if (!job) return { ok: false, removed: 0, scope: "job", value: id };
+
+  const scope: BlockScope = o.scope === "company" || o.scope === "domain" ? o.scope : "job";
+  const host = hostOf(job.apply_url);
+  // a job whose URL will not parse cannot be blocked by domain; fall back to itself
+  const value = scope === "company" ? slugify(job.company) : scope === "domain" ? host || job.id : job.id;
+  const effScope: BlockScope = scope === "domain" && !host ? "job" : scope;
+  const reason = REASON_RULE.has(String(o.reason)) ? String(o.reason) : "other";
+  const note = (o.note || "").trim().slice(0, 500) || null;
+
+  let removed = 0;
+  transaction(() => {
+    db.prepare(
+      `INSERT INTO job_blocks (scope,value,reason,note,company,role,created_at) VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT(scope,value) DO UPDATE SET reason=excluded.reason, note=excluded.note, created_at=excluded.created_at`
+    ).run(effScope, value, reason, note, job.company, job.role, new Date().toISOString());
+    for (const jid of jobsCoveredBy(effScope, value)) { purgeJob(jid); removed++; }
+  });
+  return { ok: true, removed, scope: effScope, value };
+}
+
+// What the crawler is told never to bring back. Built from the blocks themselves so
+// it sharpens every time you trash something.
+export function blocklistPrompt(): string {
+  const blocks = listBlocks();
+  if (!blocks.length) return "";
+  const domains = blocks.filter((b) => b.scope === "domain").map((b) => b.value);
+  const companies = blocks.filter((b) => b.scope === "company").map((b) => b.company || b.value);
+  const byReason = new Map<string, string[]>();
+  for (const b of blocks) {
+    const label = b.scope === "domain" ? b.value : b.company || b.value;
+    if (!byReason.has(b.reason)) byReason.set(b.reason, []);
+    byReason.get(b.reason)!.push(label);
+  }
+  const notes = blocks.filter((b) => b.note).slice(0, 12).map((b) => `- ${b.company || b.value}: ${b.note}`);
+
+  const lines = ["\n\n🚫 REJECTED BEFORE — DO NOT RETURN THESE AGAIN:"];
+  if (domains.length) lines.push(`- Never return anything hosted on: ${[...new Set(domains)].slice(0, 40).join(", ")}`);
+  if (companies.length) lines.push(`- Never return roles at: ${[...new Set(companies)].slice(0, 60).join(", ")}`);
+  for (const [code, names] of byReason) {
+    const rule = REASON_RULE.get(code);
+    if (!rule || code === "other") continue;
+    lines.push(`- The candidate rejected ${[...new Set(names)].slice(0, 12).join(", ")} as ${rule}. Apply that judgement to new results.`);
+  }
+  if (notes.length) lines.push("- In the candidate's own words:", ...notes);
+  lines.push("- These are learned preferences, not a one-off filter. Do not return near-identical postings either.");
+  return lines.join("\n");
 }
 
 // Correct a job's apply URL to the resolved final employer page.
@@ -320,11 +429,24 @@ export function jobId(company: string, role: string) {
   return `${slugify(company)}--${slugify(role)}`;
 }
 
+// Everything currently blocked, read once per upsert rather than per row.
+function blockIndex() {
+  const rows = getDb().prepare("SELECT scope, value FROM job_blocks").all() as { scope: string; value: string }[];
+  const ids = new Set<string>(), companies = new Set<string>(), domains = new Set<string>();
+  for (const r of rows) (r.scope === "company" ? companies : r.scope === "domain" ? domains : ids).add(r.value);
+  return (id: string, company: string, applyUrl: string) => {
+    if (ids.has(id) || companies.has(slugify(company))) return true;
+    const h = hostOf(applyUrl);
+    return !!h && domains.has(h);
+  };
+}
+
 export function upsertJobs(
   jobs: any[],
   now = new Date().toISOString()
-): { inserted: number; updated: number; errors: { job: string; error: string }[] } {
+): { inserted: number; updated: number; blocked: number; errors: { job: string; error: string }[] } {
   const db = getDb();
+  const isBlocked = blockIndex();
   const existing = db.prepare("SELECT id FROM jobs WHERE id=?");
   const insert = db.prepare(`
     INSERT INTO jobs (id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,source,closes_at,active,first_seen,last_seen,updated_at)
@@ -334,7 +456,8 @@ export function upsertJobs(
       eligibility=@eligibility, seniority=@seniority, apply_url=@apply_url, source=@source, closes_at=@closes_at,
       active=1, last_seen=@now, updated_at=@now WHERE id=@id`);
   let inserted = 0,
-    updated = 0;
+    updated = 0,
+    blocked = 0;
   const errors: { job: string; error: string }[] = [];
   transaction(() => {
     for (const raw of jobs) {
@@ -346,6 +469,8 @@ export function upsertJobs(
         if (!company || !role) throw new Error("missing company/role");
         if (!VALID_CATEGORY.has(category)) throw new Error(`bad category "${category}"`);
         if (!/^https?:\/\//.test(apply_url)) throw new Error("apply_url must be http(s)");
+        // you threw this out before; a crawl finding it again does not undo that
+        if (isBlocked(raw.id || jobId(company, role), company, apply_url)) { blocked++; continue; }
         let fit = Number(raw.fit_score);
         if (!Number.isFinite(fit)) fit = 0;
         fit = Math.max(0, Math.min(100, Math.round(fit)));
@@ -375,7 +500,7 @@ export function upsertJobs(
       }
     }
   });
-  return { inserted, updated, errors };
+  return { inserted, updated, blocked, errors };
 }
 
 export function deactivateMissing(now: string): number {

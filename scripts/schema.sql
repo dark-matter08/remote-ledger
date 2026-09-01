@@ -214,6 +214,21 @@ CREATE TABLE IF NOT EXISTS crawl_logs (
 CREATE INDEX IF NOT EXISTS idx_cl_run ON crawl_logs(run_id);
 
 -- ===== Knowledge base (what the agent knows about you, for résumé building) =====
+-- Jobs you threw out, and why. The tombstone is the point: deleting the jobs row
+-- alone would let the very next crawl re-insert the same posting. Scope decides how
+-- wide the block reaches, and the reasons are fed back into the crawl prompt.
+CREATE TABLE IF NOT EXISTS job_blocks (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope      TEXT NOT NULL,              -- job | company | domain
+  value      TEXT NOT NULL,              -- job slug | slugified company | hostname
+  reason     TEXT NOT NULL DEFAULT 'other',
+  note       TEXT,                       -- your own words, shown to the crawler
+  company    TEXT,                       -- what it was, for the blocklist UI + prompt
+  role       TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_blocks ON job_blocks(scope, value);
+
 CREATE TABLE IF NOT EXISTS kb_items (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   kind        TEXT NOT NULL DEFAULT 'project',  -- project | experience | skill | fact

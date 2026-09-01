@@ -282,4 +282,75 @@ test("kb: per-project context is stored and survives a re-read", async () => {
   assert.equal(read().context, null, "clearing it stores null, not an empty string");
 });
 
+test("trash: a blocked job cannot be resurrected by a later crawl", async () => {
+  const { upsertJobs, trashJob, listBlocks, blocklistPrompt, getJob, unblock } = await import("../app/db.server");
+
+  const mk = (company: string, role: string, url: string) => ({
+    company, role, category: "high", fit_score: 80, apply_url: url,
+  });
+
+  // --- scope: just this posting -------------------------------------------
+  upsertJobs([mk("Trashme Co", "Eng", "https://boards.example.com/1")]);
+  assert.ok(getJob("trashme-co--eng"), "seeded");
+  const one = trashJob("trashme-co--eng", { reason: "irrelevant", note: "wrong stack" });
+  assert.equal(one.removed, 1);
+  assert.equal(getJob("trashme-co--eng"), null, "the row is gone, not archived");
+
+  // the crawl finds it again — it must NOT come back
+  const again = upsertJobs([mk("Trashme Co", "Eng", "https://boards.example.com/1")]);
+  assert.equal(again.inserted, 0, "a blocked posting is never re-inserted");
+  assert.equal(again.blocked, 1, "and it is reported as blocked, not silently dropped");
+  assert.equal(getJob("trashme-co--eng"), null);
+
+  // --- scope: whole domain clears every posting from it --------------------
+  upsertJobs([
+    mk("Agency A", "Role One", "https://jobot.example/a"),
+    mk("Agency A", "Role Two", "https://jobot.example/b"),
+    mk("Agency B", "Role Three", "https://jobot.example/c"),
+    mk("Real Employer", "Keep Me", "https://greenhouse.example/x"),
+  ]);
+  const dom = trashJob("agency-a--role-one", { reason: "agency", scope: "domain" });
+  assert.equal(dom.scope, "domain");
+  assert.equal(dom.removed, 3, "one action clears every posting on that host");
+  assert.ok(getJob("real-employer--keep-me"), "a different host is untouched");
+
+  const reCrawl = upsertJobs([mk("Agency C", "Brand New", "https://jobot.example/d")]);
+  assert.equal(reCrawl.inserted, 0, "a NEW posting on a blocked domain is refused too");
+  assert.equal(reCrawl.blocked, 1);
+
+  // --- what the crawler is told -------------------------------------------
+  const prompt = blocklistPrompt();
+  assert.match(prompt, /DO NOT RETURN/i);
+  assert.match(prompt, /jobot\.example/, "blocked domains are named");
+  assert.match(prompt, /wrong stack/, "your own note is passed through");
+  assert.match(prompt, /staffing agency/i, "the reason becomes a rule");
+
+  // --- un-blocking lets it be found again ---------------------------------
+  const blk = listBlocks().find((b: any) => b.scope === "domain")!;
+  unblock(blk.id);
+  const after = upsertJobs([mk("Agency C", "Brand New", "https://jobot.example/d")]);
+  assert.equal(after.inserted, 1, "un-blocking restores discovery");
+});
+
+test("trash: blocking a company keeps its user-facing history honest", async () => {
+  const { upsertJobs, trashJob, setStage, getJob } = await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  upsertJobs([{ company: "Gone Corp", role: "Dev", category: "high", fit_score: 70, apply_url: "https://x.example/1" }]);
+  setStage("gone-corp--dev", "applied");
+  db.prepare("INSERT INTO llm_calls (ts,runner,model,purpose,job_id,in_tok,out_tok,cost_usd,metered,status) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(new Date().toISOString(), "claude-cli", "m", "match", "gone-corp--dev", 10, 10, 0, 0, "ok");
+
+  trashJob("gone-corp--dev", { reason: "not-remote", scope: "company" });
+
+  assert.equal(getJob("gone-corp--dev"), null, "job removed");
+  assert.equal(
+    (db.prepare("SELECT count(*) c FROM applications WHERE job_id=?").get("gone-corp--dev") as any).c, 0,
+    "pipeline row removed with it"
+  );
+  const call = db.prepare("SELECT job_id FROM llm_calls WHERE purpose='match'").get() as any;
+  assert.equal(call.job_id, null, "spend history survives with a null job_id — it really happened");
+});
+
 test.after(cleanup);
