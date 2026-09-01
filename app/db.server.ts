@@ -1,6 +1,6 @@
 // Job + application data layer. Uses the shared connection in sqlite.server.ts.
 // Stage/Category/Job + label constants live in the client-safe ./stages module.
-import { getDb } from "./sqlite.server";
+import { getDb, transaction } from "./sqlite.server";
 import { STAGES, type Stage, type Category, type Job } from "./stages";
 
 export { STAGES, QUICK_STAGES, STAGE_LABEL } from "./stages";
@@ -336,8 +336,8 @@ export function upsertJobs(
   let inserted = 0,
     updated = 0;
   const errors: { job: string; error: string }[] = [];
-  const tx = db.transaction((rows: any[]) => {
-    for (const raw of rows) {
+  transaction(() => {
+    for (const raw of jobs) {
       try {
         const company = (raw.company || "").trim();
         const role = (raw.role || "").trim();
@@ -375,13 +375,13 @@ export function upsertJobs(
       }
     }
   });
-  tx(jobs);
   return { inserted, updated, errors };
 }
 
 export function deactivateMissing(now: string): number {
-  return getDb().prepare("UPDATE jobs SET active=0 WHERE last_seen < ? AND active=1").run(now)
-    .changes;
+  return Number(
+    getDb().prepare("UPDATE jobs SET active=0 WHERE last_seen < ? AND active=1").run(now).changes
+  );
 }
 
 // --- answer bank (reusable Q->A context) ----------------------------------
@@ -423,8 +423,8 @@ export interface ApplySession {
 
 export function createSession(mode: string, rules: any): number {
   const info = getDb()
-    .prepare("INSERT INTO apply_sessions (started_at,status,mode,rules_json) VALUES (?,?,?,?)")
-    .run(new Date().toISOString(), "running", mode, JSON.stringify(rules));
+    .prepare("INSERT INTO apply_sessions (started_at,status,mode,rules_json,owner_pid) VALUES (?,?,?,?,?)")
+    .run(new Date().toISOString(), "running", mode, JSON.stringify(rules), process.pid);
   return Number(info.lastInsertRowid);
 }
 export function updateSession(id: number, patch: Partial<ApplySession>): void {
@@ -521,8 +521,8 @@ export interface CrawlRun {
 
 export function createCrawlRun(type: string, trigger = "manual"): number {
   const info = getDb()
-    .prepare("INSERT INTO crawl_runs (type,started_at,status,trigger) VALUES (?,?,?,?)")
-    .run(type, new Date().toISOString(), "running", trigger);
+    .prepare("INSERT INTO crawl_runs (type,started_at,status,trigger,owner_pid) VALUES (?,?,?,?,?)")
+    .run(type, new Date().toISOString(), "running", trigger, process.pid);
   return Number(info.lastInsertRowid);
 }
 export function updateCrawlRun(id: number, patch: Partial<CrawlRun>): void {

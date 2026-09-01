@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/playwright:v1.60.0-jammy
 
 WORKDIR /app
 
-# install deps (better-sqlite3 builds against the image's toolchain)
+# install deps (no native modules — SQLite is built into Node)
 COPY package.json package-lock.json ./
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
 RUN npm ci || npm install

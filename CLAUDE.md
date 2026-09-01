@@ -1,7 +1,7 @@
 # The Remote Ledger — project notes for Claude
 
 Local-first, open-source job-application copilot. React Router 7 (framework mode, SSR)
-+ better-sqlite3. Finds remote roles, tailors a résumé per job with the user's own AI
++ node:sqlite (built into Node — no native deps). Finds remote roles, tailors a résumé per job with the user's own AI
 (CLI subscription OR BYO API key), renders downloadable PDFs, and tracks the pipeline.
 Privacy: data + keys stay on the machine; only the chosen AI provider is called.
 
@@ -29,7 +29,8 @@ shared `Shell`, `Nav`, and the `.panel/.field/.btn/.stat/.badge` primitives in a
 
 ## Conventions
 - `*.server.ts` = server-only; never import into client components.
-- better-sqlite3 is synchronous — fine in loaders/actions.
+- node:sqlite (`DatabaseSync`) is synchronous — fine in loaders/actions. It has no
+  `db.transaction()`; use the `transaction()` helper exported from `app/sqlite.server.ts`.
 - Jobs keyed by `company--role` slug (re-crawls upsert, not duplicate).
 - User-owned fields (application stage, notes) are NEVER overwritten by a crawl.
 - The crawl needs web access; it works best with a CLI runner that has WebSearch (Claude Code).

@@ -136,7 +136,8 @@ CREATE TABLE IF NOT EXISTS apply_sessions (
   total       INTEGER NOT NULL DEFAULT 0,
   processed   INTEGER NOT NULL DEFAULT 0,
   needs_input INTEGER NOT NULL DEFAULT 0,
-  note        TEXT
+  note        TEXT,
+  owner_pid   INTEGER                           -- pid that owns an in-flight session
 );
 
 -- per-job outcome within a session
@@ -200,7 +201,8 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   scraped    INTEGER NOT NULL DEFAULT 0,
   errors     INTEGER NOT NULL DEFAULT 0,
   trigger    TEXT,                              -- manual | scheduler | cli
-  note       TEXT
+  note       TEXT,
+  owner_pid  INTEGER                            -- pid that owns an in-flight run
 );
 CREATE TABLE IF NOT EXISTS crawl_logs (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,

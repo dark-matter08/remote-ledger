@@ -147,4 +147,43 @@ test("kb: accepting a company-experience bullet creates ONE résumé experience 
   assert.equal(getDefaultProfile()!.data.projects.length, 0, "company bullets must NOT become projects");
 });
 
+test("crawl runs: reconcile only clears runs whose owning process is gone", async () => {
+  const { spawn } = await import("node:child_process");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  const insert = (pid: number | null) =>
+    Number(
+      db
+        .prepare("INSERT INTO crawl_runs (type,started_at,status,trigger,owner_pid) VALUES (?,?,?,?,?)")
+        .run("find", new Date().toISOString(), "running", "manual", pid).lastInsertRowid
+    );
+
+  // a real, still-alive process that is NOT us — stands in for `npm run crawl`
+  // running while the app is open (the case that used to get clobbered)
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+  await new Promise<void>((r) => child.once("spawn", () => r()));
+  const liveId = insert(child.pid!);
+
+  // a process that has already exited — a genuine orphan
+  const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await new Promise<void>((r) => gone.once("exit", () => r()));
+  const deadId = insert(gone.pid!);
+
+  // a row written before owner_pid existed — also a genuine orphan
+  const legacyId = insert(null);
+
+  // drop the cached handle so the next getDb() reconciles, as a new process would
+  delete (global as any).__ledgerDb;
+  const db2 = getDb();
+  const statusOf = (id: number) =>
+    (db2.prepare("SELECT status FROM crawl_runs WHERE id=?").get(id) as { status: string }).status;
+
+  assert.equal(statusOf(liveId), "running", "a crawl live in ANOTHER process must survive");
+  assert.equal(statusOf(deadId), "error", "a crawl whose owner exited is reset");
+  assert.equal(statusOf(legacyId), "error", "a pre-owner_pid row is treated as orphaned");
+
+  child.kill();
+});
+
 test.after(cleanup);

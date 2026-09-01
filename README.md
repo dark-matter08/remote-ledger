@@ -154,7 +154,7 @@ pricing.json  DESIGN.md  ROADMAP.md
 
 ## Tech
 
-React Router 7 (SSR) · better-sqlite3 · Playwright · pdf-parse · ImapFlow + mailparser
+React Router 7 (SSR) · node:sqlite (built in, no native deps) · Playwright · pdf-parse · ImapFlow + mailparser
 (read-only email) · d3-force + react-force-graph (knowledge graph) · lucide-react ·
 TypeScript · zero telemetry.
 
