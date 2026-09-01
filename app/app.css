@@ -853,6 +853,19 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 .btn:active { transform: translate(3px,3px); box-shadow: 0 0 0 0 var(--vermillion); }
 .btn[disabled] { opacity: .5; cursor: not-allowed; box-shadow: 3px 3px 0 0 var(--rule-faint); }
 
+/* Accordion — a .panel that folds. The caret flips like the ledger's stage dropdown,
+   and the summary keeps showing state while closed so collapsing never hides what
+   you already chose. */
+.accordion > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; }
+.accordion > summary::-webkit-details-marker { display: none; }
+.accordion > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.accordion-title { font-family: var(--display); font-weight: 600; font-size: 20px; color: var(--ink); }
+.accordion-note { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); margin-left: auto; }
+.accordion-caret { flex: none; align-self: center; color: var(--ink-soft); transition: transform 0.14s ease; }
+.accordion[open] > summary .accordion-caret { transform: rotate(180deg); }
+.accordion > summary:hover .accordion-title { color: var(--vermillion); }
+.accordion-body { margin-top: 12px; }
+
 .badge { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; padding: 3px 8px; border: 1.5px solid currentColor; }
 .badge.ok { color: var(--green); }
 .badge.warn { color: var(--ochre); }

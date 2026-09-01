@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Form, Link } from "react-router";
+import { ChevronDown } from "lucide-react";
 import { Select } from "./Select";
 
 // Pick what goes on the résumé. The Knowledge Base already holds your projects, the
@@ -59,7 +60,6 @@ export function KbBuilder({
   /** pre-ticked because they scored as relevant to that role */
   suggestedIds?: number[];
 }) {
-  const [open, setOpen] = useState(!!jobTitle);
   const [picked, setPicked] = useState<Set<number>>(new Set(suggestedIds || []));
   const [pickedSkills, setPickedSkills] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"new" | "merge">("new");
@@ -84,12 +84,26 @@ export function KbBuilder({
     );
   }
 
+  const chosen = picked.size + pickedSkills.size;
+  // the summary has to keep reporting state, or collapsing it would hide the fact
+  // that a job page arrives with entries already ticked
+  const note = nothing
+    ? "nothing captured yet"
+    : chosen
+      ? `${picked.size} entr${picked.size === 1 ? "y" : "ies"}, ${pickedSkills.size} skill${pickedSkills.size === 1 ? "" : "s"} selected`
+      : jobTitle
+        ? `${sources.length} entries · none selected`
+        : `${sources.length} entries · ${skills.length} skills`;
+
   return (
-    <div className="panel">
-      <h3>
-        Build from your Knowledge Base{" "}
+    <details className="panel accordion">
+      <summary>
+        <span className="accordion-title">Build from your Knowledge Base</span>
         {sources.length ? <span className="badge ok">{sources.length}</span> : <span className="badge off">empty</span>}
-      </h3>
+        <span className="accordion-note">{note}</span>
+        <ChevronDown size={16} className="accordion-caret" />
+      </summary>
+      <div className="accordion-body">
       <p className="hint">
         {jobTitle
           ? `Pick the work that best answers ${jobTitle}. Ticked entries scored as relevant to the posting; change anything you disagree with.`
@@ -100,10 +114,6 @@ export function KbBuilder({
         <p className="hint">
           Nothing captured yet. <Link to="/knowledge" className="entry-title-link">Scan a folder or describe a project ▸</Link>
         </p>
-      ) : !open ? (
-        <button type="button" className="ghost-btn" onClick={() => setOpen(true)}>
-          Choose what to include
-        </button>
       ) : (
         <Form method="post">
           <input type="hidden" name="intent" value="kb-build" />
@@ -211,6 +221,7 @@ export function KbBuilder({
           </div>
         </Form>
       )}
-    </div>
+      </div>
+    </details>
   );
 }
