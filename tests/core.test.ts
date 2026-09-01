@@ -186,4 +186,36 @@ test("crawl runs: reconcile only clears runs whose owning process is gone", asyn
   child.kill();
 });
 
+test("kb: a scan names an unlabelled folder, but never renames one you named", async () => {
+  const { nameSourceFromScan } = await import("../app/services/kb.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const { createCrawlRun, getCrawlRun } = await import("../app/db.server");
+  const db = getDb();
+
+  const mkSource = (label: string | null, path: string) =>
+    Number(
+      db
+        .prepare("INSERT INTO kb_sources (path,label,kind,interval_hours,depth,created_at) VALUES (?,?,?,?,?,?)")
+        .run(path, label, "project", 0, "deep", new Date().toISOString()).lastInsertRowid
+    );
+  const read = (id: number) => db.prepare("SELECT * FROM kb_sources WHERE id=?").get(id) as any;
+
+  // a folder you added without typing a name gets the name the scan inferred
+  const unnamed = mkSource(null, "/tmp/ledger-test-unnamed");
+  const runA = createCrawlRun("scan", "kb");
+  nameSourceFromScan(runA, read(unnamed), "The Ezz Show");
+  assert.equal(read(unnamed).label, "The Ezz Show", "inferred name fills an empty label");
+  assert.match(getCrawlRun(runA)!.note!, /^The Ezz Show · /, "crawl shell shows the name, not a bare path");
+
+  // a name you typed yourself survives every future re-scan
+  const named = mkSource("My Own Name", "/tmp/ledger-test-named");
+  nameSourceFromScan(createCrawlRun("scan", "kb"), read(named), "Something Else");
+  assert.equal(read(named).label, "My Own Name", "a label you set is never renamed by a scan");
+
+  // nothing usable inferred -> leave it unnamed rather than writing junk
+  const blank = mkSource(null, "/tmp/ledger-test-blank");
+  nameSourceFromScan(createCrawlRun("scan", "kb"), read(blank), "   ");
+  assert.equal(read(blank).label, null, "a blank title does not set a label");
+});
+
 test.after(cleanup);
