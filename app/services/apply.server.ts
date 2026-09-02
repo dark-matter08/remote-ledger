@@ -267,10 +267,16 @@ export async function prefillJobOnPage(
   // once, in the same pool the auto-apply sessions use. Previously these were reported
   // in a message and then forgotten, so there was no way to feed an answer back.
   if (opts.draftMissing) {
-    const asked = new Set(questionFields(peek).map(normQ));
+    // prefillPage truncates labels to 50 chars for its summary, so match on prefix and
+    // pool the FULL question. Exact matching silently dropped anything longer than that,
+    // which is how "Please provide a link to a code sample you're particularly proud of:"
+    // stayed invisible: never filled, never asked.
+    const asks = questionFields(peek);
     for (const u of unfilled) {
-      if (!asked.has(normQ(u))) continue; // uploads and identity fields are not questions
-      addQuestion({ jobId, question: u });
+      const n = normQ(u);
+      const full = asks.find((q) => normQ(q) === n || normQ(q).startsWith(n));
+      if (!full) continue; // uploads and identity fields are not questions
+      addQuestion({ jobId, question: full });
       pooled++;
     }
   }

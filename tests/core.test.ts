@@ -548,4 +548,29 @@ test("prefill: the real Sticker Mule fields are recognised and filled", async ()
   assert.equal(matchAnswer("Where are you located?", bank), null, "unrelated labels do not borrow answers");
 });
 
+test("prefill: a long question label still gets pooled", async () => {
+  const { normQ } = await import("../app/db.server");
+  const { questionFields } = await import("../app/services/prefill.server");
+
+  // prefillPage reports unfilled labels truncated to 50 chars; pooling looks them up
+  // against the full list. Exact matching dropped anything longer, so the required
+  // "code sample" field was never filled AND never asked about.
+  const label = "Please provide a link to a code sample you're particularly proud of:";
+  assert.ok(label.length > 50, "this is the case that broke");
+  const truncated = label.slice(0, 50);
+
+  const asks = questionFields([
+    { tag: "input", type: "text", name: "", id: "", label, visible: true, combo: false },
+    { tag: "textarea", type: "", name: "", id: "", label: "Why are you proud of the code?", visible: true, combo: false },
+  ] as any);
+
+  assert.equal(asks.find((q: string) => normQ(q) === normQ(truncated)), undefined, "exact match fails — the old bug");
+  const found = asks.find((q: string) => normQ(q) === normQ(truncated) || normQ(q).startsWith(normQ(truncated)));
+  assert.equal(found, label, "prefix match recovers the full question, which is what gets pooled");
+
+  // short labels were never affected and must keep working
+  const short = "Why are you proud of the code?";
+  assert.equal(asks.find((q: string) => normQ(q).startsWith(normQ(short.slice(0, 50)))), short);
+});
+
 test.after(cleanup);

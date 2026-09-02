@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Form, Link, useNavigation, useFetcher } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
@@ -19,11 +19,13 @@ import {
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
 import { kbBuildSources, kbAllSkills, rankKbForJob, buildResumeFromKb, type BuildInclude } from "../resume/build.server";
+import { draftAnswer } from "../resume/ai.server";
+import { kbContext } from "../services/kb.server";
 import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
-import { RefreshCw, Check, X, Circle } from "lucide-react";
+import { RefreshCw, Check, X, Circle, Sparkles } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -71,6 +73,15 @@ export async function action({ request, params }: Route.ActionArgs) {
   const job = getJob(params.id);
   if (!job) throw new Response("Not found", { status: 404 });
   try {
+    if (intent === "polish-pooled") {
+      const base = getDefaultProfile()?.data;
+      if (!base) return { error: "Upload a résumé first." };
+      const r = await loggedTask("answers", `Answer · ${job.company} — ${job.role}`, async (L) => {
+        L("step", "Writing a finished answer from your notes…");
+        return draftAnswer(base, String(form.get("question") || ""), ctx(job), kbContext(), String(form.get("notes") || ""));
+      });
+      return { ok: true, polished: r.text, qid: String(form.get("qid") || "") };
+    }
     if (intent === "answer-pooled") {
       answerPooledQuestion(Number(form.get("qid")), String(form.get("answer") || "").trim());
       return { ok: true, msg: "Saved. Prefill again and it will use this answer." };
@@ -216,8 +227,13 @@ type Tab = (typeof TABS)[number];
 // same thing — fills it in automatically.
 function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
   const fetcher = useFetcher<any>();
+  const ai = useFetcher<any>();
   const [text, setText] = useState("");
   const saving = fetcher.state !== "idle";
+  const polishing = ai.state !== "idle";
+
+  // notes in, finished answer out — the raw jottings are never what gets submitted
+  useEffect(() => { if (ai.data?.polished) setText(ai.data.polished); }, [ai.data]);
   if (q.answer)
     return (
       <div className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, margin: "6px 0" }}>
@@ -231,8 +247,28 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
       <div style={{ fontFamily: "var(--serif)", fontSize: 15, marginBottom: 6 }}>
         <Circle size={12} style={{ transform: "translateY(1px)" }} /> {q.question}
       </div>
-      <textarea name="answer" value={text} onChange={(e) => setText(e.target.value)} placeholder="Your answer…" style={{ minHeight: 64, width: "100%", boxSizing: "border-box", display: "block", marginBottom: 8 }} />
-      <button className="ghost-btn" disabled={busy || saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
+      <div className="field" style={{ margin: 0 }}>
+        <textarea
+          name="answer"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={polishing ? "Writing it up from your notes…" : "Jot the facts. Rough notes are fine — AI write-up turns them into the finished answer."}
+          style={{ minHeight: 92 }}
+        />
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+        <button className="ghost-btn" disabled={busy || saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
+        <button
+          type="button"
+          className="ghost-btn"
+          disabled={polishing || !text.trim()}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          onClick={() => ai.submit({ intent: "polish-pooled", qid: q.id, question: q.question, notes: text }, { method: "post" })}
+        >
+          <Sparkles size={13} /> {polishing ? "Writing…" : "AI write-up from my notes"}
+        </button>
+        {ai.data?.error && <span className="hint" style={{ margin: 0, color: "var(--vermillion)" }}>{ai.data.error}</span>}
+      </div>
     </fetcher.Form>
   );
 }
