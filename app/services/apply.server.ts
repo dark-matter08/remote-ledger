@@ -8,10 +8,10 @@
 // this module wires it to the DB: artifact generation, freshness gate, persistence.
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { getJob, getMeta, setMeta, addEvent, markClosed, setApplyUrl, jobApplyActivity, answerBank } from "../db.server";
+import { getJob, getMeta, setMeta, addEvent, markClosed, setApplyUrl, jobApplyActivity, answerBank, addQuestion, lookupAnswer, normQ } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { latestVersion, createVersion, setVersionPdf } from "../resume/versions.server";
-import { tailorResume, coverLetter, chooseSelectOptions } from "../resume/ai.server";
+import { tailorResume, coverLetter, chooseSelectOptions, draftSessionAnswers, type JobCtx } from "../resume/ai.server";
 import { renderResumePdf } from "../resume/pdf.server";
 import { verifyApplyUrl, renderWaitFor } from "./scrape.server";
 import { loggedTask } from "./crawl.server";
@@ -182,7 +182,17 @@ export async function freshnessGate(jobId: string): Promise<{ ok: boolean; final
 // résumé/cover first if the form requires them). Persists the result + screenshots.
 // Used by both assistApply (own headed browser) and the apply SESSION (shared browser,
 // one tab per job). NEVER submits.
-export async function prefillJobOnPage(jobId: string, page: any, log?: (msg: string) => void): Promise<AssistResult> {
+/**
+ * @param opts.draftMissing draft answers for questions the form asks that we have no
+ * answer for, and pool whatever the model cannot answer truthfully. A session already
+ * did both before calling this, so it leaves this off to avoid drafting twice.
+ */
+export async function prefillJobOnPage(
+  jobId: string,
+  page: any,
+  log?: (msg: string) => void,
+  opts: { draftMissing?: boolean } = {}
+): Promise<AssistResult> {
   const at = new Date().toISOString();
   const say = log || (() => {});
   const job = getJob(jobId);
@@ -195,7 +205,34 @@ export async function prefillJobOnPage(jobId: string, page: any, log?: (msg: str
   const peek = (await page.evaluate(EXTRACT_FIELDS)) as FormField[];
   const ens = await ensureForForm(job, peek, pdfPath, cover);
   pdfPath = ens.pdfPath; cover = ens.cover;
-  const { generated, qa } = ens;
+  const { generated } = ens;
+  const qa = [...ens.qa];
+
+  // Draft answers for what this form actually asks. Without this the assist flow only
+  // ever reused answers drafted earlier, so an open question like "Why are you proud of
+  // the code?" came back unfilled even though the résumé and knowledge base can answer
+  // it perfectly well.
+  let pooled = 0;
+  if (opts.draftMissing) {
+    const base = getDefaultProfile()?.data;
+    const answered = new Set(qa.map((x) => normQ(x.q)));
+    const asks = questionFields(peek).filter((q) => !answered.has(normQ(q)));
+    if (base && asks.length) {
+      const known: Record<string, string> = {};
+      for (const q of asks) { const a = lookupAnswer(q); if (a) known[q] = a; }
+      say(`Drafting ${asks.length} answer(s) this form asks for…`);
+      try {
+        const ctx: JobCtx = { id: job.id, company: job.company, role: job.role, stack: job.stack, eligibility: job.eligibility, jd: job.jd };
+        const { items } = await draftSessionAnswers(base, ctx, asks, known);
+        for (const it of items) {
+          const banked = lookupAnswer(it.question);
+          // only genuinely unanswerable things (visa, salary, clearance) get pooled
+          if (it.needsInput && !banked) { addQuestion({ jobId, question: it.question }); pooled++; }
+          else qa.push({ q: it.question, a: banked || it.answer });
+        }
+      } catch (e: any) { say(`Could not draft answers (${e.message}).`); }
+    }
+  }
 
   // Decide dropdown answers (years of experience, salary band, country, business domain…)
   // by letting the LLM pick from each dropdown's REAL options, grounded in résumé + KB.
@@ -226,11 +263,23 @@ export async function prefillJobOnPage(jobId: string, page: any, log?: (msg: str
     await page.screenshot({ path: shot, fullPage: true });
   } catch { shot = null; }
 
+  // Anything still unfilled that is a real question becomes something you can answer
+  // once, in the same pool the auto-apply sessions use. Previously these were reported
+  // in a message and then forgotten, so there was no way to feed an answer back.
+  if (opts.draftMissing) {
+    const asked = new Set(questionFields(peek).map(normQ));
+    for (const u of unfilled) {
+      if (!asked.has(normQ(u))) continue; // uploads and identity fields are not questions
+      addQuestion({ jobId, question: u });
+      pooled++;
+    }
+  }
+
   const total = filled.length + unfilled.length;
   const confidence = total ? Math.round((filled.length / total) * 100) : 0;
   const result: AssistResult = {
     ok: true, filled, unfilled, ats, confidence, at, shot,
-    message: `${ats}: ${generated.length ? `generated ${generated.join(" + ")}, ` : ""}prefilled ${filled.length} field(s)${unfilled.length ? `, ${unfilled.length} need your input` : ""} — ${confidence}% ready. ${HEADLESS ? "Headless run (screenshot saved)." : "Review everything in the open browser and click Submit yourself; it never submits."}`,
+    message: `${ats}: ${generated.length ? `generated ${generated.join(" + ")}, ` : ""}prefilled ${filled.length} field(s)${unfilled.length ? `, ${unfilled.length} need your input` : ""} — ${confidence}% ready.${pooled ? ` ${pooled} question(s) added below for you to answer once — answer them and prefill again.` : ""} ${HEADLESS ? "Headless run (screenshot saved)." : "Review everything in the open browser and click Submit yourself; it never submits."}`,
   };
   setMeta(`assist:${jobId}`, JSON.stringify(result));
   addEvent(jobId, "assist_prefill", { ats, filled: filled.length, unfilled: unfilled.length, confidence, generated });
@@ -264,7 +313,7 @@ export async function assistApply(jobId: string, log?: (msg: string) => void): P
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(renderWaitFor(url)); // React ATSes need a beat to hydrate
 
-    const result = await prefillJobOnPage(jobId, page, say);
+    const result = await prefillJobOnPage(jobId, page, say, { draftMissing: true });
 
     // in headless (test/server) mode there's no one to submit, so close; headed stays open
     if (HEADLESS && browser) await browser.close().catch(() => {});

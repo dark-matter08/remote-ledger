@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Form, Link, useNavigation } from "react-router";
+import { Form, Link, useNavigation, useFetcher } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -14,6 +14,7 @@ import {
   getMeta,
   setMeta,
   jobApplyActivity,
+  answerPooledQuestion,
 } from "../db.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
@@ -70,6 +71,10 @@ export async function action({ request, params }: Route.ActionArgs) {
   const job = getJob(params.id);
   if (!job) throw new Response("Not found", { status: 404 });
   try {
+    if (intent === "answer-pooled") {
+      answerPooledQuestion(Number(form.get("qid")), String(form.get("answer") || "").trim());
+      return { ok: true, msg: "Saved. Prefill again and it will use this answer." };
+    }
     if (intent === "kb-build") {
       const r = buildResumeFromKb({
         mode: String(form.get("mode")) === "merge" ? "merge" : "new",
@@ -205,6 +210,32 @@ export async function action({ request, params }: Route.ActionArgs) {
 
 const TABS = ["Overview", "Tailor", "Cover", "Apply", "Prep", "Application", "History"] as const;
 type Tab = (typeof TABS)[number];
+
+// A question the prefill could not answer truthfully. Answering it here writes to the
+// shared answer bank, so the next prefill of this job — and any other form asking the
+// same thing — fills it in automatically.
+function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
+  const fetcher = useFetcher<any>();
+  const [text, setText] = useState("");
+  const saving = fetcher.state !== "idle";
+  if (q.answer)
+    return (
+      <div className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, margin: "6px 0" }}>
+        <Check size={12} style={{ transform: "translateY(1px)" }} /> {q.question} — <em>{q.answer}</em>
+      </div>
+    );
+  return (
+    <fetcher.Form method="post" style={{ margin: "10px 0" }}>
+      <input type="hidden" name="intent" value="answer-pooled" />
+      <input type="hidden" name="qid" value={q.id} />
+      <div style={{ fontFamily: "var(--serif)", fontSize: 15, marginBottom: 6 }}>
+        <Circle size={12} style={{ transform: "translateY(1px)" }} /> {q.question}
+      </div>
+      <textarea name="answer" value={text} onChange={(e) => setText(e.target.value)} placeholder="Your answer…" style={{ minHeight: 64, width: "100%", boxSizing: "border-box", display: "block", marginBottom: 8 }} />
+      <button className="ghost-btn" disabled={busy || saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
+    </fetcher.Form>
+  );
+}
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
   const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
@@ -404,6 +435,24 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             </div>
           )}
 
+          {applyActivity.pooled.length > 0 && (
+            <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 8 }}>
+              <h3 style={{ fontSize: 16, marginTop: 10 }}>
+                Needs your input{" "}
+                {applyActivity.pooled.some((q: any) => !q.answer)
+                  ? <span className="badge warn">{applyActivity.pooled.filter((q: any) => !q.answer).length}</span>
+                  : <span className="badge ok">answered</span>}
+              </h3>
+              <p className="hint">
+                The form asked these and they could not be answered truthfully from your résumé.
+                Answer once and it is reused everywhere, including the next prefill of this job.
+              </p>
+              {applyActivity.pooled.map((q: any) => (
+                <PooledQuestion key={q.id} q={q} busy={busy} />
+              ))}
+            </div>
+          )}
+
           {applyActivity.sessions.length > 0 && (
             <div className="version" style={{ borderTop: "1.5px solid var(--rule)", marginTop: 8 }}>
               <h3 style={{ fontSize: 16, marginTop: 10 }}>In auto-apply sessions</h3>
@@ -414,16 +463,6 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                   <span>· {s.questions} q · {s.unanswered} unanswered</span>
                 </div>
               ))}
-              {applyActivity.pooled.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <p className="hint">Questions the agent pooled for this job:</p>
-                  {applyActivity.pooled.map((q: any) => (
-                    <div key={q.id} className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, margin: "4px 0" }}>
-                      {q.answer ? <Check size={12} style={{ transform: "translateY(1px)" }} /> : <Circle size={12} style={{ transform: "translateY(1px)" }} />} {q.question}{q.answer ? <> — <em>{q.answer}</em></> : <> — <Link to="/apply" className="entry-title-link">answer in the Apply room</Link></>}
-                    </div>
-                  ))}
-                </div>
-              )}
               {applyActivity.answers.length > 0 && (
                 <details style={{ marginTop: 10 }}>
                   <summary style={{ cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-faint)" }}>
