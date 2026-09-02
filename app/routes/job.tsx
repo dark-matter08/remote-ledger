@@ -450,6 +450,21 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               {applyActivity.pooled.map((q: any) => (
                 <PooledQuestion key={q.id} q={q} busy={busy} />
               ))}
+              {applyActivity.pooled.some((q: any) => q.answer) && (
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12, borderTop: "1px solid var(--rule-faint)", paddingTop: 12 }}>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="assist-apply" />
+                    <button className="btn" disabled={busy}>
+                      {running === "assist-apply" ? "Opening browser…" : "Prefill again with these answers ▸"}
+                    </button>
+                  </Form>
+                  <span className="hint" style={{ margin: 0 }}>
+                    {applyActivity.pooled.filter((q: any) => !q.answer).length
+                      ? `${applyActivity.pooled.filter((q: any) => !q.answer).length} still unanswered — prefilling now fills the rest`
+                      : "Answers are saved. Prefilling now fills these in for you."}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
