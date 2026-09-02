@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Form, Link } from "react-router";
+import { ChevronDown } from "lucide-react";
 import { Select } from "./Select";
 
 // Pick what goes on the résumé. The Knowledge Base already holds your projects, the
@@ -19,6 +20,29 @@ export interface KbSourceView {
   bullets: string[];
 }
 
+// Defined at module scope on purpose: a component declared inside the render body is
+// a new type on every render, so React unmounts and remounts the entire list each
+// time you tick a box.
+function PickRow({ s, checked, onToggle }: { s: KbSourceView; checked: boolean; onToggle: () => void }) {
+  return (
+    <label
+      className="kb-pick"
+      style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderTop: "1px solid var(--rule-faint)", cursor: "pointer" }}
+    >
+      <input type="checkbox" name="itemId" value={s.id} checked={checked} onChange={onToggle} style={{ marginTop: 4 }} />
+      <span style={{ flex: 1 }}>
+        <strong>{s.title}</strong>{" "}
+        {s.role ? <span className="hint" style={{ margin: 0 }}>{s.role}</span> : null}
+        {s.start_date ? <span className="hint" style={{ margin: 0 }}> · {s.start_date}{s.end_date ? `-${s.end_date}` : ""}</span> : null}
+        <span className="hint" style={{ margin: 0, display: "block", textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
+          {s.bullets.length} bullet{s.bullets.length === 1 ? "" : "s"}
+          {s.tags.length ? ` · ${s.tags.slice(0, 6).join(", ")}` : ""}
+        </span>
+      </span>
+    </label>
+  );
+}
+
 export function KbBuilder({
   sources,
   skills,
@@ -36,7 +60,6 @@ export function KbBuilder({
   /** pre-ticked because they scored as relevant to that role */
   suggestedIds?: number[];
 }) {
-  const [open, setOpen] = useState(!!jobTitle);
   const [picked, setPicked] = useState<Set<number>>(new Set(suggestedIds || []));
   const [pickedSkills, setPickedSkills] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"new" | "merge">("new");
@@ -61,38 +84,26 @@ export function KbBuilder({
     );
   }
 
-  const Row = ({ s }: { s: KbSourceView }) => (
-    <label
-      key={s.id}
-      className="kb-pick"
-      style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderTop: "1px solid var(--rule-faint)", cursor: "pointer" }}
-    >
-      <input
-        type="checkbox"
-        name="itemId"
-        value={s.id}
-        checked={picked.has(s.id)}
-        onChange={() => toggle(picked, s.id, setPicked)}
-        style={{ marginTop: 4 }}
-      />
-      <span style={{ flex: 1 }}>
-        <strong>{s.title}</strong>{" "}
-        {s.role ? <span className="hint" style={{ margin: 0 }}>{s.role}</span> : null}
-        {s.start_date ? <span className="hint" style={{ margin: 0 }}> · {s.start_date}{s.end_date ? `-${s.end_date}` : ""}</span> : null}
-        <span className="hint" style={{ margin: 0, display: "block", textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-          {s.bullets.length} bullet{s.bullets.length === 1 ? "" : "s"}
-          {s.tags.length ? ` · ${s.tags.slice(0, 6).join(", ")}` : ""}
-        </span>
-      </span>
-    </label>
-  );
+  const chosen = picked.size + pickedSkills.size;
+  // the summary has to keep reporting state, or collapsing it would hide the fact
+  // that a job page arrives with entries already ticked
+  const note = nothing
+    ? "nothing captured yet"
+    : chosen
+      ? `${picked.size} entr${picked.size === 1 ? "y" : "ies"}, ${pickedSkills.size} skill${pickedSkills.size === 1 ? "" : "s"} selected`
+      : jobTitle
+        ? `${sources.length} entries · none selected`
+        : `${sources.length} entries · ${skills.length} skills`;
 
   return (
-    <div className="panel">
-      <h3>
-        Build from your Knowledge Base{" "}
+    <details className="panel accordion">
+      <summary>
+        <span className="accordion-title">Build from your Knowledge Base</span>
         {sources.length ? <span className="badge ok">{sources.length}</span> : <span className="badge off">empty</span>}
-      </h3>
+        <span className="accordion-note">{note}</span>
+        <ChevronDown size={16} className="accordion-caret" />
+      </summary>
+      <div className="accordion-body">
       <p className="hint">
         {jobTitle
           ? `Pick the work that best answers ${jobTitle}. Ticked entries scored as relevant to the posting; change anything you disagree with.`
@@ -103,10 +114,6 @@ export function KbBuilder({
         <p className="hint">
           Nothing captured yet. <Link to="/knowledge" className="entry-title-link">Scan a folder or describe a project ▸</Link>
         </p>
-      ) : !open ? (
-        <button type="button" className="ghost-btn" onClick={() => setOpen(true)}>
-          Choose what to include
-        </button>
       ) : (
         <Form method="post">
           <input type="hidden" name="intent" value="kb-build" />
@@ -116,13 +123,13 @@ export function KbBuilder({
           {experience.length > 0 && (
             <>
               <div className="field" style={{ marginBottom: 0 }}><label>Experience</label></div>
-              {experience.map((s) => <Row key={s.id} s={s} />)}
+              {experience.map((s) => <PickRow key={s.id} s={s} checked={picked.has(s.id)} onToggle={() => toggle(picked, s.id, setPicked)} />)}
             </>
           )}
           {projects.length > 0 && (
             <>
               <div className="field" style={{ marginBottom: 0, marginTop: 14 }}><label>Projects</label></div>
-              {projects.map((s) => <Row key={s.id} s={s} />)}
+              {projects.map((s) => <PickRow key={s.id} s={s} checked={picked.has(s.id)} onToggle={() => toggle(picked, s.id, setPicked)} />)}
             </>
           )}
 
@@ -207,11 +214,14 @@ export function KbBuilder({
               {busy ? "Building…" : "Build résumé"}
             </button>
             <span className="hint" style={{ margin: 0 }}>
-              {picked.size} entr{picked.size === 1 ? "y" : "ies"}, {pickedSkills.size} skill{pickedSkills.size === 1 ? "" : "s"} selected
+              {picked.size === 0 && pickedSkills.size === 0
+                ? "Tick at least one entry or skill to enable this"
+                : `${picked.size} entr${picked.size === 1 ? "y" : "ies"}, ${pickedSkills.size} skill${pickedSkills.size === 1 ? "" : "s"} selected`}
             </span>
           </div>
         </Form>
       )}
-    </div>
+      </div>
+    </details>
   );
 }
