@@ -23,6 +23,7 @@ import {
 } from "../db.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 import { draftSessionAnswers, type JobCtx } from "../resume/ai.server";
+import { kbContext } from "./kb.server";
 import { detectFormFields, questionFields, prefillJobOnPage, applyFormUrl, APPLY_HEADLESS } from "./apply.server";
 import { resolveLive, renderWaitFor } from "./scrape.server";
 
@@ -173,7 +174,7 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
         if (a) known[q] = a;
       }
       const ctx: JobCtx = { id: job.id, company: job.company, role: job.role, jd: job.jd };
-      const { items } = await draftSessionAnswers(profile.data, ctx, qs, known);
+      const { items } = await draftSessionAnswers(profile.data, ctx, qs, known, kbContext());
 
       let unanswered = 0;
       const drafted: { question: string; answer: string }[] = [];

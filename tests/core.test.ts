@@ -503,4 +503,49 @@ test("prefill: only a résumé field gets the résumé", async () => {
   assert.equal(fileFieldRole("", ""), "unlabelled");
 });
 
+test("prefill: the real Sticker Mule fields are recognised and filled", async () => {
+  const { isQuestionField, questionFields, valueForIdentity, matchAnswer } =
+    await import("../app/services/prefill.server");
+
+  const contact = {
+    name: "Nde Che Lucien Ngwa",
+    email: "chelucien08@gmail.com",
+    phone: "+237 650 002 952",
+    location: "Yaounde, Cameroon",
+    links: [{ label: "GitHub", url: "github.com/dark-matter08" }],
+  } as any;
+
+  // "located" is not "location" — this label silently matched nothing
+  assert.equal(valueForIdentity("Where are you located?", "", "", contact), "Yaounde, Cameroon");
+  assert.equal(valueForIdentity("Where do you live?", "", "", contact), "Yaounde, Cameroon");
+  assert.equal(valueForIdentity("Location", "", "", contact), "Yaounde, Cameroon");
+  assert.equal(valueForIdentity("Email", "", "", contact), "chelucien08@gmail.com");
+
+  // a long label is a question even without a question mark, so it gets drafted or asked
+  assert.ok(isQuestionField("Please provide a link to a code sample you're particularly proud of:", "input"));
+  assert.ok(isQuestionField("How did you hear about us?", "input"), "questions are not always textareas");
+  assert.ok(isQuestionField("", "textarea"));
+  assert.ok(!isQuestionField("Email", "input"), "identity fields are not questions");
+  assert.ok(!isQuestionField("Location", "input"));
+
+  // both of the fields that were skipped now reach the question list
+  const fields = [
+    { tag: "input", type: "text", name: "", id: "", label: "Email", visible: true, combo: false },
+    { tag: "input", type: "text", name: "", id: "", label: "Where are you located?", visible: true, combo: false },
+    { tag: "input", type: "text", name: "", id: "", label: "How did you hear about us?", visible: true, combo: false },
+    { tag: "input", type: "text", name: "", id: "", label: "Please provide a link to a code sample you're particularly proud of:", visible: true, combo: false },
+    { tag: "textarea", type: "", name: "", id: "", label: "Why are you proud of the code?", visible: true, combo: false },
+  ] as any;
+  const qs = questionFields(fields);
+  assert.ok(qs.includes("How did you hear about us?"));
+  assert.ok(qs.includes("Please provide a link to a code sample you're particularly proud of:"));
+  assert.ok(qs.includes("Why are you proud of the code?"));
+  assert.ok(!qs.includes("Email"), "identity fields must not be drafted as questions");
+
+  // a banked answer reaches a single-line input, which is where it failed before
+  const bank = [{ q: "How did you hear about us?", a: "Through a tool I built." }];
+  assert.equal(matchAnswer("How did you hear about us?", bank), "Through a tool I built.");
+  assert.equal(matchAnswer("Where are you located?", bank), null, "unrelated labels do not borrow answers");
+});
+
 test.after(cleanup);

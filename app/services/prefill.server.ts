@@ -34,7 +34,7 @@ export function valueForIdentity(label: string, name: string, id: string, c: Res
   if (/linkedin/.test(k)) return find(/linkedin/i) || null;
   if (/github/.test(k)) return find(/github/i) || null;
   if (short && /portfolio|personal (site|website)|\bwebsite\b|urls\[other\]/.test(k)) return find(/.*/) || null;
-  if (short && /\blocation\b|^city\b|\bcountry\b|where.*based/.test(k)) return c.location || null;
+  if (short && /\blocat(ion|ed)\b|^city\b|\bcountry\b|where.*(based|located|live)/.test(k)) return c.location || null;
   if (short && /full[\s_-]?name|your name|\bname\b/.test(k)) return c.name || null; // after first/last
   return null;
 }
@@ -68,14 +68,22 @@ export function detectAts(url: string): string {
 }
 
 // Free-text questions worth drafting answers for.
+const QUESTION_WORDS = /\?|why|describe|tell us|cover|motivat|interest|fit|about you|experience/i;
+
+/**
+ * Is this field asking something, as opposed to collecting an identity detail?
+ *
+ * A long label is the giveaway even without a question mark: "Please provide a link
+ * to a code sample you're particularly proud of:" asks for something, and treating it
+ * as a question is what gets it drafted, or pooled and asked. valueForIdentity uses
+ * the same 30-character line to decide the opposite way.
+ */
+export function isQuestionField(label: string, tag: string): boolean {
+  return tag === "textarea" || QUESTION_WORDS.test(label) || label.trim().length > 30;
+}
+
 export function questionFields(fields: FormField[]): string[] {
-  return fields
-    .filter(
-      (f) =>
-        f.tag === "textarea" ||
-        /\?|why|describe|tell us|cover|motivat|interest|fit|about you|experience/i.test(f.label)
-    )
-    .map((f) => f.label);
+  return fields.filter((f) => isQuestionField(f.label, f.tag)).map((f) => f.label);
 }
 
 const toks = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w.length > 2));
@@ -393,8 +401,12 @@ export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOu
         continue;
       }
 
-      if (meta.tag === "textarea") {
-        if (isCoverField(meta.label, meta.name) && cover) {
+      // Questions are not always textareas. Ashby renders "How did you hear about us?"
+      // and "provide a link to a code sample" as single-line inputs, so restricting this
+      // to textareas meant a banked answer was never typed in, and — worse — the field
+      // was never reported as unfilled either, so it was never pooled or asked about.
+      if (isQuestionField(meta.label, meta.tag)) {
+        if (meta.tag === "textarea" && isCoverField(meta.label, meta.name) && cover) {
           await el.fill(cover);
           filled.push("cover letter");
           log(`✓ cover letter`);
@@ -408,6 +420,7 @@ export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOu
           continue;
         }
         if (meta.label) unfilled.push(meta.label.slice(0, 50));
+        continue;
       }
     } catch {
       /* skip uncooperative field */

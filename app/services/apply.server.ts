@@ -223,7 +223,7 @@ export async function prefillJobOnPage(
       say(`Drafting ${asks.length} answer(s) this form asks for…`);
       try {
         const ctx: JobCtx = { id: job.id, company: job.company, role: job.role, stack: job.stack, eligibility: job.eligibility, jd: job.jd };
-        const { items } = await draftSessionAnswers(base, ctx, asks, known);
+        const { items } = await draftSessionAnswers(base, ctx, asks, known, kbContext());
         for (const it of items) {
           const banked = lookupAnswer(it.question);
           // only genuinely unanswerable things (visa, salary, clearance) get pooled
