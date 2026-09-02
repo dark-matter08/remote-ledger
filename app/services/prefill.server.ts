@@ -138,6 +138,21 @@ export interface PrefillOutcome {
 const isCoverField = (label: string, name: string) =>
   /cover ?letter/.test(`${label} ${name}`.toLowerCase());
 
+/**
+ * What a file input is actually asking for. A form can have several, and they are not
+ * interchangeable: uploading your résumé into "provide a sample of your technical
+ * writing" sends the wrong document to a recruiter, and used to be counted as success.
+ *
+ * "unlabelled" is the common single-input case, where the field is conventionally the
+ * résumé; the caller only treats the FIRST such field that way.
+ */
+export function fileFieldRole(label: string, name: string): "resume" | "cover" | "unlabelled" | "other" {
+  const t = `${label} ${name}`.toLowerCase();
+  if (/resum|\bcv\b|curriculum ?vitae/.test(t)) return "resume";
+  if (/cover ?letter/.test(t)) return "cover";
+  return label.trim() || name.trim() ? "other" : "unlabelled";
+}
+
 const normLabel = (s: string) => s.toLowerCase().replace(/[*]/g, "").replace(/\s+/g, " ").trim();
 // Exact (normalized) match. Labels on a form are unique, and loose substring matching is
 // dangerous: "Country" is a substring of "What is your current country of residence?".
@@ -322,6 +337,7 @@ export async function collectDropdownOptions(page: any): Promise<{ label: string
 // NEVER submits.
 export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOutcome> {
   const { contact, pdfPath, qa, cover } = ctx;
+  let resumeUploaded = false; // a form can have several file inputs; only one is the résumé
   const log = ctx.log || (() => {});
   const filled: string[] = [];
   const unfilled: string[] = [];
@@ -350,11 +366,22 @@ export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOu
       if (!meta.visible || meta.combo) continue;
 
       if (meta.type === "file") {
-        if (pdfPath) {
+        const role = fileFieldRole(meta.label, meta.name);
+        const takesResume = role === "resume" || (role === "unlabelled" && !resumeUploaded);
+        if (takesResume && pdfPath) {
           await el.setInputFiles(pdfPath);
+          resumeUploaded = true;
           filled.push("résumé (upload)");
           log(`✓ uploaded résumé`);
-        } else unfilled.push("résumé upload");
+        } else if (takesResume) {
+          unfilled.push("résumé upload");
+        } else {
+          // a writing sample, portfolio or transcript is not your résumé; report it so
+          // it gets pooled and asked rather than quietly filled with the wrong file
+          const what = meta.label.slice(0, 50) || "file upload";
+          unfilled.push(what);
+          log(`· "${what}" wants a file that is not your résumé — left for you`);
+        }
         continue;
       }
 

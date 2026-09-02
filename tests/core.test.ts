@@ -485,4 +485,22 @@ test("resume builder: composes from picked KB entries without losing identity", 
   assert.ok(buildResumeFromKb({ mode: "new", itemIds: [], skills: [] }).error, "picking nothing is refused");
 });
 
+test("prefill: only a résumé field gets the résumé", async () => {
+  const { fileFieldRole } = await import("../app/services/prefill.server");
+
+  for (const l of ["Resume", "Resume/CV *", "Upload your CV", "Curriculum Vitae"])
+    assert.equal(fileFieldRole(l, ""), "resume", l);
+  assert.equal(fileFieldRole("", "resume_file"), "resume", "falls back to the input name");
+
+  assert.equal(fileFieldRole("Cover Letter", ""), "cover");
+
+  // the field that caused this: uploading a résumé here sends the wrong document
+  assert.equal(fileFieldRole("Please provide a sample of your technical writing.", ""), "other");
+  assert.equal(fileFieldRole("Portfolio", ""), "other");
+  assert.equal(fileFieldRole("Transcript", ""), "other");
+
+  // a lone unlabelled file input is conventionally the résumé
+  assert.equal(fileFieldRole("", ""), "unlabelled");
+});
+
 test.after(cleanup);
