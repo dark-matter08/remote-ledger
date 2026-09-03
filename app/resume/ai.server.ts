@@ -82,15 +82,16 @@ export async function tailorResume(
 
 // ---- draft a single application answer -------------------------------------
 // Answer one application question in the candidate's voice using ONLY résumé facts.
-export async function draftAnswer(base: Resume, question: string, job?: JobCtx, kb?: string): Promise<{ text: string; callId?: number }> {
+export async function draftAnswer(base: Resume, question: string, job?: JobCtx, kb?: string, notes?: string): Promise<{ text: string; callId?: number }> {
   const r = await runLLM({
     purpose: "misc",
     temperature: 0.4,
     maxTokens: 600,
     system:
       "You answer a job-application question in the candidate's voice (first person), using ONLY facts from their résumé AND their knowledge base (recent projects they've captured). Prefer the most relevant and recent evidence. Be specific and concise. NEVER invent employers, projects, dates, or metrics. If the evidence lacks the detail, give an honest, reasonable answer without fabricating specifics.\n\n" +
+      "When the candidate gives you notes, they are rough jottings, not the answer. Treat every fact in them as true and keep all of them, but write the finished reply yourself: fix the typos, finish the half-sentences, drop anything addressed to you rather than the employer, and put it in their voice. Never hand their raw notes back.\n\n" +
       HUMAN_STYLE,
-    prompt: `CANDIDATE RÉSUMÉ (JSON):\n${JSON.stringify(base)}\n${kb ? `\nKNOWLEDGE BASE — recent projects & skills the candidate captured (use these too, they may be newer than the résumé):\n${kb}\n` : ""}${job ? `\nROLE: ${job.company} — ${job.role}\n${job.jd ? `JOB DESCRIPTION (excerpt):\n${job.jd.slice(0, 1500)}\n` : ""}` : ""}\nAPPLICATION QUESTION:\n${question}\n\nWrite a strong, truthful answer (2–4 sentences) in first person. Plain text only.`,
+    prompt: `CANDIDATE RÉSUMÉ (JSON):\n${JSON.stringify(base)}\n${kb ? `\nKNOWLEDGE BASE — recent projects & skills the candidate captured (use these too, they may be newer than the résumé):\n${kb}\n` : ""}${job ? `\nROLE: ${job.company} — ${job.role}\n${job.jd ? `JOB DESCRIPTION (excerpt):\n${job.jd.slice(0, 1500)}\n` : ""}` : ""}${notes ? `\nTHE CANDIDATE'S NOTES (rough; every fact here is true and must survive, but rewrite it properly):\n${notes.slice(0, 2000)}\n` : ""}\nAPPLICATION QUESTION:\n${question}\n\nWrite a strong, truthful answer (2–4 sentences) in first person. Plain text only.`,
   });
   return { text: stripAiTells((r.text || "").trim()), callId: r.callId };
 }
@@ -236,7 +237,8 @@ export async function draftSessionAnswers(
   base: Resume,
   job: JobCtx,
   questions: string[],
-  known: Record<string, string> = {}
+  known: Record<string, string> = {},
+  kb?: string
 ): Promise<{ items: { question: string; answer: string; needsInput: boolean }[]; callId?: number }> {
   const qs = questions.slice(0, 25);
   if (!qs.length) return { items: [] };
@@ -251,9 +253,11 @@ export async function draftSessionAnswers(
     maxTokens: 3000,
     system:
       "You draft job-application answers in the candidate's voice ('I'm choosing you' — confident, selective, specific, no fluff, proof over claims). " +
-      "Use ONLY facts from the resume. CRITICAL: if a question cannot be answered truthfully from the resume — e.g. work authorization, visa, salary expectation, security clearance, years with a specific tool not in the resume, demographic questions — set answer to \"\" and needsInput to true. Never guess these.\n\n" +
+      "Use ONLY facts from the resume and the candidate's knowledge base. CRITICAL: if a question cannot be answered truthfully from those — e.g. work authorization, visa, salary expectation, security clearance, years with a specific tool not in the resume, demographic questions — set answer to \"\" and needsInput to true. Never guess these.\n\n" +
+      "QUESTIONS CAN DEPEND ON EACH OTHER. A form often asks you to name or link something and then asks a follow-up about that same thing (\"provide a link to a code sample\" then \"why are you proud of the code?\"). Read the whole list before answering. If a follow-up depends on a choice you cannot make truthfully, set needsInput on BOTH the dependency and the follow-up — answering the follow-up while its dependency is blank produces confident text about nothing. If you CAN make the choice from the evidence, answer both and make them refer to the same thing.\n" +
+      "Never invent a URL. Only give a link that appears verbatim in the resume or knowledge base; otherwise set needsInput.\n\n" +
       HUMAN_STYLE,
-    prompt: `RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}${knownBlock}\n\nQUESTIONS:\n${qs
+    prompt: `RESUME (JSON):\n${JSON.stringify(base)}\n${kb ? `\nKNOWLEDGE BASE — the candidate's own projects, what each does and the stack (use these to answer questions about their work, and for any link they actually contain):\n${kb}\n` : ""}\nJOB:\n${jobBlock(job)}${knownBlock}\n\nQUESTIONS (read all of them before answering — some depend on others):\n${qs
       .map((q, i) => `${i + 1}. ${q}`)
       .join("\n")}\n\nReturn ONLY JSON: { "items": [ { "question": "...", "answer": "...", "needsInput": false } ] } covering every question in order.`,
   });

@@ -34,7 +34,7 @@ export function valueForIdentity(label: string, name: string, id: string, c: Res
   if (/linkedin/.test(k)) return find(/linkedin/i) || null;
   if (/github/.test(k)) return find(/github/i) || null;
   if (short && /portfolio|personal (site|website)|\bwebsite\b|urls\[other\]/.test(k)) return find(/.*/) || null;
-  if (short && /\blocation\b|^city\b|\bcountry\b|where.*based/.test(k)) return c.location || null;
+  if (short && /\blocat(ion|ed)\b|^city\b|\bcountry\b|where.*(based|located|live)/.test(k)) return c.location || null;
   if (short && /full[\s_-]?name|your name|\bname\b/.test(k)) return c.name || null; // after first/last
   return null;
 }
@@ -68,14 +68,22 @@ export function detectAts(url: string): string {
 }
 
 // Free-text questions worth drafting answers for.
+const QUESTION_WORDS = /\?|why|describe|tell us|cover|motivat|interest|fit|about you|experience/i;
+
+/**
+ * Is this field asking something, as opposed to collecting an identity detail?
+ *
+ * A long label is the giveaway even without a question mark: "Please provide a link
+ * to a code sample you're particularly proud of:" asks for something, and treating it
+ * as a question is what gets it drafted, or pooled and asked. valueForIdentity uses
+ * the same 30-character line to decide the opposite way.
+ */
+export function isQuestionField(label: string, tag: string): boolean {
+  return tag === "textarea" || QUESTION_WORDS.test(label) || label.trim().length > 30;
+}
+
 export function questionFields(fields: FormField[]): string[] {
-  return fields
-    .filter(
-      (f) =>
-        f.tag === "textarea" ||
-        /\?|why|describe|tell us|cover|motivat|interest|fit|about you|experience/i.test(f.label)
-    )
-    .map((f) => f.label);
+  return fields.filter((f) => isQuestionField(f.label, f.tag)).map((f) => f.label);
 }
 
 const toks = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w.length > 2));
@@ -137,6 +145,21 @@ export interface PrefillOutcome {
 
 const isCoverField = (label: string, name: string) =>
   /cover ?letter/.test(`${label} ${name}`.toLowerCase());
+
+/**
+ * What a file input is actually asking for. A form can have several, and they are not
+ * interchangeable: uploading your résumé into "provide a sample of your technical
+ * writing" sends the wrong document to a recruiter, and used to be counted as success.
+ *
+ * "unlabelled" is the common single-input case, where the field is conventionally the
+ * résumé; the caller only treats the FIRST such field that way.
+ */
+export function fileFieldRole(label: string, name: string): "resume" | "cover" | "unlabelled" | "other" {
+  const t = `${label} ${name}`.toLowerCase();
+  if (/resum|\bcv\b|curriculum ?vitae/.test(t)) return "resume";
+  if (/cover ?letter/.test(t)) return "cover";
+  return label.trim() || name.trim() ? "other" : "unlabelled";
+}
 
 const normLabel = (s: string) => s.toLowerCase().replace(/[*]/g, "").replace(/\s+/g, " ").trim();
 // Exact (normalized) match. Labels on a form are unique, and loose substring matching is
@@ -322,6 +345,7 @@ export async function collectDropdownOptions(page: any): Promise<{ label: string
 // NEVER submits.
 export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOutcome> {
   const { contact, pdfPath, qa, cover } = ctx;
+  let resumeUploaded = false; // a form can have several file inputs; only one is the résumé
   const log = ctx.log || (() => {});
   const filled: string[] = [];
   const unfilled: string[] = [];
@@ -350,11 +374,22 @@ export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOu
       if (!meta.visible || meta.combo) continue;
 
       if (meta.type === "file") {
-        if (pdfPath) {
+        const role = fileFieldRole(meta.label, meta.name);
+        const takesResume = role === "resume" || (role === "unlabelled" && !resumeUploaded);
+        if (takesResume && pdfPath) {
           await el.setInputFiles(pdfPath);
+          resumeUploaded = true;
           filled.push("résumé (upload)");
           log(`✓ uploaded résumé`);
-        } else unfilled.push("résumé upload");
+        } else if (takesResume) {
+          unfilled.push("résumé upload");
+        } else {
+          // a writing sample, portfolio or transcript is not your résumé; report it so
+          // it gets pooled and asked rather than quietly filled with the wrong file
+          const what = meta.label.slice(0, 50) || "file upload";
+          unfilled.push(what);
+          log(`· "${what}" wants a file that is not your résumé — left for you`);
+        }
         continue;
       }
 
@@ -366,8 +401,12 @@ export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOu
         continue;
       }
 
-      if (meta.tag === "textarea") {
-        if (isCoverField(meta.label, meta.name) && cover) {
+      // Questions are not always textareas. Ashby renders "How did you hear about us?"
+      // and "provide a link to a code sample" as single-line inputs, so restricting this
+      // to textareas meant a banked answer was never typed in, and — worse — the field
+      // was never reported as unfilled either, so it was never pooled or asked about.
+      if (isQuestionField(meta.label, meta.tag)) {
+        if (meta.tag === "textarea" && isCoverField(meta.label, meta.name) && cover) {
           await el.fill(cover);
           filled.push("cover letter");
           log(`✓ cover letter`);
@@ -381,6 +420,7 @@ export async function prefillPage(page: any, ctx: PrefillCtx): Promise<PrefillOu
           continue;
         }
         if (meta.label) unfilled.push(meta.label.slice(0, 50));
+        continue;
       }
     } catch {
       /* skip uncooperative field */

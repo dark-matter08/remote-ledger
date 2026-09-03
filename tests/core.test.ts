@@ -485,4 +485,92 @@ test("resume builder: composes from picked KB entries without losing identity", 
   assert.ok(buildResumeFromKb({ mode: "new", itemIds: [], skills: [] }).error, "picking nothing is refused");
 });
 
+test("prefill: only a résumé field gets the résumé", async () => {
+  const { fileFieldRole } = await import("../app/services/prefill.server");
+
+  for (const l of ["Resume", "Resume/CV *", "Upload your CV", "Curriculum Vitae"])
+    assert.equal(fileFieldRole(l, ""), "resume", l);
+  assert.equal(fileFieldRole("", "resume_file"), "resume", "falls back to the input name");
+
+  assert.equal(fileFieldRole("Cover Letter", ""), "cover");
+
+  // the field that caused this: uploading a résumé here sends the wrong document
+  assert.equal(fileFieldRole("Please provide a sample of your technical writing.", ""), "other");
+  assert.equal(fileFieldRole("Portfolio", ""), "other");
+  assert.equal(fileFieldRole("Transcript", ""), "other");
+
+  // a lone unlabelled file input is conventionally the résumé
+  assert.equal(fileFieldRole("", ""), "unlabelled");
+});
+
+test("prefill: the real Sticker Mule fields are recognised and filled", async () => {
+  const { isQuestionField, questionFields, valueForIdentity, matchAnswer } =
+    await import("../app/services/prefill.server");
+
+  const contact = {
+    name: "Nde Che Lucien Ngwa",
+    email: "chelucien08@gmail.com",
+    phone: "+237 650 002 952",
+    location: "Yaounde, Cameroon",
+    links: [{ label: "GitHub", url: "github.com/dark-matter08" }],
+  } as any;
+
+  // "located" is not "location" — this label silently matched nothing
+  assert.equal(valueForIdentity("Where are you located?", "", "", contact), "Yaounde, Cameroon");
+  assert.equal(valueForIdentity("Where do you live?", "", "", contact), "Yaounde, Cameroon");
+  assert.equal(valueForIdentity("Location", "", "", contact), "Yaounde, Cameroon");
+  assert.equal(valueForIdentity("Email", "", "", contact), "chelucien08@gmail.com");
+
+  // a long label is a question even without a question mark, so it gets drafted or asked
+  assert.ok(isQuestionField("Please provide a link to a code sample you're particularly proud of:", "input"));
+  assert.ok(isQuestionField("How did you hear about us?", "input"), "questions are not always textareas");
+  assert.ok(isQuestionField("", "textarea"));
+  assert.ok(!isQuestionField("Email", "input"), "identity fields are not questions");
+  assert.ok(!isQuestionField("Location", "input"));
+
+  // both of the fields that were skipped now reach the question list
+  const fields = [
+    { tag: "input", type: "text", name: "", id: "", label: "Email", visible: true, combo: false },
+    { tag: "input", type: "text", name: "", id: "", label: "Where are you located?", visible: true, combo: false },
+    { tag: "input", type: "text", name: "", id: "", label: "How did you hear about us?", visible: true, combo: false },
+    { tag: "input", type: "text", name: "", id: "", label: "Please provide a link to a code sample you're particularly proud of:", visible: true, combo: false },
+    { tag: "textarea", type: "", name: "", id: "", label: "Why are you proud of the code?", visible: true, combo: false },
+  ] as any;
+  const qs = questionFields(fields);
+  assert.ok(qs.includes("How did you hear about us?"));
+  assert.ok(qs.includes("Please provide a link to a code sample you're particularly proud of:"));
+  assert.ok(qs.includes("Why are you proud of the code?"));
+  assert.ok(!qs.includes("Email"), "identity fields must not be drafted as questions");
+
+  // a banked answer reaches a single-line input, which is where it failed before
+  const bank = [{ q: "How did you hear about us?", a: "Through a tool I built." }];
+  assert.equal(matchAnswer("How did you hear about us?", bank), "Through a tool I built.");
+  assert.equal(matchAnswer("Where are you located?", bank), null, "unrelated labels do not borrow answers");
+});
+
+test("prefill: a long question label still gets pooled", async () => {
+  const { normQ } = await import("../app/db.server");
+  const { questionFields } = await import("../app/services/prefill.server");
+
+  // prefillPage reports unfilled labels truncated to 50 chars; pooling looks them up
+  // against the full list. Exact matching dropped anything longer, so the required
+  // "code sample" field was never filled AND never asked about.
+  const label = "Please provide a link to a code sample you're particularly proud of:";
+  assert.ok(label.length > 50, "this is the case that broke");
+  const truncated = label.slice(0, 50);
+
+  const asks = questionFields([
+    { tag: "input", type: "text", name: "", id: "", label, visible: true, combo: false },
+    { tag: "textarea", type: "", name: "", id: "", label: "Why are you proud of the code?", visible: true, combo: false },
+  ] as any);
+
+  assert.equal(asks.find((q: string) => normQ(q) === normQ(truncated)), undefined, "exact match fails — the old bug");
+  const found = asks.find((q: string) => normQ(q) === normQ(truncated) || normQ(q).startsWith(normQ(truncated)));
+  assert.equal(found, label, "prefix match recovers the full question, which is what gets pooled");
+
+  // short labels were never affected and must keep working
+  const short = "Why are you proud of the code?";
+  assert.equal(asks.find((q: string) => normQ(q).startsWith(normQ(short.slice(0, 50)))), short);
+});
+
 test.after(cleanup);
