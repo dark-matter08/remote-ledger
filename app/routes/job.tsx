@@ -407,7 +407,10 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           <Form method="post"><input type="hidden" name="intent" value="cover" /><button className="btn" disabled={busy}>{running === "cover" ? "Writing…" : "Generate cover letter"}</button></Form>
           {coverVersions.map((v) => (
             <div key={v.id} className="version">
-              <div className="version-head"><strong>v{v.id}</strong> · {v.created_at.slice(0, 16).replace("T", " ")}</div>
+              <div className="version-head">
+                <strong>v{v.id}</strong> · {v.created_at.slice(0, 16).replace("T", " ")}
+                <a className="ghost-btn" style={{ marginLeft: "auto" }} href={`/version/${v.id}/cover.pdf`} target="_blank" rel="noreferrer">Download PDF ▸</a>
+              </div>
               <pre className="letter">{v.content_md}</pre>
             </div>
           ))}

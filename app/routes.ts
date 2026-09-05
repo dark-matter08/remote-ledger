@@ -9,6 +9,7 @@ export default [
   route("inbox", "routes/inbox.tsx"),
   route("jobs/:id", "routes/job.tsx"),
   route("version/:vid/resume.pdf", "routes/version-pdf.tsx"),
+  route("version/:vid/cover.pdf", "routes/cover-pdf.tsx"),
   route("board", "routes/board.tsx"),
   route("analytics", "routes/analytics.tsx"),
   route("apply", "routes/apply.tsx"),

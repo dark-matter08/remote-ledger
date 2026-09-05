@@ -655,4 +655,49 @@ test("registry: job boards are tracked separately from employers", async () => {
   assert.ok(addCompany({ name: "Dupe", careersUrl: "https://jobs.ashbyhq.com/scanboardtest", kind: "board" }).error);
 });
 
+test("cover letter PDF: letterhead added, salutation and sign-off never duplicated", async () => {
+  const { renderCoverHtml } = await import("../app/resume/templates.server");
+  const contact = {
+    name: "Nde Che Lucien Ngwa",
+    email: "chelucien08@gmail.com",
+    phone: "+237 650 002 952",
+    location: "Yaounde, Cameroon",
+    links: [{ label: "GitHub", url: "github.com/dark-matter08" }],
+  } as any;
+  const meta = { company: "ConsenSys", role: "Senior Engineer", date: new Date("2026-09-05T00:00:00Z") };
+
+  // the usual case: the model writes the whole letter, greeting and signature included
+  const whole = "Dear ConsenSys hiring team,\n\nI build things.\n\nNde Che Lucien Ngwa";
+  const a = renderCoverHtml(whole, contact, meta, "letterpress");
+  assert.equal((a.match(/Dear /g) || []).length, 1, "must not greet the reader twice");
+  assert.ok(!a.includes("Sincerely,"), "must not append a second sign-off");
+  assert.ok(a.includes("Nde Che Lucien Ngwa"), "letterhead carries the name");
+  assert.ok(a.includes("chelucien08@gmail.com") && a.includes("Yaounde, Cameroon"), "contact block");
+  assert.ok(a.includes("5 September 2026"), "dated");
+  assert.ok(a.includes("ConsenSys Hiring Team") && a.includes("Re: Senior Engineer"), "addressed");
+
+  // a bare body gets the missing furniture supplied
+  const bare = "I build things.\n\nI would welcome a conversation.";
+  const b = renderCoverHtml(bare, contact, meta, "letterpress");
+  assert.ok(b.includes("Dear ConsenSys Hiring Team,"), "salutation supplied when absent");
+  assert.ok(b.includes("Sincerely,"), "sign-off supplied when absent");
+
+  // each blank-line-separated block becomes its own paragraph
+  assert.equal((b.match(/<p>/g) || []).length, 3, "salutation + two paragraphs");
+
+  // other openings count as salutations too
+  assert.ok(!renderCoverHtml("Hello team,\n\nBody.", contact, meta).includes("Dear ConsenSys Hiring Team,"));
+
+  // user text is escaped, not injected
+  const evil = renderCoverHtml("Dear team,\n\n<script>alert(1)</script> & co\n\nNde Che Lucien Ngwa", contact, meta);
+  assert.ok(!evil.includes("<script>"), "no raw script tag survives");
+  assert.ok(evil.includes("&lt;script&gt;") && evil.includes("&amp; co"));
+
+  // every style produces a complete document
+  for (const style of ["letterpress", "modern", "compact", "ats-plain"] as const) {
+    const h = renderCoverHtml(whole, contact, meta, style);
+    assert.ok(h.startsWith("<!doctype html>") && h.includes("@page"), style);
+  }
+});
+
 test.after(cleanup);
