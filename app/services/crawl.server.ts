@@ -382,7 +382,12 @@ async function runCareersCrawl(
     const hosts = jobBoards
       .map((c) => { try { return new URL(c.careers_url!).hostname.replace(/^www\./, ""); } catch { return c.name; } })
       .join(", ");
-    const list = jobBoards.map((c) => `- ${c.name}: ${c.careers_url}`).join("\n");
+    // A board's note is where per-site rules live — most usefully what its robots.txt
+    // disallows. Without passing it through, the agent has no way to know that e.g.
+    // Dice permits /jobs and /job-detail but not /jobs?q= search URLs.
+    const list = jobBoards
+      .map((c) => `- ${c.name}: ${c.careers_url}${c.note ? `\n    RULES FOR THIS BOARD (obey exactly): ${c.note}` : ""}`)
+      .join("\n");
     await agentPass(
       "Job boards",
       `These are job BOARDS that aggregate other companies' openings. They are NOT employers.\n\n${list}\n\n` +
@@ -391,7 +396,8 @@ async function runCareersCrawl(
         `- "company" is the actual EMPLOYER, never the board's name.\n` +
         `- "apply_url" is the employer's URL. Never return a link on ${hosts}.\n` +
         `- "source" is the board you found it on.\n` +
-        `- If you cannot reach a live employer posting, SKIP the role. A board link is worthless here.\n\n${SHAPE}`
+        `- If you cannot reach a live employer posting, SKIP the role. A board link is worthless here.\n` +
+        `- Where a board lists RULES, follow them exactly. They usually reflect what that site's robots.txt permits, so ignoring them is not a shortcut worth taking.\n\n${SHAPE}`
     );
   }
 
