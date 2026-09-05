@@ -127,6 +127,7 @@ export async function action({ request }: Route.ActionArgs) {
       ats: String(form.get("ats") || "") || null,
       slug: String(form.get("slug") || "") || null,
       careersUrl: String(form.get("careers_url") || "") || null,
+      kind: String(form.get("kind") || "company"),
     });
     return r.error ? { ok: false, msg: r.error } : { ok: true, msg: "Company added." };
   }
@@ -304,6 +305,8 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
             Roles are posted on a company&rsquo;s own board before they reach any aggregator. Greenhouse,
             Lever, Ashby and Recruitee publish theirs as public JSON, so those are read directly: exact,
             instant, and effectively free. A company with a bespoke careers page falls back to the agent.
+            A <strong>job board</strong> is mined differently: the agent follows each listing through to the
+            employer&rsquo;s own posting, so the board&rsquo;s link never ends up on your ledger.
           </p>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -319,9 +322,13 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
 
           <Form method="post" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
             <input type="hidden" name="intent" value="company-add" />
-            <div className="field" style={{ margin: 0, flex: "1 1 160px" }}>
-              <label>Company</label>
+            <div className="field" style={{ margin: 0, flex: "1 1 150px" }}>
+              <label>Name</label>
               <input type="text" name="name" placeholder="Acme" required />
+            </div>
+            <div className="field" style={{ margin: 0, flex: "0 0 130px" }}>
+              <label>Type</label>
+              <Select name="kind" options={[{ value: "company", label: "Company" }, { value: "board", label: "Job board" }]} />
             </div>
             <div className="field" style={{ margin: 0, flex: "0 0 130px" }}>
               <label>ATS</label>
@@ -342,11 +349,12 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
             <p className="hint">None tracked yet. &ldquo;Find boards in my ledger&rdquo; seeds this from jobs you already have.</p>
           ) : (
             <table className="ledger-table">
-              <thead><tr><th>Company</th><th>Board</th><th>Last checked</th><th>Kept</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Type</th><th>Source</th><th>Last checked</th><th>Kept</th><th></th></tr></thead>
               <tbody>
                 {companies.map((c: any) => (
                   <tr key={c.id} style={c.active ? undefined : { opacity: 0.5 }}>
                     <td>{c.name}</td>
+                    <td>{c.kind === "board" ? <span className="badge warn">job board</span> : <span className="badge off">company</span>}</td>
                     <td>
                       {c.ats ? (
                         <a href={boardUrl(c.ats, c.slug)} target="_blank" rel="noreferrer" className="back-link">{c.ats}:{c.slug}</a>

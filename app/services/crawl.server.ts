@@ -298,13 +298,15 @@ async function runCareersCrawl(
   const tokens = stackTokens(stack);
   const companies = activeCompanies();
   const boards = companies.filter((c) => c.ats && c.slug);
-  const pages = companies.filter((c) => !c.ats && c.careers_url);
+  const pages = companies.filter((c) => c.kind !== "board" && !c.ats && c.careers_url);
+  // aggregators: mined for OTHER employers' postings, so they need their own rules
+  const jobBoards = companies.filter((c) => c.kind === "board" && c.careers_url);
 
   if (!companies.length) {
     L("error", "No companies tracked yet. Add some in Settings, or seed them from your ledger.");
     return { received: 0, inserted: 0, updated: 0, errors: 0 };
   }
-  L("reasoning", `Reading ${boards.length} company board(s) straight from their ATS feeds — no agent, no tokens. ${pages.length} bespoke careers page(s) will fall back to the agent.`);
+  L("reasoning", `Reading ${boards.length} company board(s) straight from their ATS feeds — no agent, no tokens. ${pages.length} bespoke careers page(s) and ${jobBoards.length} job board(s) fall back to the agent.`);
 
   // --- deterministic pass -----------------------------------------------------
   let received = 0, errors = 0;
@@ -341,30 +343,56 @@ async function runCareersCrawl(
     }
   }
 
-  // --- bespoke careers pages, via the agent -----------------------------------
-  if (pages.length && !signal.aborted) {
-    L("step", `Asking the agent to read ${pages.length} careers page(s) with no machine-readable feed…`);
-    const list = pages.map((c) => `- ${c.name}: ${c.careers_url}`).join("\n");
-    const prompt =
-      `Open each careers page below and list the currently-open REMOTE software roles a candidate based in ${loc} could work, matching: ${stack}.\n\n${list}\n\n` +
-      `Open every page. Follow through to each individual role's own posting URL — never return the careers index itself. Skip a company rather than guessing.\n\n` +
-      `Return ONLY a JSON array: [{"company","role","category":"high|medium|stretch","fit_score":0-100,"stack","eligibility","seniority","apply_url","source"}]`;
+  // --- pages with no machine-readable feed, via the agent ----------------------
+  const SHAPE = `Return ONLY a JSON array: [{"company","role","category":"high|medium|stretch","fit_score":0-100,"stack","eligibility","seniority","apply_url","source"}]`;
+
+  async function agentPass(label: string, prompt: string): Promise<void> {
     try {
       const text = await invokeAgent(prompt, 10 * 60000, signal, L);
       const parsed = tryParseJson(text);
       const rows = Array.isArray(parsed) ? parsed : parsed?.jobs || [];
-      if (Array.isArray(rows) && rows.length) {
-        received += rows.length;
-        // the agent could have imagined these, so they go through link verification
-        const { alive, dropped } = await verifyJobs(rows, { limit: 25, signal, onLog: (l) => L("step", l) });
-        errors += dropped.length;
-        scored.push(...alive.map((a) => a.job));
-        L("result", `Careers pages: ${alive.length} verified, ${dropped.length} dropped.`);
-      }
+      if (!Array.isArray(rows) || !rows.length) return;
+      received += rows.length;
+      // the agent could have imagined these, so they go through link verification
+      const { alive, dropped } = await verifyJobs(rows, { limit: 25, signal, onLog: (l) => L("step", l) });
+      errors += dropped.length;
+      scored.push(...alive.map((a) => a.job));
+      L("result", `${label}: ${alive.length} verified, ${dropped.length} dropped.`);
     } catch (e: any) {
       errors++;
-      L("error", `Careers-page pass failed: ${String(e?.message || e).slice(0, 100)}`);
+      L("error", `${label} pass failed: ${String(e?.message || e).slice(0, 100)}`);
     }
+  }
+
+  if (pages.length && !signal.aborted) {
+    L("step", `Asking the agent to read ${pages.length} careers page(s) with no machine-readable feed…`);
+    const list = pages.map((c) => `- ${c.name}: ${c.careers_url}`).join("\n");
+    await agentPass(
+      "Careers pages",
+      `Open each careers page below and list the currently-open REMOTE software roles a candidate based in ${loc} could work, matching: ${stack}.\n\n${list}\n\n` +
+        `Open every page. Follow through to each individual role's own posting URL — never return the careers index itself. Skip a company rather than guessing.\n\n${SHAPE}`
+    );
+  }
+
+  // A board lists OTHER companies' jobs. Returning the board's own link is the exact
+  // failure that filled the ledger with jobot.com and remotive.com entries, so the
+  // employer's page is the only acceptable apply_url here.
+  if (jobBoards.length && !signal.aborted) {
+    L("step", `Mining ${jobBoards.length} job board(s) for employer postings…`);
+    const hosts = jobBoards
+      .map((c) => { try { return new URL(c.careers_url!).hostname.replace(/^www\./, ""); } catch { return c.name; } })
+      .join(", ");
+    const list = jobBoards.map((c) => `- ${c.name}: ${c.careers_url}`).join("\n");
+    await agentPass(
+      "Job boards",
+      `These are job BOARDS that aggregate other companies' openings. They are NOT employers.\n\n${list}\n\n` +
+        `Search each board for currently-open REMOTE software roles a candidate based in ${loc} could work, matching: ${stack}.\n\n` +
+        `A board listing is not an application. For every role: open its listing, find the apply link, and FOLLOW IT THROUGH to the employer's own posting (their ATS — Greenhouse, Lever, Ashby, Workable — or their careers site). Confirm that page is live and still open.\n` +
+        `- "company" is the actual EMPLOYER, never the board's name.\n` +
+        `- "apply_url" is the employer's URL. Never return a link on ${hosts}.\n` +
+        `- "source" is the board you found it on.\n` +
+        `- If you cannot reach a live employer posting, SKIP the role. A board link is worthless here.\n\n${SHAPE}`
+    );
   }
 
   if (!scored.length) {

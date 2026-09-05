@@ -50,6 +50,7 @@ export function getDb(): Db {
   try { ensureColumn(db, "kb_sources", "link_item_id", "INTEGER"); } catch {} // link a scan to an existing KB item
   try { ensureColumn(db, "kb_suggestions", "cluster_id", "INTEGER"); } catch {} // group near-duplicate drafted bullets
   try { ensureColumn(db, "kb_items", "context", "TEXT"); } catch {} // your own facts, fed to AI drafts
+  try { ensureColumn(db, "companies", "kind", "TEXT NOT NULL DEFAULT 'company'"); } catch {} // company | board
   // company-experience metadata (a company scan = ONE experience entry, not N projects)
   for (const t of ["kb_items", "kb_sources"]) {
     try { ensureColumn(db, t, "role", "TEXT"); } catch {}
