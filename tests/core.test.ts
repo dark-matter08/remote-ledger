@@ -623,4 +623,36 @@ test("stale sweep: clears untouched jobs, never ones you engaged with", async ()
   assert.equal(trashStaleJobs(0).trashed, 0, "0 disables the sweep");
 });
 
+test("registry: job boards are tracked separately from employers", async () => {
+  const { addCompany, listCompanies, activeCompanies } = await import("../app/services/ats.server");
+
+  const board = addCompany({ name: "Remotiko", careersUrl: "https://remotiko.com/", kind: "board" });
+  assert.ok(board.id && !board.error);
+  const employer = addCompany({ name: "Bitfinex", careersUrl: "https://careers.bitfinex.com" });
+  assert.ok(employer.id && !employer.error);
+
+  const all = listCompanies();
+  const b = all.find((c: any) => c.name === "Remotiko")!;
+  const e = all.find((c: any) => c.name === "Bitfinex")!;
+  assert.equal(b.kind, "board");
+  assert.equal(e.kind, "company", "an employer is the default, so existing rows keep working");
+  assert.equal(b.ats, null, "a board has no ATS feed to read");
+
+  // the careers crawl splits on exactly these predicates
+  const active = activeCompanies();
+  const pages = active.filter((c: any) => c.kind !== "board" && !c.ats && c.careers_url);
+  const jobBoards = active.filter((c: any) => c.kind === "board" && c.careers_url);
+  assert.ok(pages.some((c: any) => c.name === "Bitfinex"), "employer pages go to the careers pass");
+  assert.ok(!pages.some((c: any) => c.name === "Remotiko"), "a board must not be read as an employer page");
+  assert.ok(jobBoards.some((c: any) => c.name === "Remotiko"), "boards go to the board pass");
+
+  // an ATS-looking URL is still detected as that ATS even when pasted as a careers page
+  const ashby = addCompany({ name: "Scanboard Test", careersUrl: "https://jobs.ashbyhq.com/scanboardtest" });
+  assert.ok(ashby.id && !ashby.error, ashby.error);
+  assert.equal(listCompanies().find((c: any) => c.name === "Scanboard Test")!.ats, "ashby");
+
+  // and the same board cannot be registered twice, whichever kind it is added as
+  assert.ok(addCompany({ name: "Dupe", careersUrl: "https://jobs.ashbyhq.com/scanboardtest", kind: "board" }).error);
+});
+
 test.after(cleanup);

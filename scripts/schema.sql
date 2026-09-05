@@ -223,6 +223,7 @@ CREATE INDEX IF NOT EXISTS idx_cl_run ON crawl_logs(run_id);
 CREATE TABLE IF NOT EXISTS companies (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   name            TEXT NOT NULL,
+  kind            TEXT NOT NULL DEFAULT 'company', -- company | board (an aggregator to mine)
   ats             TEXT,                       -- greenhouse | lever | ashby | recruitee | NULL
   slug            TEXT,                       -- board slug on that ATS
   careers_url     TEXT,                       -- bespoke careers page (agent fallback)

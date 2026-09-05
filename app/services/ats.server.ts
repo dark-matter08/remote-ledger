@@ -133,9 +133,13 @@ export async function fetchBoard(ats: AtsKind, slug: string): Promise<AtsPosting
 
 // --- the company registry ---------------------------------------------------
 
+export type CompanyKind = "company" | "board";
+
 export interface Company {
   id: number;
   name: string;
+  /** "board" is an aggregator we mine for other employers' postings, not an employer. */
+  kind: CompanyKind;
   ats: AtsKind | null;
   slug: string | null;
   careers_url: string | null;
@@ -162,6 +166,7 @@ export function addCompany(o: {
   slug?: string | null;
   careersUrl?: string | null;
   note?: string | null;
+  kind?: string | null;
 }): { id: number; error?: string } {
   const name = (o.name || "").trim();
   if (!name) return { id: 0, error: "A company name is required." };
@@ -175,14 +180,15 @@ export function addCompany(o: {
   if (!ats && detected) { ats = detected.ats; slug = detected.slug; }
   if (ats && !slug) return { id: 0, error: "That ATS needs a board slug." };
   if (!ats && !careers) return { id: 0, error: "Give either an ATS board or a careers page URL." };
+  const kind: CompanyKind = o.kind === "board" ? "board" : "company";
 
   try {
     const id = Number(
       getDb()
         .prepare(
-          "INSERT INTO companies (name,ats,slug,careers_url,active,note,created_at) VALUES (?,?,?,?,1,?,?)"
+          "INSERT INTO companies (name,kind,ats,slug,careers_url,active,note,created_at) VALUES (?,?,?,?,?,1,?,?)"
         )
-        .run(name, ats, slug, careers, (o.note || "").trim() || null, new Date().toISOString()).lastInsertRowid
+        .run(name, kind, ats, slug, careers, (o.note || "").trim() || null, new Date().toISOString()).lastInsertRowid
     );
     return { id };
   } catch (e: any) {
