@@ -78,24 +78,25 @@ To lose it — and get real HTTPS with no certificate warning — put
 
 ```bash
 npm install -g dropport
-dropport add remoteledger.local 5173
+dropport add remoteledger 5173      # -> remoteledger.dp.local
 dropport up
 ```
 
-Now the ledger is at **https://remoteledger.local**. dropport runs a Caddy reverse
+Now the ledger is at **https://remoteledger.dp.local**. dropport runs a Caddy reverse
 proxy on 80/443, issues the certificate from a locally trusted CA, and keeps the hosts
 entry in sync. HTTPS matters for more than looks: secure cookies, service workers and
 the Clipboard API are all gated on it.
 
 The Ledger notices. If dropport maps a hostname to this app's port, arriving on
-`remoteledger.local:5173` redirects to the clean URL. It only fires for a hostname
+`remoteledger.dp.local:5173` redirects to the clean URL. It only fires for a hostname
 dropport actually fronts, so `localhost:5173` is untouched, and it does nothing at all
 when dropport is not installed.
 
-One tip: prefer a `.test` name. `.local` is multicast-DNS territory, and on macOS every
-lookup waits about five seconds for an mDNS answer before falling back to the hosts
-file. dropport can publish `.local` names over mDNS to fix that, but `.test` sidesteps
-it entirely and is the TLD reserved for exactly this.
+A bare name is expanded under `.dp.local`, and dropport publishes it over mDNS so it
+resolves in milliseconds. That matters: an unpublished `.local` lookup waits about five
+seconds on macOS for a multicast answer that never comes before falling back to the
+hosts file. If you would rather skip multicast entirely, `dropport add remoteledger.test
+5173` works too.
 
 ## What it does
 
