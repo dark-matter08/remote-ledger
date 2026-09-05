@@ -613,9 +613,12 @@ test("stale sweep: clears untouched jobs, never ones you engaged with", async ()
   assert.equal(again.blocked, 1);
   assert.ok(listBlocks().some((b: any) => b.reason === "stale"));
 
-  // but staleness must NOT become a preference the crawler learns from
-  assert.ok(!/rejected .*as .*fortnight|rejected Stalea/i.test(blocklistPrompt()),
-    "ignoring a job for two weeks is not a verdict on the job");
+  // Staleness must not reach the crawl prompt in ANY form. The first version of this
+  // test only checked the "rejected X as ..." phrasing and passed while the note
+  // "untouched for 14+ days" was leaking through the notes section instead.
+  const prompt = blocklistPrompt();
+  assert.ok(!/stalea/i.test(prompt), "a stale job must not be named to the crawler");
+  assert.ok(!/untouched|fortnight|stale/i.test(prompt), "and neither must its note");
 
   assert.equal(trashStaleJobs(0).trashed, 0, "0 disables the sweep");
 });

@@ -268,7 +268,14 @@ export function blocklistPrompt(): string {
     if (!byReason.has(b.reason)) byReason.set(b.reason, []);
     byReason.get(b.reason)!.push(label);
   }
-  const notes = blocks.filter((b) => b.note).slice(0, 12).map((b) => `- ${b.company || b.value}: ${b.note}`);
+  // Only reasons that are a judgement about the job may speak here. A stale block's
+  // note explains itself in the blocklist UI, but "untouched for 14+ days" is not
+  // something you said about the role — and 41 of them would crowd out the notes you
+  // actually wrote, since only a handful are included.
+  const notes = blocks
+    .filter((b) => b.note && !NON_JUDGEMENT_REASONS.has(b.reason))
+    .slice(0, 12)
+    .map((b) => `- ${b.company || b.value}: ${b.note}`);
 
   const lines = ["\n\n🚫 REJECTED BEFORE — DO NOT RETURN THESE AGAIN:"];
   if (domains.length) lines.push(`- Never return anything hosted on: ${[...new Set(domains)].slice(0, 40).join(", ")}`);
