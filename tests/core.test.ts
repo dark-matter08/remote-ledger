@@ -700,4 +700,26 @@ test("cover letter PDF: letterhead added, salutation and sign-off never duplicat
   }
 });
 
+test("auto-apply browser: attach mode fails loudly, and is off by default", async () => {
+  const { setSetting, getSetting } = await import("../app/sqlite.server");
+  const { openApplyPage } = await import("../app/services/apply.server");
+
+  assert.equal(getSetting("apply_browser"), null, "a fresh install must not attach to anything");
+
+  // Nothing is listening on this port, so this pins the error CONTRACT: it has to name
+  // the address and the command that fixes it, not surface a raw socket error.
+  setSetting("apply_browser", "attach");
+  setSetting("apply_cdp_url", "http://127.0.0.1:9");
+  await assert.rejects(
+    () => openApplyPage("https://example.com", () => {}),
+    (e: any) => {
+      assert.match(e.message, /127\.0\.0\.1:9\b/, "names the address it tried");
+      assert.match(e.message, /apply-browser start/, "names the command that fixes it");
+      return true;
+    }
+  );
+
+  setSetting("apply_browser", "playwright");
+});
+
 test.after(cleanup);

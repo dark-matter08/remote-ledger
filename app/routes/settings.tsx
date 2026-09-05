@@ -62,6 +62,8 @@ export async function loader() {
       scrapeJds: getSetting("scrape_jds") !== "false",
       scrapeLimit: getSetting("scrape_limit") || "12",
       staleTrashDays: getSetting("stale_trash_days") ?? "14",
+      applyBrowser: getSetting("apply_browser") || "playwright",
+      applyCdpUrl: getSetting("apply_cdp_url") || "http://127.0.0.1:9222",
       crawlMode: getSetting("crawl_mode") || "time",
       crawlTimeout: getSetting("crawl_timeout_min") || "15",
       crawlTarget: getSetting("crawl_target_count") || "5",
@@ -107,6 +109,8 @@ export async function action({ request }: Route.ActionArgs) {
     save("scheduler_interval_hours");
     save("scrape_limit");
     save("stale_trash_days");
+    save("apply_browser");
+    save("apply_cdp_url");
     save("crawl_mode");
     save("crawl_timeout_min");
     save("crawl_target_count");
@@ -251,6 +255,30 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           <div className="row2">
             <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><label style={{ margin: 0 }}><input type="checkbox" name="scrape_jds" defaultChecked={settings.scrapeJds} /> Scrape full JDs on crawl</label></div>
             <div className="field"><label>Max postings to scrape per crawl</label><input type="number" min="0" name="scrape_limit" defaultValue={settings.scrapeLimit} /></div>
+          </div>
+          <div className="row2">
+            <div className="field">
+              <label>Auto-apply browser</label>
+              <Select
+                name="apply_browser"
+                defaultValue={settings.applyBrowser}
+                options={[
+                  { value: "playwright", label: "Fresh browser (nothing logged in)" },
+                  { value: "attach", label: "My Chrome (opens a tab, keeps my logins)" },
+                ]}
+              />
+              <p className="hint" style={{ margin: "6px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+                &ldquo;My Chrome&rdquo; opens the application as a tab in a Chrome you are already running, so the
+                form loads with your cookies and autofill. Start it with{" "}
+                <code>npm run apply-browser start</code> and log in there once. Chrome refuses a debugging
+                port on your <em>default</em> profile, so this is a dedicated profile that remembers its
+                sessions, not the exact window you have open.
+              </p>
+            </div>
+            <div className="field">
+              <label>Chrome debugging address</label>
+              <input type="text" name="apply_cdp_url" defaultValue={settings.applyCdpUrl} placeholder="http://127.0.0.1:9222" />
+            </div>
           </div>
           <div className="row2">
             <div className="field">

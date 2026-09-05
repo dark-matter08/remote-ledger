@@ -38,6 +38,23 @@ npm run dev          # http://localhost:5173
 Then open **/setup** and do three things: connect an AI runner, upload your résumé,
 set your location. That's it.
 
+### Auto-apply in your own browser
+
+By default auto-apply opens a throwaway Chromium: nothing is logged in, so any site
+that wants a session will ask for one. To have it open a **tab in a real Chrome that
+keeps your logins** instead:
+
+```bash
+npm run apply-browser start   # a Chrome with a persistent profile, log into job sites once
+```
+
+Then set **Settings → Scheduler → Auto-apply browser** to *My Chrome*.
+
+Chrome refuses a debugging port on your **default** profile (since Chrome 136, to stop
+malware reading your cookies), and debugging can't be switched on for a Chrome that's
+already running. So this is a dedicated profile that remembers its sessions, not the
+exact window you happen to have open.
+
 ### Or run it as a background service
 
 ```bash
