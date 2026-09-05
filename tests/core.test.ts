@@ -1134,3 +1134,99 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
 });
 
 test.after(cleanup);
+
+test("job identity: a posting is its url, not its title", async () => {
+  const { urlKey } = await import("../app/job-identity");
+
+  // the pair that actually broke the ledger: same Ashby posting, reworded title
+  assert.equal(
+    urlKey("https://jobs.ashbyhq.com/toggl/a4f3e1f5-753b-4af9-b068-86a09a164cd2"),
+    urlKey("https://jobs.ashbyhq.com/toggl/a4f3e1f5-753b-4af9-b068-86a09a164cd2/")
+  );
+  // arrival noise must not change identity
+  assert.equal(
+    urlKey("https://jobot.com/details/software-engineer/ecab52b501?utm_source=DigestAlert"),
+    urlKey("https://JOBOT.com/details/software-engineer/ecab52b501")
+  );
+  // …but a query id is part of the address on some boards, so it is kept
+  assert.ok(urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475")!.includes("gh_jid=8138475"));
+  assert.notEqual(
+    urlKey("https://job-boards.greenhouse.io/x/jobs/7673273003"),
+    urlKey("https://job-boards.greenhouse.io/x/jobs/7673273004")
+  );
+
+  // a landing page is one url shared by every role behind it — refuse to key on it,
+  // or unrelated jobs would be merged into one
+  assert.equal(urlKey("https://talent.andela.com/signup"), null);
+  assert.equal(urlKey("https://acme.com/careers"), null);
+  assert.equal(urlKey("not a url"), null);
+  assert.equal(urlKey("javascript:alert(1)"), null);
+  // a word that happens to use only hex letters is not an id
+  assert.equal(urlKey("https://acme.com/jobs/facadedecade"), null);
+});
+
+test("upsertJobs: a reworded title updates the job instead of minting a new one", async () => {
+  const { upsertJobs, setStage, getJob, jobId } = await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const url = "https://job-boards.greenhouse.io/dedupe-test/jobs/9911223344";
+  const rowsFor = () =>
+    getDb().prepare("SELECT id, role FROM jobs WHERE apply_url=?").all(url) as { id: string; role: string }[];
+
+  const first = upsertJobs([
+    { company: "Xapo Bank", role: "Front-End Web Developer", category: "high", fit_score: 80, apply_url: url },
+  ]);
+  assert.equal(first.inserted, 1);
+  const id = jobId("Xapo Bank", "Front-End Web Developer");
+  setStage(id, "applied");
+
+  // next crawl reads the same posting and writes the title differently
+  const second = upsertJobs([
+    {
+      company: "Xapo",
+      role: "Front-End Web Developer (Remote — Work from Anywhere)",
+      category: "high",
+      fit_score: 82,
+      apply_url: url,
+    },
+  ]);
+  assert.equal(second.inserted, 0, "no second row for the same posting");
+  assert.equal(second.updated, 1);
+
+  const rows = rowsFor();
+  assert.equal(rows.length, 1, "one posting, one row");
+  assert.equal(rows[0].id, id, "keeps the id the application hangs off");
+  assert.equal(rows[0].role, "Front-End Web Developer (Remote — Work from Anywhere)", "shows the fresh title");
+  assert.equal(getJob(id)!.stage, "applied", "the application survives the rewording");
+});
+
+test("dedupe: legacy duplicates fold onto the row that was worked on", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { findDuplicateJobs, mergeDuplicateJobs, setStage, getJob } = await import("../app/db.server");
+  const db = getDb();
+  const url = "https://job-boards.greenhouse.io/legacy/jobs/5150051500";
+  const key = (await import("../app/job-identity")).urlKey(url)!;
+  const now = new Date().toISOString();
+
+  // two rows for one posting, as the old slug-only upsert would have left them
+  const ins = db.prepare(
+    `INSERT INTO jobs (id,company,role,category,fit_score,apply_url,url_key,active,first_seen,last_seen,updated_at)
+     VALUES (?,?,?,'high',70,?,?,1,?,?,?)`
+  );
+  ins.run("legacy--eng", "Legacy", "Engineer", url, key, "2026-01-01T00:00:00Z", now, now);
+  ins.run("legacy--eng-remote", "Legacy", "Engineer (Remote)", url, key, "2026-02-01T00:00:00Z", now, now);
+  setStage("legacy--eng-remote", "applied"); // the one that was actually acted on
+
+  const planned = findDuplicateJobs().find((g) => g.key === key)!;
+  assert.equal(planned.keep, "legacy--eng-remote", "keeps the row with the application");
+  assert.deepEqual(planned.drop, ["legacy--eng"]);
+
+  assert.equal(mergeDuplicateJobs().removed, 0, "a dry run changes nothing");
+  assert.ok(getJob("legacy--eng"), "still there after the dry run");
+
+  mergeDuplicateJobs({ apply: true });
+  assert.equal(getJob("legacy--eng"), null, "the empty twin is gone");
+  const kept = getJob("legacy--eng-remote")!;
+  assert.equal(kept.stage, "applied");
+  assert.equal(kept.first_seen, "2026-01-01T00:00:00Z", "keeps the earliest discovery, not the duplicate's");
+  assert.equal(findDuplicateJobs().length, 0);
+});

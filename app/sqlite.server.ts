@@ -5,6 +5,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { urlKey } from "./job-identity";
 
 export const DB_PATH =
   process.env.JOBS_DB_PATH || resolve(process.cwd(), "data", "jobs.db");
@@ -51,6 +52,23 @@ export function getDb(): Db {
   try { ensureColumn(db, "kb_suggestions", "cluster_id", "INTEGER"); } catch {} // group near-duplicate drafted bullets
   try { ensureColumn(db, "kb_items", "context", "TEXT"); } catch {} // your own facts, fed to AI drafts
   try { ensureColumn(db, "companies", "kind", "TEXT NOT NULL DEFAULT 'company'"); } catch {} // company | board
+  // Stable identity for a posting, so a reworded title cannot mint a second row.
+  // See app/job-identity.ts for why the company--role slug could never do this job.
+  try {
+    ensureColumn(db, "jobs", "url_key", "TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_url_key ON jobs(url_key)");
+    const missing = db.prepare("SELECT id, apply_url FROM jobs WHERE url_key IS NULL").all() as {
+      id: string;
+      apply_url: string;
+    }[];
+    if (missing.length) {
+      const set = db.prepare("UPDATE jobs SET url_key=? WHERE id=?");
+      for (const r of missing) {
+        const k = urlKey(String(r.apply_url || ""));
+        if (k) set.run(k, String(r.id));
+      }
+    }
+  } catch {}
   // company-experience metadata (a company scan = ONE experience entry, not N projects)
   for (const t of ["kb_items", "kb_sources"]) {
     try { ensureColumn(db, t, "role", "TEXT"); } catch {}

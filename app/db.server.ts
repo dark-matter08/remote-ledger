@@ -4,6 +4,7 @@ import { unlinkSync } from "node:fs";
 import { getDb, transaction } from "./sqlite.server";
 import { STAGES, type Stage, type Category, type Job } from "./stages";
 import { REASON_RULE, NON_JUDGEMENT_REASONS, hostOf, type BlockScope } from "./trash";
+import { urlKey } from "./job-identity";
 
 export { STAGES, QUICK_STAGES, STAGE_LABEL } from "./stages";
 export type { Stage, Category, Job } from "./stages";
@@ -490,12 +491,14 @@ export function upsertJobs(
   const db = getDb();
   const isBlocked = blockIndex();
   const existing = db.prepare("SELECT id FROM jobs WHERE id=?");
+  // the board's own id for the posting, which survives a reworded title
+  const byUrlKey = db.prepare("SELECT id FROM jobs WHERE url_key=? LIMIT 1");
   const insert = db.prepare(`
-    INSERT INTO jobs (id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,source,closes_at,active,first_seen,last_seen,updated_at)
-    VALUES (@id,@company,@role,@category,@fit_score,@stack,@eligibility,@seniority,@apply_url,@source,@closes_at,1,@now,@now,@now)`);
+    INSERT INTO jobs (id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,url_key,source,closes_at,active,first_seen,last_seen,updated_at)
+    VALUES (@id,@company,@role,@category,@fit_score,@stack,@eligibility,@seniority,@apply_url,@url_key,@source,@closes_at,1,@now,@now,@now)`);
   const update = db.prepare(`
     UPDATE jobs SET company=@company, role=@role, category=@category, fit_score=@fit_score, stack=@stack,
-      eligibility=@eligibility, seniority=@seniority, apply_url=@apply_url, source=@source, closes_at=@closes_at,
+      eligibility=@eligibility, seniority=@seniority, apply_url=@apply_url, url_key=@url_key, source=@source, closes_at=@closes_at,
       active=1, last_seen=@now, updated_at=@now WHERE id=@id`);
   let inserted = 0,
     updated = 0,
@@ -511,13 +514,26 @@ export function upsertJobs(
         if (!company || !role) throw new Error("missing company/role");
         if (!VALID_CATEGORY.has(category)) throw new Error(`bad category "${category}"`);
         if (!/^https?:\/\//.test(apply_url)) throw new Error("apply_url must be http(s)");
-        // you threw this out before; a crawl finding it again does not undo that
-        if (isBlocked(raw.id || jobId(company, role), company, apply_url)) { blocked++; continue; }
+        // Which existing job is this? The slug is the fallback, not the answer: it is
+        // built from a title the crawl model rewords between runs, so matching on it
+        // alone let the same posting come back as a brand-new row — with none of the
+        // application against it. Prefer the board's id for the posting.
+        const url_key = urlKey(apply_url);
+        const slugId = raw.id || jobId(company, role);
+        const hit = (existing.get(slugId) || (url_key ? byUrlKey.get(url_key) : null)) as
+          | { id: string }
+          | undefined
+          | null;
+        const id = hit ? String(hit.id) : slugId;
+
+        // you threw this out before; a crawl finding it again does not undo that.
+        // Checked against the resolved id, so a reworded title cannot walk past it.
+        if (isBlocked(id, company, apply_url)) { blocked++; continue; }
         let fit = Number(raw.fit_score);
         if (!Number.isFinite(fit)) fit = 0;
         fit = Math.max(0, Math.min(100, Math.round(fit)));
         const row = {
-          id: raw.id || jobId(company, role),
+          id,
           company,
           role,
           category,
@@ -526,11 +542,12 @@ export function upsertJobs(
           eligibility: (raw.eligibility || "").trim() || null,
           seniority: (raw.seniority || "").trim() || null,
           apply_url,
+          url_key,
           source: (raw.source || "").trim() || null,
           closes_at: (raw.closes_at || "").trim() || null,
           now,
         };
-        if (existing.get(row.id)) {
+        if (hit) {
           update.run(row);
           updated++;
         } else {
@@ -736,4 +753,144 @@ export function jobApplyActivity(jobId: string): {
       .prepare("SELECT id, question, answer FROM apply_questions WHERE job_id=? ORDER BY id DESC")
       .all(jobId) as any[],
   };
+}
+
+// --- duplicate repair -------------------------------------------------------
+//
+// Rows that predate url_key identity: the same posting, split across two ids because
+// the crawl reworded its title. Merging them is not just cosmetic — the application,
+// the tailored résumés and the event history sit on one of the two ids, and the
+// ledger shows the other as a fresh find.
+
+// How far along the pipeline a stage is. "rejected" outranks "saved" because it still
+// means an application went out; the row that has been acted on is the one to keep.
+const STAGE_RANK: Record<string, number> = {
+  offer: 6, interview: 5, screening: 4, applied: 3, rejected: 3, withdrawn: 2, saved: 1,
+};
+const stageRank = (s?: string | null) => (s ? STAGE_RANK[s] ?? 0 : -1);
+
+// Everything that points at a job. apply_questions/session rows can carry uniqueness
+// constraints, so repointing is OR IGNORE: if the winner already has the row, the
+// loser's copy is redundant rather than worth failing the merge over.
+const JOB_CHILD_TABLES = [
+  "llm_calls", "resume_versions", "application_events",
+  "apply_session_jobs", "apply_logs", "apply_questions", "email_messages",
+];
+
+export interface DupGroup {
+  key: string;
+  keep: string;
+  drop: string[];
+  reason: string;
+}
+
+/** Jobs that share a posting id. Read-only. */
+export function findDuplicateJobs(): DupGroup[] {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT url_key, id, first_seen, last_seen FROM jobs WHERE url_key IS NOT NULL ORDER BY first_seen"
+  ).all() as { url_key: string; id: string; first_seen: string; last_seen: string }[];
+
+  const by = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const list = by.get(r.url_key);
+    if (list) list.push(r);
+    else by.set(r.url_key, [r]);
+  }
+
+  const out: DupGroup[] = [];
+  for (const [key, group] of by) {
+    if (group.length < 2) continue;
+    const scored = group.map((r) => {
+      const app = db.prepare("SELECT stage FROM applications WHERE job_id=?").get(r.id) as
+        | { stage: string }
+        | undefined;
+      const n = (t: string) =>
+        (db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE job_id=?`).get(r.id) as { c: number }).c;
+      return { ...r, stage: app?.stage, resumes: n("resume_versions"), events: n("application_events") };
+    });
+    // most progressed first, then most work invested, then whichever we saw first
+    scored.sort(
+      (a, b) =>
+        stageRank(b.stage) - stageRank(a.stage) ||
+        b.resumes - a.resumes ||
+        b.events - a.events ||
+        String(a.first_seen).localeCompare(String(b.first_seen))
+    );
+    const [keep, ...drop] = scored;
+    out.push({
+      key,
+      keep: keep.id,
+      drop: drop.map((d) => d.id),
+      reason: `stage=${keep.stage ?? "none"} resumes=${keep.resumes} events=${keep.events}`,
+    });
+  }
+  return out;
+}
+
+/** Fold each duplicate group onto one row. Returns what it did (or would do). */
+export function mergeDuplicateJobs(opts: { apply?: boolean } = {}): {
+  groups: DupGroup[];
+  moved: number;
+  removed: number;
+} {
+  const groups = findDuplicateJobs();
+  if (!opts.apply) return { groups, moved: 0, removed: 0 };
+
+  const db = getDb();
+  let moved = 0,
+    removed = 0;
+
+  transaction(() => {
+    for (const g of groups) {
+      for (const loser of g.drop) {
+        for (const t of JOB_CHILD_TABLES) {
+          try {
+            const r = db.prepare(`UPDATE OR IGNORE ${t} SET job_id=? WHERE job_id=?`).run(g.keep, loser);
+            moved += Number(r.changes || 0);
+          } catch {
+            // a table that does not exist on this DB has nothing to move
+          }
+        }
+
+        // applications is one row per job, so it merges rather than moves
+        const win = db.prepare("SELECT * FROM applications WHERE job_id=?").get(g.keep) as any;
+        const lose = db.prepare("SELECT * FROM applications WHERE job_id=?").get(loser) as any;
+        if (lose && !win) {
+          db.prepare("UPDATE applications SET job_id=? WHERE job_id=?").run(g.keep, loser);
+          moved++;
+        } else if (lose && win) {
+          const stage = stageRank(lose.stage) > stageRank(win.stage) ? lose.stage : win.stage;
+          // earliest application date is the true one — the later row is the duplicate
+          const applied =
+            [win.applied_at, lose.applied_at].filter(Boolean).sort()[0] ?? null;
+          db.prepare(
+            `UPDATE applications SET stage=?, sub_stage=COALESCE(sub_stage,?), applied_at=?,
+               resume_version_id=COALESCE(resume_version_id,?), next_action=COALESCE(next_action,?),
+               next_action_at=COALESCE(next_action_at,?), updated_at=? WHERE job_id=?`
+          ).run(
+            stage, lose.sub_stage ?? null, applied, lose.resume_version_id ?? null,
+            lose.next_action ?? null, lose.next_action_at ?? null,
+            new Date().toISOString(), g.keep
+          );
+          db.prepare("DELETE FROM applications WHERE job_id=?").run(loser);
+        }
+
+        // keep the earliest discovery and the latest sighting, so the ledger dates
+        // and the stale-trash timer both read from the whole history, not half of it
+        db.prepare(
+          `UPDATE jobs SET
+             first_seen = MIN(first_seen, (SELECT first_seen FROM jobs WHERE id=?)),
+             last_seen  = MAX(last_seen,  (SELECT last_seen  FROM jobs WHERE id=?)),
+             active     = MAX(active,     (SELECT active     FROM jobs WHERE id=?))
+           WHERE id=?`
+        ).run(loser, loser, loser, g.keep);
+
+        db.prepare("DELETE FROM jobs WHERE id=?").run(loser);
+        removed++;
+      }
+    }
+  });
+
+  return { groups, moved, removed };
 }
