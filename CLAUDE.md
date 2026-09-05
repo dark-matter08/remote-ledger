@@ -10,7 +10,8 @@ Privacy: data + keys stay on the machine; only the chosen AI provider is called.
 - `app/secrets.server.ts` — encrypted BYO-key store (AES-256-GCM, local master key; env vars override).
 - `app/llm/` — runner layer. `types.ts`, `adapters.server.ts` (CLI: claude/codex/cursor/gemini;
   API: anthropic/openai/google/openrouter/groq/mistral/ollama), `runner.server.ts`
-  (dispatch + cost + budget + `llm_calls` logging), `pricing.server.ts`, + root `pricing.json`.
+  (dispatch + cost + budget + `llm_calls` logging), `pricing.server.ts`, + root `pricing.json`,
+  `openrouter.server.ts` (catalogue: free-tier detection, price tiers, live cost, 6h disk cache).
 - `app/resume/` — `profiles.server.ts` (PDF→JSON parse, CRUD), `ai.server.ts` (tailor with
   anti-hallucination guard, match, cover, prep), `templates.server.ts` (4 styles),
   `pdf.server.ts` (Playwright), `versions.server.ts`, `types.ts`.

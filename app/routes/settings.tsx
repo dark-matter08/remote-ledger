@@ -5,9 +5,10 @@ import { Form, redirect, useNavigation } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { OpenRouterPicker } from "../components/OpenRouterPicker";
 import { getSetting, setSetting } from "../sqlite.server";
 import { listRunners } from "../llm/runner.server";
-import { discoverModels } from "../llm/models.server";
+import { discoverModels, openRouterShortlist } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import {
@@ -43,8 +44,21 @@ export async function loader() {
   const modelOptions: Record<string, { value: string; label: string }[]> = {};
   await Promise.all(
     runners.map(async (r) => {
-      const ms = await discoverModels(r.id, r.provider, r.kind);
-      modelOptions[r.id] = ms.map((m) => ({ value: m, label: m === "default" ? "Default" : m }));
+      // OpenRouter fronts 400+ models — the dropdown gets the free + cheapest ones
+      // with their prices spelled out; the OpenRouter tab browses the rest.
+      const opts =
+        r.provider === "openrouter"
+          ? await openRouterShortlist()
+          : (await discoverModels(r.id, r.provider, r.kind)).map((m) => ({
+              value: m,
+              label: m === "default" ? "Default" : m,
+            }));
+      // The Select below falls back to the runner's own default, so that model has to
+      // be one of the options or the control renders empty — which is what Ollama does
+      // when it is not running and discovery comes back with nothing but "default".
+      if (r.defaultModel && !opts.some((o) => o.value === r.defaultModel))
+        opts.push({ value: r.defaultModel, label: r.defaultModel });
+      modelOptions[r.id] = opts;
     })
   );
   return {
@@ -57,6 +71,10 @@ export async function loader() {
       fallback_runner: getSetting("fallback_runner") || "",
       models: Object.fromEntries(runners.map((r) => [r.id, getSetting(`model_${r.id}`) || ""])),
       budget: getSetting("budget_monthly_usd") || "0",
+      openrouterModel: getSetting("model_openrouter-api") || "",
+      openrouterFreeOnly: getSetting("openrouter_free_only") === "true",
+      openrouterFreeFallback: getSetting("openrouter_free_fallback") !== "false",
+      openrouterFallbacks: getSetting("openrouter_fallbacks") || "",
       schedulerInterval: getSetting("scheduler_interval_hours") || "4",
       schedulerEnabled: getSetting("scheduler_enabled") !== "false",
       scrapeJds: getSetting("scrape_jds") !== "false",
@@ -92,6 +110,17 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "clear-key") {
     deleteSecret(String(form.get("name")));
     return { ok: true, msg: "Key cleared." };
+  }
+  if (intent === "openrouter-use") {
+    const model = String(form.get("model") || "").trim();
+    if (model) setSetting("model_openrouter-api", model);
+    return { ok: true, msg: `OpenRouter will use ${model}.` };
+  }
+  if (intent === "openrouter-save") {
+    save("openrouter_fallbacks");
+    setSetting("openrouter_free_only", form.get("openrouter_free_only") ? "true" : "false");
+    setSetting("openrouter_free_fallback", form.get("openrouter_free_fallback") ? "true" : "false");
+    return { ok: true, msg: "OpenRouter settings saved." };
   }
   if (intent === "crawl-now") {
     const id = startCrawl("find", "manual");
@@ -150,7 +179,7 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "Scheduler", "Companies", "Profile", "Prompt"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Scheduler", "Companies", "Profile", "Prompt"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
@@ -166,7 +195,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
     <Shell>
       <div className="page-head">
         <h1>Settings</h1>
-        <div className="sub">Runners · Keys · Scheduler · Profile · Prompt</div>
+        <div className="sub">Runners · Keys · OpenRouter · Scheduler · Profile · Prompt</div>
       </div>
       <hr className="rule double" />
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}
@@ -213,10 +242,17 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               {availRunners.map((r) => (
                 <div className="field" key={r.id}>
                   <label>{r.label} {r.kind === "cli" ? <span className="badge off">cli</span> : null}</label>
-                  <Select name={`model_${r.id}`} defaultValue={settings.models[r.id] || "default"} options={modelOptions[r.id] || [{ value: "default", label: "Default" }]} />
+                  {/* mirrors modelFor(): saved model, else the runner's own default */}
+                  <Select name={`model_${r.id}`} defaultValue={settings.models[r.id] || r.defaultModel || "default"} options={modelOptions[r.id] || [{ value: "default", label: "Default" }]} />
                 </div>
               ))}
             </div>
+            {availRunners.some((r) => r.id === "openrouter-api") && (
+              <p className="hint" style={{ marginTop: 0 }}>
+                OpenRouter shows its free models and cheapest paid ones here.{" "}
+                <button type="button" className="back-link" onClick={() => setTab("OpenRouter")} style={{ color: "var(--vermillion)" }}>Browse the full catalogue →</button>
+              </p>
+            )}
             <div className="row2" style={{ marginTop: 8 }}>
               <div className="field"><label>Monthly budget cap (USD, 0 = none)</label><input type="number" step="0.01" name="budget_monthly_usd" defaultValue={settings.budget} /></div>
               <div className="field"><label>Default resume style</label><Select name="default_resume_style" defaultValue={settings.defaultStyle} options={RESUME_STYLES.map((s) => ({ value: s, label: s }))} /></div>
@@ -240,7 +276,20 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
             </Form>
           ))}
           <p className="hint" style={{ marginTop: 12 }}>CLI runners ({cliRunners.map((r) => r.label).join(", ")}) need no key.</p>
+          <p className="hint" style={{ marginTop: 12 }}>
+            No budget for any of these? <button type="button" className="back-link" onClick={() => setTab("OpenRouter")} style={{ color: "var(--vermillion)" }}>OpenRouter runs the whole Ledger free →</button>
+          </p>
         </div>
+      )}
+
+      {tab === "OpenRouter" && (
+        <OpenRouterPicker
+          selected={settings.openrouterModel}
+          freeOnly={settings.openrouterFreeOnly}
+          freeFallback={settings.openrouterFreeFallback}
+          fallbacks={settings.openrouterFallbacks}
+          hasKey={keys.some((k) => k.name === "openrouter_api_key" && k.set)}
+        />
       )}
 
       {tab === "Scheduler" && (
