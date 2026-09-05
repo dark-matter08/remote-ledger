@@ -12,7 +12,8 @@
     "crawl": "tsx scripts/run-crawl.ts",
     "scheduler": "node scripts/os-scheduler.mjs",
     "postinstall": "playwright install chromium || true",
-    "test:prefill": "node --experimental-strip-types scripts/test-prefill.ts"
+    "test:prefill": "node --experimental-strip-types scripts/test-prefill.ts",
+    "serve": "node scripts/serve.mjs"
   },
   "dependencies": {
     "@react-router/node": "7.16.0",
