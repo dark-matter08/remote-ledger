@@ -722,4 +722,51 @@ test("auto-apply browser: attach mode fails loudly, and is off by default", asyn
   setSetting("apply_browser", "playwright");
 });
 
+test("dropport: the raw port redirects to the clean URL, but only when it should", async () => {
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { resolve: r } = await import("node:path");
+
+  const dir = mkdtempSync(r(tmpdir(), "dp-"));
+  const reg = r(dir, "apps.json");
+  process.env.DROPPORT_REGISTRY = reg;
+  writeFileSync(reg, JSON.stringify({ apps: [{ host: "remoteledger.local", port: 5173 }] }));
+
+  const { dropportRedirect } = await import("../app/dropport.server");
+  const req = (url: string, host: string, method = "GET") =>
+    new Request(url, { method, headers: { host } });
+
+  assert.equal(
+    dropportRedirect(req("http://remoteledger.local:5173/board?q=x", "remoteledger.local:5173")),
+    "https://remoteledger.local/board?q=x",
+    "path and query are carried across"
+  );
+
+  // everything below must be left alone
+  assert.equal(dropportRedirect(req("https://remoteledger.local/", "remoteledger.local")), null, "already clean");
+  assert.equal(dropportRedirect(req("http://localhost:5173/", "localhost:5173")), null, "localhost is not dropport's");
+  assert.equal(dropportRedirect(req("http://127.0.0.1:5173/", "127.0.0.1:5173")), null, "raw IP is not dropport's");
+  assert.equal(
+    dropportRedirect(req("http://remoteledger.local:3000/", "remoteledger.local:3000")),
+    null,
+    "a port dropport does not map is not ours to hijack"
+  );
+  assert.equal(
+    dropportRedirect(req("http://remoteledger.local:5173/", "remoteledger.local:5173", "POST")),
+    null,
+    "redirecting a POST would silently discard the form body"
+  );
+
+  // with dropport absent the app must behave exactly as before
+  process.env.DROPPORT_REGISTRY = r(dir, "does-not-exist.json");
+  const fresh = await import("../app/dropport.server?nocache=" + Date.now());
+  assert.equal(
+    fresh.dropportRedirect(req("http://remoteledger.local:5173/", "remoteledger.local:5173")),
+    null,
+    "not installed means never redirect"
+  );
+
+  delete process.env.DROPPORT_REGISTRY;
+});
+
 test.after(cleanup);
