@@ -352,8 +352,10 @@ class OpenRouterAdapter implements RunnerAdapter {
       }),
     });
 
+    // a body that will not parse is still a failure — without this the unreadable
+    // `null` walks into the field reads below and surfaces as a bare TypeError
     const j: any = await res.json().catch(() => null);
-    if (!res.ok || j?.error) throw new Error(openRouterError(res.status, j, model));
+    if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, model));
 
     const used = String(j.model || model);
     const text = j.choices?.[0]?.message?.content ?? "";
@@ -391,6 +393,10 @@ function openRouterError(status: number, body: any, model: string): string {
     return `OpenRouter rate-limited "${model}". Free models share a small per-minute allowance — wait a moment, pick another free model, or add credit to raise the cap. (${msg})`;
   if (code === 404)
     return `OpenRouter has no model called "${model}". Refresh the catalogue in Settings → OpenRouter.`;
+  // the status codes above still read straight off an unparseable response; only a
+  // body we could not read at all lands here, which is a proxy or a captive portal
+  if (!body)
+    return `OpenRouter answered ${status}, but not with JSON — something between you and openrouter.ai is rewriting the response. Check the connection and try again.`;
   return `OpenRouter ${code}: ${msg || "request failed"}`;
 }
 

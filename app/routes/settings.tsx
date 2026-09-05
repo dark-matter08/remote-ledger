@@ -46,12 +46,19 @@ export async function loader() {
     runners.map(async (r) => {
       // OpenRouter fronts 400+ models — the dropdown gets the free + cheapest ones
       // with their prices spelled out; the OpenRouter tab browses the rest.
-      if (r.provider === "openrouter") {
-        modelOptions[r.id] = await openRouterShortlist();
-        return;
-      }
-      const ms = await discoverModels(r.id, r.provider, r.kind);
-      modelOptions[r.id] = ms.map((m) => ({ value: m, label: m === "default" ? "Default" : m }));
+      const opts =
+        r.provider === "openrouter"
+          ? await openRouterShortlist()
+          : (await discoverModels(r.id, r.provider, r.kind)).map((m) => ({
+              value: m,
+              label: m === "default" ? "Default" : m,
+            }));
+      // The Select below falls back to the runner's own default, so that model has to
+      // be one of the options or the control renders empty — which is what Ollama does
+      // when it is not running and discovery comes back with nothing but "default".
+      if (r.defaultModel && !opts.some((o) => o.value === r.defaultModel))
+        opts.push({ value: r.defaultModel, label: r.defaultModel });
+      modelOptions[r.id] = opts;
     })
   );
   return {

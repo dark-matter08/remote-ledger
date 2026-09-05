@@ -916,7 +916,14 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
   let reply: any = { ok: true, status: 200, body: { model: "lab/json-free:free", choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0 } } };
   globalThis.fetch = (async (url: any, init: any) => {
     seen = { url: String(url), init };
-    return { ok: reply.ok, status: reply.status, json: async () => reply.body } as any;
+    return {
+      ok: reply.ok,
+      status: reply.status,
+      json: async () => {
+        if (reply.unparseable) throw new SyntaxError("Unexpected token < in JSON at position 0");
+        return reply.body;
+      },
+    } as any;
   }) as any;
 
   try {
@@ -989,6 +996,15 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
     // OpenRouter can return an error with HTTP 200 — that must still throw
     reply = { ok: true, status: 200, body: { error: { code: 401, message: "bad key" } } };
     await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"), /rejected the key/);
+    // a proxy or captive portal answers 200 with HTML: still a sentence, not a TypeError
+    reply = { ok: true, status: 200, unparseable: true };
+    await assert.rejects(
+      () => or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free"),
+      (e: any) => !(e instanceof TypeError) && /not with JSON/.test(e.message)
+    );
+    // and one that is merely unreadable behind a real status code keeps that meaning
+    reply = { ok: false, status: 401, unparseable: true };
+    await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"), /rejected the key/);
   } finally {
     globalThis.fetch = real;
     deleteSecret("openrouter_api_key");
@@ -1027,6 +1043,89 @@ test("openrouter: a synchronous cache read does not make the catalogue look offl
   const cat = await mod.openRouterCatalog();
   assert.equal(cat.stale, false, "a fresh disk cache is not stale");
   assert.equal(cat.models.length, 1);
+});
+
+test("openrouter: a failed refresh is retried, not held for the whole TTL", async () => {
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const { dirname, resolve: r } = await import("node:path");
+  const mod = await import("../app/llm/openrouter.server?retry=" + Date.now());
+  const cachePath = r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json");
+  const raw = (fetchedAt: string) =>
+    JSON.stringify({
+      fetchedAt,
+      models: mod.normalizeCatalog({
+        data: [
+          {
+            id: "lab/m:free",
+            name: "m",
+            description: "",
+            context_length: 1000,
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            pricing: { prompt: "0", completion: "0" },
+            supported_parameters: [],
+          },
+        ],
+      }),
+    });
+
+  const real = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    throw new Error("ENETDOWN");
+  }) as any;
+
+  try {
+    // nothing on disk: a failure leaves an empty picker, so it must not be remembered
+    rmSync(cachePath, { force: true });
+    const a = await mod.openRouterCatalog();
+    assert.equal(a.models.length, 0);
+    assert.equal(a.stale, true);
+    assert.match(a.error!, /ENETDOWN/, "the reason reaches the picker");
+    await mod.openRouterCatalog();
+    assert.equal(calls, 2, "an empty catalogue is retried rather than cached for 6h");
+
+    // the network comes back — the very next call must pick it up, not wait out the TTL
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: "lab/m:free",
+            name: "m",
+            description: "",
+            context_length: 1000,
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            pricing: { prompt: "0", completion: "0" },
+            supported_parameters: [],
+          },
+        ],
+      }),
+    })) as any;
+    const back = await mod.openRouterCatalog();
+    assert.equal(back.stale, false, "recovers as soon as the connection does");
+    assert.equal(back.models.length, 1);
+
+    // a cache too old to trust plus a dead network: serve it, say why, and hold it
+    // briefly rather than hammering OpenRouter on every page load
+    const stale = await import("../app/llm/openrouter.server?retry2=" + Date.now());
+    writeFileSync(cachePath, raw(new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString()));
+    calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      throw new Error("ENETDOWN");
+    }) as any;
+    const s1 = await stale.openRouterCatalog();
+    assert.equal(s1.models.length, 1, "a stale copy still beats an empty picker");
+    assert.equal(s1.stale, true);
+    const s2 = await stale.openRouterCatalog();
+    assert.equal(s2.models.length, 1);
+    assert.match(s2.error!, /ENETDOWN/, "the reason survives the retry window");
+    assert.equal(calls, 1, "held for a moment instead of re-fetching every call");
+  } finally {
+    globalThis.fetch = real;
+    rmSync(cachePath, { force: true });
+  }
 });
 
 test.after(cleanup);

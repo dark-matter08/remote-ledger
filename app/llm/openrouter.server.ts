@@ -17,6 +17,7 @@ export const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const CATALOG_URL = `${OPENROUTER_BASE}/models`;
 const CACHE_PATH = resolve(dirname(DB_PATH), "openrouter-models.json");
 const TTL_MS = 6 * 60 * 60 * 1000; // 6h — the catalogue moves, but not by the minute
+const RETRY_MS = 60 * 1000; // how long a failed refresh is held before trying again
 
 // --- shape -----------------------------------------------------------------
 
@@ -233,7 +234,13 @@ export function normalizeCatalog(raw: any): OrModel[] {
 // `checkedAt` is when openRouterCatalog last decided this copy was current. A memo
 // seeded by the synchronous cachedCatalog() leaves it at 0, so the next async call
 // still revalidates instead of inheriting that read's pessimistic `stale` flag.
-let memo: { models: OrModel[]; fetchedAt: string; checkedAt: number; stale: boolean } | null = null;
+let memo: {
+  models: OrModel[];
+  fetchedAt: string;
+  checkedAt: number;
+  stale: boolean;
+  error?: string;
+} | null = null;
 
 function readCache(): { fetchedAt: string; models: OrModel[] } | null {
   try {
@@ -261,8 +268,10 @@ function writeCache(models: OrModel[], fetchedAt: string): void {
  */
 export async function openRouterCatalog(opts: { force?: boolean } = {}): Promise<OrCatalog> {
   const now = Date.now();
-  if (!opts.force && memo && now - memo.checkedAt < TTL_MS)
-    return { models: memo.models, fetchedAt: memo.fetchedAt, stale: memo.stale };
+  // A failed refresh is held for a minute, not for the six-hour TTL: a network blip
+  // must not leave the picker frozen long after the connection came back.
+  if (!opts.force && memo && now - memo.checkedAt < (memo.stale ? RETRY_MS : TTL_MS))
+    return { models: memo.models, fetchedAt: memo.fetchedAt, stale: memo.stale, error: memo.error };
 
   const cached = memo?.models.length ? { fetchedAt: memo.fetchedAt, models: memo.models } : readCache();
   if (!opts.force && cached) {
@@ -287,13 +296,13 @@ export async function openRouterCatalog(opts: { force?: boolean } = {}): Promise
     return { models, fetchedAt, stale: false };
   } catch (e: any) {
     const error = String(e?.message || e);
-    memo = {
-      models: cached?.models ?? [],
-      fetchedAt: cached?.fetchedAt ?? "",
-      checkedAt: now,
-      stale: true,
-    };
-    return { models: memo.models, fetchedAt: memo.fetchedAt, stale: true, error };
+    // Nothing to serve is not worth remembering at all — the next caller retries
+    // rather than inheriting an empty catalogue. A stale copy is worth holding
+    // briefly, along with the reason, so the picker can say why it looks old.
+    memo = cached?.models.length
+      ? { models: cached.models, fetchedAt: cached.fetchedAt, checkedAt: now, stale: true, error }
+      : null;
+    return { models: cached?.models ?? [], fetchedAt: cached?.fetchedAt ?? "", stale: true, error };
   }
 }
 

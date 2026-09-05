@@ -18,7 +18,6 @@ const PROVIDER_FALLBACK: Record<string, string[]> = {
   google: ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"],
   groq: ["llama-3.3-70b-versatile"],
   mistral: ["mistral-large-latest"],
-  openrouter: ["openrouter/free"],
   ollama: [],
 };
 
@@ -46,8 +45,6 @@ async function liveModels(provider: string): Promise<string[]> {
       return (j.data || []).map((m: any) => m.id).filter(Boolean);
     }
     if (provider === "openai") return openaiList("https://api.openai.com/v1", getSecret("openai_api_key"));
-    // OpenRouter publishes its catalogue without a key, so we always have the real list
-    if (provider === "openrouter") return (await openRouterCatalog()).models.map((m) => m.id);
     if (provider === "groq") return openaiList("https://api.groq.com/openai/v1", getSecret("groq_api_key"));
     if (provider === "mistral") return openaiList("https://api.mistral.ai/v1", getSecret("mistral_api_key"));
     if (provider === "google") {
@@ -69,8 +66,9 @@ async function liveModels(provider: string): Promise<string[]> {
   return [];
 }
 
+// OpenRouter does not come through here — it has its own catalogue, and the picker
+// needs prices alongside the ids. Call openRouterShortlist() instead.
 export async function discoverModels(runnerId: string, provider: string, kind: "cli" | "api"): Promise<string[]> {
-  if (provider === "openrouter") return (await openRouterShortlist()).map((o) => o.value);
   const aliases = kind === "cli" ? CLI_ALIASES[runnerId] || ["default"] : [];
   const live = await liveModels(provider);
   const fb = PROVIDER_FALLBACK[provider] || [];
