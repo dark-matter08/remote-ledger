@@ -222,36 +222,50 @@ export default function Home({ loaderData }: Route.ComponentProps) {
     });
   }
 
-  const sections = useMemo(() => {
+  const { sections, applied } = useMemo(() => {
     const query = q.trim().toLowerCase();
-    return ORDER.filter((c) => cats.has(c)).map((c) => {
-      let jobs = data.groups[c] || [];
-      jobs = jobs.filter((j) => {
-        if (hidePassed && (j.stage === "rejected" || j.stage === "withdrawn")) return false;
-        const hay = `${j.company} ${j.role} ${j.stack ?? ""} ${j.eligibility ?? ""} ${j.source ?? ""}`;
-        if (query && !hay.toLowerCase().includes(query)) return false;
-        if (tags.size) {
-          for (const t of tags) {
-            const m = STACK_TAGS.find((x) => x.label === t);
-            if (m && !m.test.test(hay)) return false;
-          }
+    const matches = (j: Job) => {
+      if (hidePassed && (j.stage === "rejected" || j.stage === "withdrawn")) return false;
+      const hay = `${j.company} ${j.role} ${j.stack ?? ""} ${j.eligibility ?? ""} ${j.source ?? ""}`;
+      if (query && !hay.toLowerCase().includes(query)) return false;
+      if (tags.size) {
+        for (const t of tags) {
+          const m = STACK_TAGS.find((x) => x.label === t);
+          if (m && !m.test.test(hay)) return false;
         }
-        return true;
-      });
-      const sorted = [...jobs].sort((a, b) => {
-        if (sort === "fit") return b.fit_score - a.fit_score;
-        if (sort === "company") return a.company.localeCompare(b.company);
-        if (sort === "newest") return (b.first_seen || "").localeCompare(a.first_seen || "");
-        if (sort === "oldest") return (a.first_seen || "").localeCompare(b.first_seen || "");
-        const av = a.closes_at || "9999-12-31";
-        const bv = b.closes_at || "9999-12-31";
-        return av.localeCompare(bv);
-      });
-      return { category: c, jobs: sorted };
+      }
+      return true;
+    };
+    const cmp = (a: Job, b: Job) => {
+      if (sort === "fit") return b.fit_score - a.fit_score;
+      if (sort === "company") return a.company.localeCompare(b.company);
+      if (sort === "newest") return (b.first_seen || "").localeCompare(a.first_seen || "");
+      if (sort === "oldest") return (a.first_seen || "").localeCompare(b.first_seen || "");
+      const av = a.closes_at || "9999-12-31";
+      const bv = b.closes_at || "9999-12-31";
+      return av.localeCompare(bv);
+    };
+
+    // The ledger answers "what should I apply to next", so anything already acted on
+    // is not an entry there — it drops to its own shelf at the bottom.
+    const chosen = ORDER.filter((c) => cats.has(c));
+    const secs = chosen.map((c) => {
+      const all = (data.groups[c] || []).filter(matches);
+      return {
+        category: c,
+        jobs: all.filter((j) => j.stage === "saved").sort(cmp),
+        // so an empty section can say WHY it is empty
+        movedToShelf: all.filter((j) => j.stage !== "saved").length,
+      };
     });
+    const done = chosen
+      .flatMap((c) => data.groups[c] || [])
+      .filter((j) => matches(j) && j.stage !== "saved")
+      .sort(cmp);
+    return { sections: secs, applied: done };
   }, [data.groups, cats, tags, hidePassed, q, sort]);
 
-  const shown = sections.reduce((n, s) => n + s.jobs.length, 0);
+  const shown = sections.reduce((n, s) => n + s.jobs.length, 0) + applied.length;
   const sortLabel =
     sort === "fit" ? "Fit"
     : sort === "newest" ? "Newest"
@@ -294,7 +308,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       </div>
       <hr className="rule thin" />
 
-      {sections.map(({ category, jobs }) => {
+      {sections.map(({ category, jobs, movedToShelf }) => {
         const cm = CATEGORY_META[category];
         return (
           <section key={category}>
@@ -304,7 +318,11 @@ export default function Home({ loaderData }: Route.ComponentProps) {
               <span className="count">{jobs.length} entries</span>
             </div>
             {jobs.length === 0 ? (
-              <div className="ledger empty">— no entries match the current filters —</div>
+              <div className="ledger empty">
+                {movedToShelf > 0
+                  ? `— nothing left to apply to here · ${movedToShelf} already actioned, below —`
+                  : "— no entries match the current filters —"}
+              </div>
             ) : (
               <div className="ledger">
                 {jobs.map((job, i) => (
@@ -315,6 +333,21 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           </section>
         );
       })}
+
+      {applied.length > 0 && (
+        <section>
+          <div className="section-head">
+            <h2>Applied &amp; in flight</h2>
+            <span className="tag sh-medium">Already actioned · tracked on the board</span>
+            <span className="count">{applied.length} entries</span>
+          </div>
+          <div className="ledger">
+            {applied.map((job, i) => (
+              <Entry key={job.id} job={job} index={i + 1} openId={openId} setOpenId={setOpenId} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {shown === 0 && (
         <p className="colophon" style={{ marginTop: 40 }}>Nothing matches. Clear a filter to bring the ledger back.</p>
