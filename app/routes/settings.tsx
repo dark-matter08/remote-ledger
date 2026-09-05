@@ -61,6 +61,7 @@ export async function loader() {
       schedulerEnabled: getSetting("scheduler_enabled") !== "false",
       scrapeJds: getSetting("scrape_jds") !== "false",
       scrapeLimit: getSetting("scrape_limit") || "12",
+      staleTrashDays: getSetting("stale_trash_days") ?? "14",
       crawlMode: getSetting("crawl_mode") || "time",
       crawlTimeout: getSetting("crawl_timeout_min") || "15",
       crawlTarget: getSetting("crawl_target_count") || "5",
@@ -105,6 +106,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "save-scheduler") {
     save("scheduler_interval_hours");
     save("scrape_limit");
+    save("stale_trash_days");
     save("crawl_mode");
     save("crawl_timeout_min");
     save("crawl_target_count");
@@ -249,6 +251,17 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           <div className="row2">
             <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><label style={{ margin: 0 }}><input type="checkbox" name="scrape_jds" defaultChecked={settings.scrapeJds} /> Scrape full JDs on crawl</label></div>
             <div className="field"><label>Max postings to scrape per crawl</label><input type="number" min="0" name="scrape_limit" defaultValue={settings.scrapeLimit} /></div>
+          </div>
+          <div className="row2">
+            <div className="field">
+              <label>Trash untouched jobs after (days)</label>
+              <input type="number" min="0" name="stale_trash_days" defaultValue={settings.staleTrashDays} />
+              <p className="hint" style={{ margin: "6px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+                A job still at &ldquo;Saved&rdquo; this long after it appeared is deleted for good and blocked, so a
+                crawl cannot re-add it. Anything you touched is kept: moved past Saved, given notes, or
+                had a r&eacute;sum&eacute; generated. <strong>0 turns this off.</strong>
+              </p>
+            </div>
           </div>
           <div className="row2">
             <div className="field">

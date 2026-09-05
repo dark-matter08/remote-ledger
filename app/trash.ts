@@ -14,10 +14,16 @@ export const TRASH_REASONS: { code: string; label: string; rule: string }[] = [
   { code: "seniority", label: "Seniority mismatch", rule: "aimed at a seniority the candidate is not targeting" },
   { code: "dead", label: "Dead or closed posting", rule: "already closed, filled, or expired" },
   { code: "agency", label: "Staffing agency / talent network", rule: "a staffing agency, talent network, or aggregator rather than a real employer posting" },
+  { code: "stale", label: "Went stale (never actioned)", rule: "" },
   { code: "other", label: "Other", rule: "unwanted" },
 ];
 
 export const REASON_RULE = new Map(TRASH_REASONS.map((r) => [r.code, r.rule]));
+
+// Reasons that say nothing about whether the job was any good, so they must not be
+// fed back to the crawler as a preference. Sitting untouched for a fortnight is a
+// fact about your attention, not about the role.
+export const NON_JUDGEMENT_REASONS = new Set(["stale", "other"]);
 export const REASON_LABEL = new Map(TRASH_REASONS.map((r) => [r.code, r.label]));
 
 /** Hostname of an apply URL, or null when it will not parse. */

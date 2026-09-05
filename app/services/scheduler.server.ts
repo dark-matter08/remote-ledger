@@ -2,7 +2,7 @@
 // when one is due (now - last_crawl >= interval). Reads settings each tick, so
 // enabling/disabling or changing the interval takes effect without a restart.
 import { getSetting } from "../sqlite.server";
-import { getMeta } from "../db.server";
+import { getMeta, trashStaleJobs } from "../db.server";
 import { runCrawl } from "./crawl.server";
 import { runDueSources } from "./kb.server";
 import { runDueEmailSync } from "./email.server";
@@ -16,6 +16,14 @@ const TICK_MS = 30 * 60 * 1000;
 
 async function tick() {
   try {
+    // sweep before crawling, so a fresh crawl is not judged against yesterday's clutter
+    try {
+      const days = Number(getSetting("stale_trash_days") ?? "14");
+      if (days > 0) {
+        const r = trashStaleJobs(days, (m) => console.log("[stale]", m));
+        if (r.trashed) console.log(`[scheduler] trashed ${r.trashed} stale job(s) (untouched ${days}+ days)`);
+      }
+    } catch (e) { console.error("[scheduler] stale sweep error:", e); }
     try { runDueSources(); } catch (e) { console.error("[scheduler] kb rescan error:", e); }
     try { runDueEmailSync(); } catch (e) { console.error("[scheduler] email sync error:", e); }
     if (getSetting("scheduler_enabled") === "false") return;

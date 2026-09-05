@@ -573,6 +573,56 @@ test("prefill: a long question label still gets pooled", async () => {
   assert.equal(asks.find((q: string) => normQ(q).startsWith(normQ(short.slice(0, 50)))), short);
 });
 
+test("stale sweep: clears untouched jobs, never ones you engaged with", async () => {
+  const { upsertJobs, trashStaleJobs, setStage, updateNotes, getJob, listBlocks, blocklistPrompt } =
+    await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  const old = new Date(Date.now() - 30 * 864e5).toISOString();
+  const fresh = new Date().toISOString();
+  const mk = (company: string, role: string, seen: string) => {
+    upsertJobs([{ company, role, category: "high", fit_score: 80, apply_url: `https://x.example/${company}` }]);
+    const id = `${company.toLowerCase()}--${role.toLowerCase()}`;
+    db.prepare("UPDATE jobs SET first_seen=? WHERE id=?").run(seen, id);
+    return id;
+  };
+
+  const untouched = mk("stalea", "eng", old);
+  const recent = mk("freshco", "eng", fresh);
+  const applied = mk("appliedco", "eng", old);
+  const noted = mk("notedco", "eng", old);
+  const tailored = mk("tailoredco", "eng", old);
+
+  setStage(applied, "applied");
+  updateNotes(noted, "worth a follow-up");
+  db.prepare("INSERT INTO resume_versions (job_id,kind,style,created_at) VALUES (?,?,?,?)")
+    .run(tailored, "resume", "letterpress", new Date().toISOString());
+
+  const r = trashStaleJobs(14);
+  assert.equal(r.trashed, 1, "only the genuinely untouched one goes");
+  assert.equal(getJob(untouched), null, "untouched + old is deleted");
+  assert.ok(getJob(recent), "too recent to be stale");
+  assert.ok(getJob(applied), "you moved it past Saved");
+  assert.ok(getJob(noted), "you wrote notes on it");
+  assert.ok(getJob(tailored), "you generated a résumé for it — real work, never auto-deleted");
+
+  // blocked so a crawl cannot re-add it
+  const again = upsertJobs([{ company: "Stalea", role: "Eng", category: "high", fit_score: 80, apply_url: "https://x.example/Stalea" }]);
+  assert.equal(again.inserted, 0);
+  assert.equal(again.blocked, 1);
+  assert.ok(listBlocks().some((b: any) => b.reason === "stale"));
+
+  // Staleness must not reach the crawl prompt in ANY form. The first version of this
+  // test only checked the "rejected X as ..." phrasing and passed while the note
+  // "untouched for 14+ days" was leaking through the notes section instead.
+  const prompt = blocklistPrompt();
+  assert.ok(!/stalea/i.test(prompt), "a stale job must not be named to the crawler");
+  assert.ok(!/untouched|fortnight|stale/i.test(prompt), "and neither must its note");
+
+  assert.equal(trashStaleJobs(0).trashed, 0, "0 disables the sweep");
+});
+
 test("registry: job boards are tracked separately from employers", async () => {
   const { addCompany, listCompanies, activeCompanies } = await import("../app/services/ats.server");
 

@@ -185,7 +185,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   const [tags, setTags] = useState<Set<string>>(new Set());
   const [hidePassed, setHidePassed] = useState(false);
   const [q, setQ] = useState("");
-  const [sort, setSort] = useState<"fit" | "closing" | "company">("fit");
+  const [sort, setSort] = useState<"fit" | "newest" | "oldest" | "closing" | "company">("fit");
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -241,6 +241,8 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       const sorted = [...jobs].sort((a, b) => {
         if (sort === "fit") return b.fit_score - a.fit_score;
         if (sort === "company") return a.company.localeCompare(b.company);
+        if (sort === "newest") return (b.first_seen || "").localeCompare(a.first_seen || "");
+        if (sort === "oldest") return (a.first_seen || "").localeCompare(b.first_seen || "");
         const av = a.closes_at || "9999-12-31";
         const bv = b.closes_at || "9999-12-31";
         return av.localeCompare(bv);
@@ -250,7 +252,12 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   }, [data.groups, cats, tags, hidePassed, q, sort]);
 
   const shown = sections.reduce((n, s) => n + s.jobs.length, 0);
-  const sortLabel = sort === "fit" ? "Fit" : sort === "closing" ? "Closing" : "A–Z";
+  const sortLabel =
+    sort === "fit" ? "Fit"
+    : sort === "newest" ? "Newest"
+    : sort === "oldest" ? "Oldest"
+    : sort === "closing" ? "Closing"
+    : "A–Z";
 
   return (
     <Shell>
@@ -282,7 +289,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         ))}
         <span className="sep">·</span>
         <button className={`chip ${hidePassed ? "on" : ""}`} onClick={() => setHidePassed((v) => !v)}>Hide passed</button>
-        <button className="chip on" style={{ display: "inline-flex", alignItems: "center", gap: 5 }} onClick={() => setSort((s) => (s === "fit" ? "closing" : s === "closing" ? "company" : "fit"))}>Sort: {sortLabel} <ChevronDown size={12} /></button>
+        <button className="chip on" style={{ display: "inline-flex", alignItems: "center", gap: 5 }} onClick={() => setSort((s) => (s === "fit" ? "newest" : s === "newest" ? "oldest" : s === "oldest" ? "closing" : s === "closing" ? "company" : "fit"))}>Sort: {sortLabel} <ChevronDown size={12} /></button>
         <input className="search" placeholder="Search the ledger…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <hr className="rule thin" />
