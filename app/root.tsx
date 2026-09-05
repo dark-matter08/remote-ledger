@@ -5,10 +5,22 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  redirect,
 } from "react-router";
 
 import type { Route } from "./+types/root";
+import { dropportRedirect } from "./dropport.server";
 import "./app.css";
+
+// If dropport is fronting this app at a real hostname, move anyone who arrived on the
+// raw port over to the clean URL. 302 rather than 308 on purpose: a permanent redirect
+// gets cached hard by the browser, and would keep firing long after someone stopped
+// using dropport, leaving localhost:5173 apparently broken with no obvious cause.
+export async function loader({ request }: Route.LoaderArgs) {
+  const to = dropportRedirect(request);
+  if (to) throw redirect(to, 302);
+  return null;
+}
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },

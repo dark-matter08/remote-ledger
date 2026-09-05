@@ -894,6 +894,7 @@ table.ledger-table tr:hover td { background: var(--card); }
 
 .back-link { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); text-decoration: none; }
 .back-link:hover { color: var(--vermillion); }
+button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
 
 /* job detail */
 .job-head { margin-top: 14px; }

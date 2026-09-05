@@ -2,6 +2,7 @@
 // and we have a key, we pull the real list live. For CLI agents (no key, subscription)
 // we offer the aliases the CLI itself accepts (e.g. claude --model sonnet|opus|haiku).
 import { getSecret } from "../secrets.server";
+import { defaultFreeModelId, openRouterCatalog, type OrModel } from "./openrouter.server";
 
 // model aliases each CLI agent accepts on `--model`
 const CLI_ALIASES: Record<string, string[]> = {
@@ -17,7 +18,6 @@ const PROVIDER_FALLBACK: Record<string, string[]> = {
   google: ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"],
   groq: ["llama-3.3-70b-versatile"],
   mistral: ["mistral-large-latest"],
-  openrouter: ["anthropic/claude-3.5-sonnet"],
   ollama: [],
 };
 
@@ -45,7 +45,6 @@ async function liveModels(provider: string): Promise<string[]> {
       return (j.data || []).map((m: any) => m.id).filter(Boolean);
     }
     if (provider === "openai") return openaiList("https://api.openai.com/v1", getSecret("openai_api_key"));
-    if (provider === "openrouter") return openaiList("https://openrouter.ai/api/v1", getSecret("openrouter_api_key"));
     if (provider === "groq") return openaiList("https://api.groq.com/openai/v1", getSecret("groq_api_key"));
     if (provider === "mistral") return openaiList("https://api.mistral.ai/v1", getSecret("mistral_api_key"));
     if (provider === "google") {
@@ -67,6 +66,8 @@ async function liveModels(provider: string): Promise<string[]> {
   return [];
 }
 
+// OpenRouter does not come through here — it has its own catalogue, and the picker
+// needs prices alongside the ids. Call openRouterShortlist() instead.
 export async function discoverModels(runnerId: string, provider: string, kind: "cli" | "api"): Promise<string[]> {
   const aliases = kind === "cli" ? CLI_ALIASES[runnerId] || ["default"] : [];
   const live = await liveModels(provider);
@@ -78,4 +79,32 @@ export async function discoverModels(runnerId: string, provider: string, kind: "
   }
   if (!out.includes("default")) out.unshift("default");
   return out.slice(0, 50);
+}
+
+// --- OpenRouter -------------------------------------------------------------
+// 400+ models is a catalogue, not a dropdown. The Settings → OpenRouter tab browses
+// the whole thing; this is the short list the Runners tab needs: every free model
+// first, then a few of the cheapest paid ones, each labelled with what it costs.
+
+function priceLabel(m: OrModel): string {
+  if (m.free) return "free";
+  if (m.inUsd === null || m.outUsd === null) return "variable";
+  const fmt = (n: number) => (n < 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(n < 10 ? 1 : 0)}`);
+  return `${fmt(m.inUsd)}/${fmt(m.outUsd)} per M`;
+}
+
+export function openRouterLabel(m: OrModel): string {
+  const name = m.name.replace(/\s*\(free\)\s*$/i, "");
+  return `${m.free ? "FREE · " : ""}${name} — ${priceLabel(m)}`;
+}
+
+export async function openRouterShortlist(): Promise<{ value: string; label: string }[]> {
+  const { models } = await openRouterCatalog();
+  if (!models.length) return [{ value: defaultFreeModelId(), label: "Free Models Router" }];
+  const free = models.filter((m) => m.free);
+  const cheapest = models
+    .filter((m) => !m.free && m.inUsd !== null)
+    .sort((a, b) => (a.inUsd! + a.outUsd!) - (b.inUsd! + b.outUsd!))
+    .slice(0, 12);
+  return [...free, ...cheapest].map((m) => ({ value: m.id, label: openRouterLabel(m) }));
 }

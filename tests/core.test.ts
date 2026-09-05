@@ -4,16 +4,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 
-const STAMP = `ledger-test-${process.pid}`;
-process.env.JOBS_DB_PATH = resolve(tmpdir(), `${STAMP}.db`);
-process.env.JOBS_MASTER_KEY = resolve(tmpdir(), `${STAMP}.key`);
+// Its own directory, not bare $TMPDIR: the app puts sidecar files (the OpenRouter
+// catalogue cache) next to the DB, and in a shared temp dir a real run of the app
+// would seed them under the tests.
+const TEST_DIR = resolve(tmpdir(), `ledger-test-${process.pid}`);
+mkdirSync(TEST_DIR, { recursive: true });
+process.env.JOBS_DB_PATH = resolve(TEST_DIR, "jobs.db");
+process.env.JOBS_MASTER_KEY = resolve(TEST_DIR, "master.key");
 
 function cleanup() {
-  for (const f of [process.env.JOBS_DB_PATH!, process.env.JOBS_MASTER_KEY!, process.env.JOBS_DB_PATH! + "-wal", process.env.JOBS_DB_PATH! + "-shm"]) {
-    try { rmSync(f); } catch {}
-  }
+  try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 }
 
 test("pricing: known model cost, unknown null, token estimate", async () => {
@@ -720,6 +722,410 @@ test("auto-apply browser: attach mode fails loudly, and is off by default", asyn
   );
 
   setSetting("apply_browser", "playwright");
+});
+
+test("dropport: the raw port redirects to the clean URL, but only when it should", async () => {
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { resolve: r } = await import("node:path");
+
+  const dir = mkdtempSync(r(tmpdir(), "dp-"));
+  const reg = r(dir, "apps.json");
+  process.env.DROPPORT_REGISTRY = reg;
+  writeFileSync(reg, JSON.stringify({ apps: [{ host: "remoteledger.local", port: 5173 }] }));
+
+  const { dropportRedirect } = await import("../app/dropport.server");
+  const req = (url: string, host: string, method = "GET") =>
+    new Request(url, { method, headers: { host } });
+
+  assert.equal(
+    dropportRedirect(req("http://remoteledger.local:5173/board?q=x", "remoteledger.local:5173")),
+    "https://remoteledger.local/board?q=x",
+    "path and query are carried across"
+  );
+
+  // everything below must be left alone
+  assert.equal(dropportRedirect(req("https://remoteledger.local/", "remoteledger.local")), null, "already clean");
+  assert.equal(dropportRedirect(req("http://localhost:5173/", "localhost:5173")), null, "localhost is not dropport's");
+  assert.equal(dropportRedirect(req("http://127.0.0.1:5173/", "127.0.0.1:5173")), null, "raw IP is not dropport's");
+  assert.equal(
+    dropportRedirect(req("http://remoteledger.local:3000/", "remoteledger.local:3000")),
+    null,
+    "a port dropport does not map is not ours to hijack"
+  );
+  assert.equal(
+    dropportRedirect(req("http://remoteledger.local:5173/", "remoteledger.local:5173", "POST")),
+    null,
+    "redirecting a POST would silently discard the form body"
+  );
+
+  // with dropport absent the app must behave exactly as before
+  process.env.DROPPORT_REGISTRY = r(dir, "does-not-exist.json");
+  const fresh = await import("../app/dropport.server?nocache=" + Date.now());
+  assert.equal(
+    fresh.dropportRedirect(req("http://remoteledger.local:5173/", "remoteledger.local:5173")),
+    null,
+    "not installed means never redirect"
+  );
+
+  delete process.env.DROPPORT_REGISTRY;
+});
+
+
+// --- OpenRouter catalogue ---------------------------------------------------
+// The free tier is the whole point, so the rules that decide "is this free, and can
+// it do the Ledger's work" are the ones worth pinning down.
+
+const orRaw = (over: any = {}) => ({
+  id: "acme/model-1",
+  name: "Acme: Model 1",
+  description: "Model 1 is a general-purpose model from Acme. It does many things.",
+  context_length: 128000,
+  created: 1700000000,
+  architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+  pricing: { prompt: "0.000001", completion: "0.000004" },
+  top_provider: { max_completion_tokens: 8192 },
+  supported_parameters: ["tools", "response_format"],
+  ...over,
+});
+
+test("openrouter: normalize maps price, tier, vendor and capabilities", async () => {
+  const { normalizeModel } = await import("../app/llm/openrouter.server");
+
+  const m = normalizeModel(orRaw())!;
+  assert.equal(m.inUsd, 1, "per-token price is scaled to per-million");
+  assert.equal(m.outUsd, 4);
+  assert.equal(m.tier, "standard");
+  assert.equal(m.free, false);
+  assert.equal(m.vendorLabel, "Acme");
+  assert.equal(m.tools, true);
+  assert.equal(m.jsonMode, true);
+  assert.equal(m.blurb, "Model 1 is a general-purpose model from Acme.", "blurb is the first sentence");
+  assert.equal(
+    normalizeModel(orRaw({ description: "**Model 1** is built by [Acme](https://acme.test/) for everyone. More." }))!.blurb,
+    "Model 1 is built by Acme for everyone.",
+    "markdown in the vendor description is stripped for the plain-text picker"
+  );
+  assert.equal(
+    normalizeModel(orRaw({ description: "GPT-4.1 is a flagship model tuned for long context. It also codes." }))!.blurb,
+    "GPT-4.1 is a flagship model tuned for long context.",
+    "a version number is not mistaken for the end of the sentence"
+  );
+
+  const free = normalizeModel(orRaw({ id: "google/gemma:free", pricing: { prompt: "0", completion: "0" } }))!;
+  assert.equal(free.free, true);
+  assert.equal(free.tier, "free");
+  assert.equal(free.vendorLabel, "Google");
+
+  // routers price per request, not per token: "-1" is variable, NOT free
+  const router = normalizeModel(orRaw({ id: "openrouter/auto", pricing: { prompt: "-1", completion: "-1" } }))!;
+  assert.equal(router.free, false, "variable pricing must never read as free");
+  assert.equal(router.tier, "router");
+  assert.equal(router.inUsd, null);
+
+  const cheap = normalizeModel(orRaw({ pricing: { prompt: "0.00000002", completion: "0.00000003" } }))!;
+  assert.equal(cheap.tier, "budget");
+  const dear = normalizeModel(orRaw({ pricing: { prompt: "0.000015", completion: "0.000075" } }))!;
+  assert.equal(dear.tier, "premium");
+
+  // a model that cannot answer in text is no use to the Ledger
+  assert.equal(
+    normalizeModel(orRaw({ architecture: { input_modalities: ["text"], output_modalities: ["image"] } })),
+    null
+  );
+  assert.equal(normalizeModel({}), null);
+});
+
+test("openrouter: ranking puts models that can do the work first", async () => {
+  const { normalizeCatalog, groupByTier, vendorsOf } = await import("../app/llm/openrouter.server");
+  const models = normalizeCatalog({
+    data: [
+      orRaw({ id: "a/plain", supported_parameters: [] }),
+      orRaw({ id: "b/tools-json", supported_parameters: ["tools", "response_format"] }),
+      orRaw({ id: "b/tools-only", supported_parameters: ["tools"] }),
+      orRaw({ id: "c/free", pricing: { prompt: "0", completion: "0" } }),
+      orRaw({ id: "a/plain" }), // duplicate id is dropped
+    ],
+  });
+  assert.equal(models.length, 4, "duplicate ids collapse");
+  assert.equal(models[0].id, "b/tools-json", "json + tools ranks above tools alone");
+  assert.ok(
+    models.findIndex((m) => m.id === "b/tools-only") < models.findIndex((m) => m.id === "a/plain"),
+    "tools ranks above nothing"
+  );
+
+  const tiers = groupByTier(models).map((g) => g.tier);
+  assert.deepEqual(tiers, ["free", "standard"], "free is listed before paid tiers");
+
+  const vendors = vendorsOf(models);
+  assert.equal(vendors[0].id, "b", "vendors sort by how many models they have");
+  assert.equal(vendors[0].count, 2);
+});
+
+test("openrouter: :free ids are recognised without the catalogue", async () => {
+  const { isFreeModelId, defaultFreeModelId, FREE_ROUTER_ID } = await import("../app/llm/openrouter.server");
+  assert.equal(isFreeModelId("google/gemma-4-31b-it:free"), true);
+  assert.equal(isFreeModelId(FREE_ROUTER_ID), true);
+  assert.equal(isFreeModelId("anthropic/claude-sonnet-4.5"), false, "unknown paid model is not assumed free");
+  assert.equal(isFreeModelId(""), false);
+  // with no cache on disk the picker still has something safe to offer
+  assert.equal(defaultFreeModelId([]), FREE_ROUTER_ID);
+});
+
+
+// The OpenRouter adapter is the piece a free-tier user actually depends on, so its
+// request shape and its error messages are pinned here against a stubbed fetch.
+test("openrouter adapter: request shape, free fallbacks, guard rails", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const { dirname, resolve: r } = await import("node:path");
+  const { normalizeCatalog } = await import("../app/llm/openrouter.server");
+
+  const catRaw = (id: string, price: string, params: string[]) => ({
+    id,
+    name: id,
+    description: "",
+    context_length: 128000,
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    pricing: { prompt: price, completion: price },
+    supported_parameters: params,
+  });
+  // seed the on-disk catalogue the adapter reads synchronously
+  writeFileSync(
+    r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json"),
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      models: normalizeCatalog({
+        data: [
+          catRaw("lab/json-free:free", "0", ["tools", "response_format"]),
+          catRaw("lab/plain-free:free", "0", ["tools"]),
+          catRaw("lab/other-json-free:free", "0", ["response_format"]),
+          catRaw("lab/paid", "0.000003", ["tools", "response_format"]),
+        ],
+      }),
+    })
+  );
+
+  const { setSecret, deleteSecret } = await import("../app/secrets.server");
+  const { setSetting } = await import("../app/sqlite.server");
+  const { adapterById } = await import("../app/llm/adapters.server");
+  const or = adapterById("openrouter-api")!;
+  setSecret("openrouter_api_key", "sk-or-test");
+
+  const real = globalThis.fetch;
+  let seen: { url: string; init: any } | null = null;
+  let reply: any = { ok: true, status: 200, body: { model: "lab/json-free:free", choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0 } } };
+  globalThis.fetch = (async (url: any, init: any) => {
+    seen = { url: String(url), init };
+    return {
+      ok: reply.ok,
+      status: reply.status,
+      json: async () => {
+        if (reply.unparseable) throw new SyntaxError("Unexpected token < in JSON at position 0");
+        return reply.body;
+      },
+    } as any;
+  }) as any;
+
+  try {
+    setSetting("openrouter_free_only", "false");
+    setSetting("openrouter_free_fallback", "true");
+    setSetting("openrouter_fallbacks", "");
+
+    // JSON mode + free fallbacks that can also answer in JSON
+    const res = await or.run({ purpose: "misc", prompt: "p", json: true } as any, "lab/json-free:free");
+    const body = JSON.parse(seen!.init.body);
+    assert.equal(res.usage.costUsd, 0, "a free model costs nothing");
+    assert.deepEqual(body.response_format, { type: "json_object" }, "JSON mode asked for where supported");
+    assert.equal(body.usage.include, true, "asks OpenRouter for the real cost");
+    assert.equal(seen!.init.headers["X-Title"], "The Remote Ledger", "sends attribution");
+    assert.ok(body.models.length > 1, "chains fallbacks");
+    assert.equal(body.models[0], "lab/json-free:free");
+    assert.ok(
+      body.models.every((m: string) => m.endsWith(":free")),
+      "a free model only ever falls back to another free model"
+    );
+    assert.ok(
+      !body.models.includes("lab/plain-free:free"),
+      "a JSON request never falls back to a model that cannot do JSON"
+    );
+
+    // a model without response_format support must not be sent one
+    await or.run({ purpose: "misc", prompt: "p", json: true } as any, "lab/plain-free:free");
+    assert.equal(
+      JSON.parse(seen!.init.body).response_format,
+      undefined,
+      "no response_format for a model that does not support it"
+    );
+
+    // paid models are billed from the catalogue when OpenRouter omits the cost
+    reply = { ok: true, status: 200, body: { model: "lab/paid", choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 1_000_000, completion_tokens: 0 } } };
+    const paid = await or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid");
+    assert.equal(paid.usage.costUsd, 3, "falls back to catalogue pricing");
+
+    // free-only refuses to spend, before any request goes out
+    setSetting("openrouter_free_only", "true");
+    seen = null;
+    await assert.rejects(
+      () => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"),
+      /locked to free models/
+    );
+    assert.equal(seen, null, "blocked before the network call");
+    await assert.doesNotReject(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free"));
+
+    // a hand-written chain must not smuggle a paid model past the guard
+    setSetting("openrouter_fallbacks", "lab/paid, lab/other-json-free:free");
+    await or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free");
+    assert.deepEqual(
+      JSON.parse(seen!.init.body).models,
+      ["lab/json-free:free", "lab/other-json-free:free"],
+      "free-only strips paid models out of the configured chain"
+    );
+    setSetting("openrouter_free_only", "false");
+    await or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free");
+    assert.ok(
+      JSON.parse(seen!.init.body).models.includes("lab/paid"),
+      "with the guard off the configured chain is honoured as written"
+    );
+    setSetting("openrouter_fallbacks", "");
+
+    // the errors a free-tier user will actually hit, in words they can act on
+    reply = { ok: false, status: 429, body: { error: { code: 429, message: "rate limited" } } };
+    await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free"), /rate-limited/);
+    reply = { ok: false, status: 402, body: { error: { code: 402, message: "no credit" } } };
+    await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"), /free model/);
+    // OpenRouter can return an error with HTTP 200 — that must still throw
+    reply = { ok: true, status: 200, body: { error: { code: 401, message: "bad key" } } };
+    await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"), /rejected the key/);
+    // a proxy or captive portal answers 200 with HTML: still a sentence, not a TypeError
+    reply = { ok: true, status: 200, unparseable: true };
+    await assert.rejects(
+      () => or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free"),
+      (e: any) => !(e instanceof TypeError) && /not with JSON/.test(e.message)
+    );
+    // and one that is merely unreadable behind a real status code keeps that meaning
+    reply = { ok: false, status: 401, unparseable: true };
+    await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"), /rejected the key/);
+  } finally {
+    globalThis.fetch = real;
+    deleteSecret("openrouter_api_key");
+  }
+});
+
+
+test("openrouter: a synchronous cache read does not make the catalogue look offline", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const { dirname, resolve: r } = await import("node:path");
+  const mod = await import("../app/llm/openrouter.server?fresh=" + Date.now());
+
+  writeFileSync(
+    r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json"),
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      models: mod.normalizeCatalog({
+        data: [
+          {
+            id: "lab/m",
+            name: "m",
+            description: "",
+            context_length: 1000,
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            pricing: { prompt: "0", completion: "0" },
+            supported_parameters: [],
+          },
+        ],
+      }),
+    })
+  );
+
+  // something touches the cache synchronously first (the budget gate does exactly this)
+  assert.equal(mod.isFreeModelId("lab/m"), true);
+  // …the picker must still report a live, fresh catalogue rather than "you are offline"
+  const cat = await mod.openRouterCatalog();
+  assert.equal(cat.stale, false, "a fresh disk cache is not stale");
+  assert.equal(cat.models.length, 1);
+});
+
+test("openrouter: a failed refresh is retried, not held for the whole TTL", async () => {
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const { dirname, resolve: r } = await import("node:path");
+  const mod = await import("../app/llm/openrouter.server?retry=" + Date.now());
+  const cachePath = r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json");
+  const raw = (fetchedAt: string) =>
+    JSON.stringify({
+      fetchedAt,
+      models: mod.normalizeCatalog({
+        data: [
+          {
+            id: "lab/m:free",
+            name: "m",
+            description: "",
+            context_length: 1000,
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            pricing: { prompt: "0", completion: "0" },
+            supported_parameters: [],
+          },
+        ],
+      }),
+    });
+
+  const real = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    throw new Error("ENETDOWN");
+  }) as any;
+
+  try {
+    // nothing on disk: a failure leaves an empty picker, so it must not be remembered
+    rmSync(cachePath, { force: true });
+    const a = await mod.openRouterCatalog();
+    assert.equal(a.models.length, 0);
+    assert.equal(a.stale, true);
+    assert.match(a.error!, /ENETDOWN/, "the reason reaches the picker");
+    await mod.openRouterCatalog();
+    assert.equal(calls, 2, "an empty catalogue is retried rather than cached for 6h");
+
+    // the network comes back — the very next call must pick it up, not wait out the TTL
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: "lab/m:free",
+            name: "m",
+            description: "",
+            context_length: 1000,
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            pricing: { prompt: "0", completion: "0" },
+            supported_parameters: [],
+          },
+        ],
+      }),
+    })) as any;
+    const back = await mod.openRouterCatalog();
+    assert.equal(back.stale, false, "recovers as soon as the connection does");
+    assert.equal(back.models.length, 1);
+
+    // a cache too old to trust plus a dead network: serve it, say why, and hold it
+    // briefly rather than hammering OpenRouter on every page load
+    const stale = await import("../app/llm/openrouter.server?retry2=" + Date.now());
+    writeFileSync(cachePath, raw(new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString()));
+    calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      throw new Error("ENETDOWN");
+    }) as any;
+    const s1 = await stale.openRouterCatalog();
+    assert.equal(s1.models.length, 1, "a stale copy still beats an empty picker");
+    assert.equal(s1.stale, true);
+    const s2 = await stale.openRouterCatalog();
+    assert.equal(s2.models.length, 1);
+    assert.match(s2.error!, /ENETDOWN/, "the reason survives the retry window");
+    assert.equal(calls, 1, "held for a moment instead of re-fetching every call");
+  } finally {
+    globalThis.fetch = real;
+    rmSync(cachePath, { force: true });
+  }
 });
 
 test.after(cleanup);

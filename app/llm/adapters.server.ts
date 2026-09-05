@@ -6,6 +6,15 @@ import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import type { AdapterResult, RunnerAdapter, RunnerInfo, RunRequest, Usage } from "./types";
 import { getSecret } from "../secrets.server";
+import { getSetting } from "../sqlite.server";
+import {
+  OPENROUTER_BASE,
+  cachedModel,
+  catalogCost,
+  defaultFreeModelId,
+  freeModels,
+  isFreeModelId,
+} from "./openrouter.server";
 
 // --- shell helpers ---------------------------------------------------------
 
@@ -247,6 +256,150 @@ class OpenAICompatAdapter implements RunnerAdapter {
   }
 }
 
+// --- OpenRouter ------------------------------------------------------------
+//
+// Its own adapter rather than the generic OpenAI-compatible one, because the free
+// tier needs handling the generic path cannot give it:
+//   - only send `response_format` when the catalogue says the model honours it —
+//     most free models do not, and the runner already recovers JSON from prose;
+//   - chain fallbacks so a rate-limited free model rolls to the next free model
+//     instead of failing the user's crawl;
+//   - ask OpenRouter for the real cost of the call, so free really reads as $0.00
+//     on the Usage page instead of an estimate;
+//   - translate 401/402/429 into what the person can actually do about it.
+
+const OR_MAX_FALLBACKS = 3;
+
+class OpenRouterAdapter implements RunnerAdapter {
+  id = "openrouter-api";
+
+  async info(): Promise<RunnerInfo> {
+    const free = freeModels().length;
+    return {
+      id: this.id,
+      label: "OpenRouter API",
+      kind: "api",
+      provider: "openrouter",
+      available: !!getSecret("openrouter_api_key"),
+      needsKey: "openrouter_api_key",
+      defaultModel: defaultFreeModelId(),
+      detail: free
+        ? `One key, every lab — including ${free} model${free === 1 ? "" : "s"} that cost nothing to run.`
+        : "One key for every major lab, with a free tier.",
+    };
+  }
+
+  // primary + free fallbacks, so a 429 on the free pool is a detour, not a dead end
+  private modelChain(model: string, needsJson: boolean): string[] {
+    const chain = [model];
+    const freeOnly = getSetting("openrouter_free_only") === "true";
+    const configured = (getSetting("openrouter_fallbacks") || "")
+      .split(",")
+      .map((s) => s.trim())
+      // a hand-written chain must not be a way round the free-only guard
+      .filter((m) => m && (!freeOnly || isFreeModelId(m)));
+    if (configured.length) {
+      for (const m of configured) if (!chain.includes(m)) chain.push(m);
+      return chain;
+    }
+    if (!isFreeModelId(model) || getSetting("openrouter_free_fallback") === "false") return chain;
+    for (const m of freeModels()) {
+      if (chain.length > OR_MAX_FALLBACKS) break;
+      if (chain.includes(m.id)) continue;
+      if (needsJson && !m.jsonMode) continue; // don't fall back into a model that can't answer in JSON
+      chain.push(m.id);
+    }
+    return chain;
+  }
+
+  async run(req: RunRequest, model: string): Promise<AdapterResult> {
+    const key = getSecret("openrouter_api_key");
+    if (!key)
+      throw new Error(
+        "openrouter_api_key not set. Create a free key at openrouter.ai/keys and paste it into Settings → Keys."
+      );
+    if (getSetting("openrouter_free_only") === "true" && !isFreeModelId(model))
+      throw new Error(
+        `"${model}" is a paid model and OpenRouter is locked to free models. Pick a free model in Settings → OpenRouter, or turn off "free models only".`
+      );
+
+    const known = cachedModel(model);
+    const chain = this.modelChain(model, !!req.json);
+    const messages = [
+      ...(req.system ? [{ role: "system", content: req.system }] : []),
+      { role: "user", content: req.prompt },
+    ];
+
+    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${key}`,
+        // OpenRouter attribution — identifies the app on your dashboard/leaderboard
+        "HTTP-Referer": "https://github.com/dark-matter08/remote-ledger",
+        "X-Title": "The Remote Ledger",
+      },
+      body: JSON.stringify({
+        model,
+        ...(chain.length > 1 ? { models: chain } : {}),
+        messages,
+        temperature: req.temperature ?? 0.4,
+        ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
+        // only ask for JSON mode where the model actually supports it; elsewhere the
+        // runner's tryParseJson pulls the object back out of prose
+        ...(req.json && (!known || known.jsonMode) ? { response_format: { type: "json_object" } } : {}),
+        usage: { include: true }, // return real, post-discount cost
+      }),
+    });
+
+    // a body that will not parse is still a failure — without this the unreadable
+    // `null` walks into the field reads below and surfaces as a bare TypeError
+    const j: any = await res.json().catch(() => null);
+    if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, model));
+
+    const used = String(j.model || model);
+    const text = j.choices?.[0]?.message?.content ?? "";
+    const inTok = j.usage?.prompt_tokens ?? 0;
+    const outTok = j.usage?.completion_tokens ?? 0;
+    // OpenRouter reports the charge it actually made; fall back to catalogue rates,
+    // and leave it undefined if we know neither so the runner tries pricing.json
+    const cost =
+      typeof j.usage?.cost === "number" ? j.usage.cost : catalogCost(used, inTok, outTok) ?? undefined;
+
+    return {
+      text,
+      model: used,
+      usage: {
+        inTok,
+        outTok,
+        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        costUsd: cost,
+        metered: true,
+      },
+    };
+  }
+}
+
+function openRouterError(status: number, body: any, model: string): string {
+  const msg = String(body?.error?.message || body?.error || "").slice(0, 300);
+  // a body-level error can arrive with HTTP 200, so prefer its code when numeric
+  const inner = Number(body?.error?.code);
+  const code = Number.isFinite(inner) && inner >= 100 ? inner : status;
+  if (code === 401 || code === 403)
+    return `OpenRouter rejected the key. Check it at openrouter.ai/keys. (${msg})`;
+  if (code === 402)
+    return `OpenRouter needs credit for "${model}". Switch to a free model in Settings → OpenRouter to keep working at no cost. (${msg})`;
+  if (code === 429)
+    return `OpenRouter rate-limited "${model}". Free models share a small per-minute allowance — wait a moment, pick another free model, or add credit to raise the cap. (${msg})`;
+  if (code === 404)
+    return `OpenRouter has no model called "${model}". Refresh the catalogue in Settings → OpenRouter.`;
+  // the status codes above still read straight off an unparseable response; only a
+  // body we could not read at all lands here, which is a proxy or a captive portal
+  if (!body)
+    return `OpenRouter answered ${status}, but not with JSON — something between you and openrouter.ai is rewriting the response. Check the connection and try again.`;
+  return `OpenRouter ${code}: ${msg || "request failed"}`;
+}
+
 // --- Google Gemini API -----------------------------------------------------
 
 class GoogleApiAdapter implements RunnerAdapter {
@@ -323,14 +476,7 @@ export const ADAPTERS: RunnerAdapter[] = [
     "gpt-4o-mini"
   ),
   new GoogleApiAdapter(),
-  new OpenAICompatAdapter(
-    "openrouter-api",
-    "OpenRouter API",
-    "openrouter",
-    "https://openrouter.ai/api/v1",
-    "openrouter_api_key",
-    "anthropic/claude-3.5-sonnet"
-  ),
+  new OpenRouterAdapter(),
   new OpenAICompatAdapter(
     "groq-api",
     "Groq API",

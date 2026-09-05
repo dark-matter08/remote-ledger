@@ -3,6 +3,7 @@
 import { getDb, getSetting } from "../sqlite.server";
 import { ADAPTERS, adapterById } from "./adapters.server";
 import { costFor, estimateTokens } from "./pricing.server";
+import { isFreeModelId } from "./openrouter.server";
 import type { RunRequest, RunResult, RunnerInfo, Usage } from "./types";
 
 export async function listRunners(): Promise<RunnerInfo[]> {
@@ -94,8 +95,11 @@ async function runOne(req: RunRequest, runnerId: string): Promise<RunResult> {
   if (!info.available) throw new Error(`${info.label} is not available`);
   const model = modelFor(runnerId, info, req.model);
 
-  // budget gate (metered providers only)
-  if (info.kind === "api" && info.provider !== "ollama") {
+  // budget gate (metered providers only). A free OpenRouter model costs nothing, so
+  // a spent budget must not lock someone out of the one tier they can afford.
+  const freeOfCharge =
+    info.provider === "ollama" || (info.provider === "openrouter" && isFreeModelId(model));
+  if (info.kind === "api" && !freeOfCharge) {
     const b = budgetState();
     if (b.over)
       throw new Error(
