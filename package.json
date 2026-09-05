@@ -14,7 +14,8 @@
     "postinstall": "playwright install chromium || true",
     "test:prefill": "node --experimental-strip-types scripts/test-prefill.ts",
     "serve": "node scripts/serve.mjs",
-    "apply-browser": "node scripts/apply-chrome.mjs"
+    "apply-browser": "node scripts/apply-chrome.mjs",
+    "dedupe:jobs": "tsx scripts/dedupe-jobs.ts"
   },
   "dependencies": {
     "@react-router/node": "7.16.0",
