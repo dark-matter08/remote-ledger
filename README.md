@@ -68,8 +68,34 @@ npm run serve stop
 Then the ledger lives at **http://remoteledger.local:5173** whenever your machine is
 on. This serves the built app, so it starts instantly and never re-optimises
 dependencies underneath you; use `npm run dev` while you're editing. `PORT` changes
-the port (a hosts entry maps a *name* to an address, not a port, so the port stays in
-the URL unless you serve on 80 — which needs elevated privileges).
+the port.
+
+### Drop the port, get HTTPS
+
+A hosts entry maps a *name* to an address, not a port, so the `:5173` stays in the URL.
+To lose it — and get real HTTPS with no certificate warning — put
+[**dropport**](https://github.com/dark-matter08/dropport) in front:
+
+```bash
+npm install -g dropport
+dropport add remoteledger.local 5173
+dropport up
+```
+
+Now the ledger is at **https://remoteledger.local**. dropport runs a Caddy reverse
+proxy on 80/443, issues the certificate from a locally trusted CA, and keeps the hosts
+entry in sync. HTTPS matters for more than looks: secure cookies, service workers and
+the Clipboard API are all gated on it.
+
+The Ledger notices. If dropport maps a hostname to this app's port, arriving on
+`remoteledger.local:5173` redirects to the clean URL. It only fires for a hostname
+dropport actually fronts, so `localhost:5173` is untouched, and it does nothing at all
+when dropport is not installed.
+
+One tip: prefer a `.test` name. `.local` is multicast-DNS territory, and on macOS every
+lookup waits about five seconds for an mDNS answer before falling back to the hosts
+file. dropport can publish `.local` names over mDNS to fix that, but `.test` sidesteps
+it entirely and is the TLD reserved for exactly this.
 
 ## What it does
 
