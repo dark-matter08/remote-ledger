@@ -128,6 +128,23 @@ Keys are stored **encrypted** on your machine (AES-256-GCM, local master key) or
 env vars. Auto-detected runners show up in Settings; pick a default + fallback.
 Token & cost of every call land on **/usage**, with a monthly budget cap.
 
+### No budget? Run the whole thing free
+
+A subscription or a funded API key should not be the price of admission to a job hunt.
+**Settings → OpenRouter** browses OpenRouter's full catalogue — 400+ models from every
+major lab, sorted into price tiers with **Free first** — and a free key is enough to
+crawl, tailor, write cover letters and run interview prep at **$0**.
+
+- Filter by tier (Free / Routers / Budget / Standard / Premium), vendor, and capability
+  (JSON mode, tools, reasoning, vision, 200K+ context).
+- **Free models only** refuses anything that charges per token, so the bill cannot creep.
+- A rate-limited free model automatically rolls to the next free one instead of failing
+  your crawl — free models are throttled, not metered.
+- A spent monthly budget never blocks a free model.
+
+Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The catalogue itself is
+public, so you can browse every model before signing up for anything.
+
 ## Crawling for jobs
 
 The **built-in scheduler** runs while the app is open (interval in Settings). For

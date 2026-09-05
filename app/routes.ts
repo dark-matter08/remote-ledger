@@ -24,4 +24,5 @@ export default [
   route("api/clip", "routes/api-clip.tsx"),
   route("api/pending", "routes/api-pending.tsx"),
   route("api/dirs", "routes/api-dirs.tsx"),
+  route("api/openrouter", "routes/api-openrouter.tsx"),
 ] satisfies RouteConfig;
