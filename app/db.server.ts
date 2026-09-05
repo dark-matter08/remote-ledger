@@ -3,7 +3,7 @@
 import { unlinkSync } from "node:fs";
 import { getDb, transaction } from "./sqlite.server";
 import { STAGES, type Stage, type Category, type Job } from "./stages";
-import { REASON_RULE, hostOf, type BlockScope } from "./trash";
+import { REASON_RULE, NON_JUDGEMENT_REASONS, hostOf, type BlockScope } from "./trash";
 
 export { STAGES, QUICK_STAGES, STAGE_LABEL } from "./stages";
 export type { Stage, Category, Job } from "./stages";
@@ -220,6 +220,41 @@ export function trashJob(
   return { ok: true, removed, scope: effScope, value };
 }
 
+/**
+ * Clear out jobs that have sat on the ledger untouched.
+ *
+ * "Untouched" is strict on purpose: still at the `saved` stage, no notes, and nothing
+ * generated for it. Anything you engaged with is left alone however old it is, because
+ * this deletes for good and a tailored résumé is real work.
+ *
+ * Blocked at job scope so a crawl cannot re-add it, but the reason is excluded from the
+ * crawl prompt: ignoring a role for a fortnight says nothing about the role.
+ */
+export function trashStaleJobs(days: number, log?: (m: string) => void): { trashed: number; kept: number } {
+  if (!Number.isFinite(days) || days <= 0) return { trashed: 0, kept: 0 };
+  const cutoff = new Date(Date.now() - days * 864e5).toISOString();
+  const rows = getDb()
+    .prepare(
+      `SELECT j.id, j.company, j.role, j.first_seen, j.notes,
+              COALESCE(a.stage,'saved') stage,
+              (SELECT COUNT(*) FROM resume_versions v WHERE v.job_id = j.id) versions
+         FROM jobs j LEFT JOIN applications a ON a.job_id = j.id
+        WHERE j.active = 1 AND j.first_seen < ?`
+    )
+    .all(cutoff) as {
+      id: string; company: string; role: string; first_seen: string;
+      notes: string | null; stage: string; versions: number;
+    }[];
+
+  let trashed = 0, kept = 0;
+  for (const j of rows) {
+    if (j.stage !== "saved" || (j.notes || "").trim() || j.versions > 0) { kept++; continue; }
+    const r = trashJob(j.id, { reason: "stale", scope: "job", note: `untouched for ${days}+ days` });
+    if (r.ok) { trashed++; log?.(`trashed ${j.company} — ${j.role} (added ${j.first_seen.slice(0, 10)})`); }
+  }
+  return { trashed, kept };
+}
+
 // What the crawler is told never to bring back. Built from the blocks themselves so
 // it sharpens every time you trash something.
 export function blocklistPrompt(): string {
@@ -240,7 +275,7 @@ export function blocklistPrompt(): string {
   if (companies.length) lines.push(`- Never return roles at: ${[...new Set(companies)].slice(0, 60).join(", ")}`);
   for (const [code, names] of byReason) {
     const rule = REASON_RULE.get(code);
-    if (!rule || code === "other") continue;
+    if (!rule || NON_JUDGEMENT_REASONS.has(code)) continue;
     lines.push(`- The candidate rejected ${[...new Set(names)].slice(0, 12).join(", ")} as ${rule}. Apply that judgement to new results.`);
   }
   if (notes.length) lines.push("- In the candidate's own words:", ...notes);
