@@ -126,8 +126,14 @@ function perMillion(v: unknown): number | null {
 function stripMarkdown(text: string): string {
   return (text || "")
     .replace(/!?\[([^\]]*)\]\(<?[^)]*>?\)/g, "$1") // [Poolside](https://…) -> Poolside
+    // Some descriptions are hand-written and get the syntax wrong — "Sonnet(https://…)"
+    // with no bracket part. The pass above cannot match that, so the bare URL would
+    // ride into the picker. Drop any parenthesised link, then any URL still standing.
+    .replace(/\s*\((?:<?(?:https?:\/\/|www\.)[^)]*>?)\)/g, "")
+    .replace(/<?\b(?:https?:\/\/|www\.)\S+>?/g, "")
     .replace(/[*_`]{1,3}/g, "")
     .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1") // removing a link can strand its space
     .trim();
 }
 

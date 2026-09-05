@@ -9,11 +9,13 @@ import { getSecret } from "../secrets.server";
 import { getSetting } from "../sqlite.server";
 import {
   OPENROUTER_BASE,
+  cachedCatalog,
   cachedModel,
   catalogCost,
   defaultFreeModelId,
   freeModels,
   isFreeModelId,
+  openRouterCatalog,
 } from "./openrouter.server";
 
 // --- shell helpers ---------------------------------------------------------
@@ -270,6 +272,29 @@ class OpenAICompatAdapter implements RunnerAdapter {
 
 const OR_MAX_FALLBACKS = 3;
 
+// Longest we will wait for the catalogue before giving up and calling anyway. The
+// fallback chain is a nice-to-have; the user's actual request is not.
+const OR_WARM_MS = 2500;
+
+/**
+ * Make sure the catalogue is loaded, without letting it hold up the call.
+ *
+ * The free-fallback chain is read from the on-disk catalogue, and on a fresh install
+ * nothing has fetched it yet — so the chain would be empty for the first run, which
+ * is exactly the run most likely to meet the free tier's rate limit. Warming it here
+ * costs one request, once, because the result is memoised and written to disk.
+ */
+async function warmCatalog(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    openRouterCatalog().catch(() => undefined),
+    new Promise<void>((r) => {
+      timer = setTimeout(r, OR_WARM_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
 class OpenRouterAdapter implements RunnerAdapter {
   id = "openrouter-api";
 
@@ -322,6 +347,9 @@ class OpenRouterAdapter implements RunnerAdapter {
       throw new Error(
         `"${model}" is a paid model and OpenRouter is locked to free models. Pick a free model in Settings → OpenRouter, or turn off "free models only".`
       );
+
+    // Only on a cold cache, and only when a chain would actually be built from it.
+    if (!cachedCatalog().length && isFreeModelId(model)) await warmCatalog();
 
     const known = cachedModel(model);
     const chain = this.modelChain(model, !!req.json);

@@ -811,6 +811,11 @@ test("openrouter: normalize maps price, tier, vendor and capabilities", async ()
     "GPT-4.1 is a flagship model tuned for long context.",
     "a version number is not mistaken for the end of the sentence"
   );
+  assert.equal(
+    normalizeModel(orRaw({ description: "Replicates the prose of Sonnet(https://openrouter.ai/x) and Opus. More." }))!.blurb,
+    "Replicates the prose of Sonnet and Opus.",
+    "a hand-written link missing its [brackets] does not leak a raw url into the picker"
+  );
 
   const free = normalizeModel(orRaw({ id: "google/gemma:free", pricing: { prompt: "0", completion: "0" } }))!;
   assert.equal(free.free, true);
