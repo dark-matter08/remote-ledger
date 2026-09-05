@@ -1,7 +1,7 @@
 // Resume HTML templates. Each returns a complete, self-contained HTML document
 // sized for A4 that Playwright renders to PDF. Styles: letterpress (matches the
 // app), modern, compact, ats-plain (maximally machine-parseable).
-import type { Resume } from "./types";
+import type { Resume, ResumeContact } from "./types";
 
 export type ResumeStyle = "letterpress" | "modern" | "compact" | "ats-plain";
 export const RESUME_STYLES: ResumeStyle[] = ["letterpress", "modern", "compact", "ats-plain"];
@@ -143,4 +143,84 @@ const CSS: Record<ResumeStyle, string> = {
 export function renderResumeHtml(resume: Resume, style: ResumeStyle = "letterpress"): string {
   const useFonts = style === "letterpress";
   return `<!doctype html><html><head><meta charset="utf-8">${useFonts ? FONTS : ""}<style>${CSS[style] || CSS.letterpress}</style></head><body>${sectionsHtml(resume)}</body></html>`;
+}
+
+
+// --- cover letter ------------------------------------------------------------
+// A business letter, not a résumé: generous margins, a letterhead, the date, and a
+// recipient block. Typography follows the chosen résumé style so the two documents
+// look like they came from the same desk.
+
+const COVER_FACE: Record<ResumeStyle, { body: string; display: string; mono: string; accent: string; web: boolean }> = {
+  letterpress: { body: '"Spectral", Georgia, serif', display: '"Fraunces", serif', mono: '"IBM Plex Mono", monospace', accent: "#b23a2e", web: true },
+  modern: { body: '"Helvetica Neue", Helvetica, Arial, sans-serif', display: '"Helvetica Neue", Helvetica, Arial, sans-serif', mono: '"Helvetica Neue", Helvetica, Arial, sans-serif', accent: "#1a1714", web: false },
+  compact: { body: "Georgia, 'Times New Roman', serif", display: "Georgia, 'Times New Roman', serif", mono: "Georgia, serif", accent: "#333333", web: false },
+  "ats-plain": { body: "Arial, Helvetica, sans-serif", display: "Arial, Helvetica, sans-serif", mono: "Arial, Helvetica, sans-serif", accent: "#000000", web: false },
+};
+
+const SALUTATION = /^\s*(dear|hello|hi\b|greetings|to whom)/i;
+
+/** Does the letter already sign off in the sender's name? */
+function signsOff(body: string, name?: string): boolean {
+  if (!name) return false;
+  const tail = body.trim().split(/\n/).slice(-4).join(" ").toLowerCase();
+  return tail.includes(name.trim().toLowerCase());
+}
+
+export function renderCoverHtml(
+  body: string,
+  contact: ResumeContact,
+  meta: { company?: string; role?: string; date?: Date } = {},
+  style: ResumeStyle = "letterpress"
+): string {
+  const f = COVER_FACE[style] || COVER_FACE.letterpress;
+  const text = (body || "").trim();
+
+  // The model is asked to write the whole letter, so it normally opens with a
+  // salutation and closes with the name. Only supply what is genuinely missing,
+  // otherwise the page ends up greeting the reader twice.
+  const needsSalutation = !SALUTATION.test(text);
+  const needsSignature = !signsOff(text, contact?.name);
+
+  const paras = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+
+  const date = (meta.date || new Date()).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  const contactLine = [contact?.email, contact?.phone, contact?.location].filter(Boolean).map(esc).join("  ·  ");
+  const links = (contact?.links || []).map((l) => esc(l.url)).join("  ·  ");
+  const to = [meta.company ? `${esc(meta.company)} Hiring Team` : "Hiring Team", meta.role ? `Re: ${esc(meta.role)}` : ""]
+    .filter(Boolean)
+    .map((l) => `<div>${l}</div>`)
+    .join("");
+
+  return `<!doctype html><html><head><meta charset="utf-8">${f.web ? FONTS : ""}<style>
+    * { box-sizing: border-box; }
+    @page { size: A4; margin: 24mm 22mm; }
+    body { font-family: ${f.body}; color: #1a1714; font-size: 11pt; line-height: 1.6; margin: 0; }
+    .letterhead { border-bottom: 1.5px solid #1a1714; padding-bottom: 10px; margin-bottom: 22px; }
+    .letterhead h1 { font-family: ${f.display}; font-weight: ${style === "letterpress" ? 900 : 700}; font-size: 20pt; margin: 0; letter-spacing: -.01em; }
+    .letterhead .meta { font-family: ${f.mono}; font-size: 8pt; letter-spacing: .04em; color: #7a6e5e; margin-top: 6px; text-transform: uppercase; line-height: 1.7; }
+    .date { font-family: ${f.mono}; font-size: 9pt; color: #473f36; margin-bottom: 18px; }
+    .to { font-family: ${f.mono}; font-size: 9pt; color: #1a1714; margin-bottom: 22px; line-height: 1.7; }
+    .to div:first-child { font-weight: 500; }
+    .to div:last-child { color: ${f.accent}; }
+    p { margin: 0 0 11pt; orphans: 3; widows: 3; }
+    .signoff { margin-top: 18pt; }
+    .signoff .name { font-family: ${f.display}; font-size: 12pt; margin-top: 4pt; }
+  </style></head><body>
+    <div class="letterhead">
+      <h1>${esc(contact?.name || "")}</h1>
+      ${contactLine ? `<div class="meta">${contactLine}</div>` : ""}
+      ${links ? `<div class="meta">${links}</div>` : ""}
+    </div>
+    <div class="date">${esc(date)}</div>
+    ${to ? `<div class="to">${to}</div>` : ""}
+    ${needsSalutation ? `<p>Dear ${meta.company ? esc(meta.company) + " " : ""}Hiring Team,</p>` : ""}
+    ${paras}
+    ${needsSignature ? `<div class="signoff"><div>Sincerely,</div><div class="name">${esc(contact?.name || "")}</div></div>` : ""}
+  </body></html>`;
 }

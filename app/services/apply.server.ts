@@ -16,6 +16,7 @@ import { renderResumePdf } from "../resume/pdf.server";
 import { verifyApplyUrl, renderWaitFor } from "./scrape.server";
 import { loggedTask } from "./crawl.server";
 import { kbContext } from "./kb.server";
+import { getSetting } from "../sqlite.server";
 import { UA, EXTRACT_FIELDS, detectAts, applyFormUrl, questionFields, prefillPage, collectDropdownOptions, type FormField } from "./prefill.server";
 
 export type { FormField } from "./prefill.server";
@@ -166,6 +167,54 @@ export function lastAssist(jobId: string): AssistResult | null {
 
 export const APPLY_HEADLESS = HEADLESS;
 
+/**
+ * Open the application form and hand back a page to prefill.
+ *
+ * Two modes. "playwright" launches a throwaway Chromium: nothing is logged in, so any
+ * site that wants a session will ask for one. "attach" opens a TAB in a Chrome you are
+ * already running, so the form loads with your cookies, your logins and your autofill.
+ *
+ * Attaching needs that Chrome to have been started with a debugging port, and since
+ * Chrome 136 the port is refused on the DEFAULT profile — a deliberate anti-cookie-theft
+ * measure. So it is a dedicated profile you log into once, not literally the window you
+ * happen to have open. `npm run apply-browser` starts one correctly.
+ */
+export async function openApplyPage(url: string, say: (m: string) => void): Promise<{ page: any; release: () => Promise<void> }> {
+  const { chromium } = await import("playwright");
+  const attach = (getSetting("apply_browser") || "playwright") === "attach";
+
+  if (attach) {
+    const cdp = getSetting("apply_cdp_url") || "http://127.0.0.1:9222";
+    let browser: any;
+    try {
+      browser = await chromium.connectOverCDP(cdp);
+    } catch (e: any) {
+      throw new Error(
+        `Could not reach your Chrome at ${cdp}. Start it with "npm run apply-browser start", ` +
+          `or switch Settings → Runner back to a fresh browser. (${String(e?.message || e).slice(0, 80)})`
+      );
+    }
+    say(`Attached to your Chrome — opening a tab in your own profile…`);
+    // contexts()[0] is the real profile, so cookies and logins come with it
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    const page = await ctx.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+    // close() here only DETACHES the CDP session. Killing the user's browser because a
+    // prefill finished would be an unforgivable thing to do.
+    return { page, release: async () => { await browser.close().catch(() => {}); } };
+  }
+
+  say(`Opening ${detectAts(url)} application in a ${HEADLESS ? "headless" : "visible"} browser…`);
+  const browser = await chromium.launch({ headless: HEADLESS });
+  const page = await browser.newPage({ userAgent: UA });
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+  return {
+    page,
+    // headed: leave it open so the user can review and submit
+    release: async () => { if (HEADLESS) await browser.close().catch(() => {}); },
+  };
+}
+
 // Re-verify a posting is live (following redirects). Returns the final URL or a reason
 // it's dead (in which case the job is marked closed). Shared by the per-job assist and
 // the apply session.
@@ -310,22 +359,16 @@ export async function assistApply(jobId: string, log?: (msg: string) => void): P
   // the posting), not the posting page — prefilling the posting finds nothing.
   const url = applyFormUrl(gate.finalUrl || job.apply_url);
 
-  let browser: any;
+  let opened: { page: any; release: () => Promise<void> } | null = null;
   try {
-    const { chromium } = await import("playwright");
-    say(`Opening ${detectAts(url)} application in a ${HEADLESS ? "headless" : "visible"} browser…`);
-    browser = await chromium.launch({ headless: HEADLESS }); // headed: you watch + submit
-    const page = await browser.newPage({ userAgent: UA });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(renderWaitFor(url)); // React ATSes need a beat to hydrate
+    opened = await openApplyPage(url, say);
+    await opened.page.waitForTimeout(renderWaitFor(url)); // React ATSes need a beat to hydrate
 
-    const result = await prefillJobOnPage(jobId, page, say, { draftMissing: true });
-
-    // in headless (test/server) mode there's no one to submit, so close; headed stays open
-    if (HEADLESS && browser) await browser.close().catch(() => {});
+    const result = await prefillJobOnPage(jobId, opened.page, say, { draftMissing: true });
+    await opened.release();
     return result;
   } catch (e: any) {
-    if (browser) await browser.close().catch(() => {});
+    if (opened) await opened.release().catch(() => {});
     return { ok: false, filled: [], unfilled: [], ats: detectAts(url), confidence: 0, at, message: `Could not open the browser to prefill (${e.message}). Use the drafted answers to apply manually.` };
   }
 }

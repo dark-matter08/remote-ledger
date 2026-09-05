@@ -38,6 +38,39 @@ npm run dev          # http://localhost:5173
 Then open **/setup** and do three things: connect an AI runner, upload your résumé,
 set your location. That's it.
 
+### Auto-apply in your own browser
+
+By default auto-apply opens a throwaway Chromium: nothing is logged in, so any site
+that wants a session will ask for one. To have it open a **tab in a real Chrome that
+keeps your logins** instead:
+
+```bash
+npm run apply-browser start   # a Chrome with a persistent profile, log into job sites once
+```
+
+Then set **Settings → Scheduler → Auto-apply browser** to *My Chrome*.
+
+Chrome refuses a debugging port on your **default** profile (since Chrome 136, to stop
+malware reading your cookies), and debugging can't be switched on for a Chrome that's
+already running. So this is a dedicated profile that remembers its sessions, not the
+exact window you happen to have open.
+
+### Or run it as a background service
+
+```bash
+npm run serve host      # map remoteledger.local -> 127.0.0.1 (sudo, once)
+npm run serve start     # build + run detached; survives closing the terminal
+npm run serve restart   # rebuild and replace it, after code changes
+npm run serve status    # up? on what address?
+npm run serve stop
+```
+
+Then the ledger lives at **http://remoteledger.local:5173** whenever your machine is
+on. This serves the built app, so it starts instantly and never re-optimises
+dependencies underneath you; use `npm run dev` while you're editing. `PORT` changes
+the port (a hosts entry maps a *name* to an address, not a port, so the port stays in
+the URL unless you serve on 80 — which needs elevated privileges).
+
 ## What it does
 
 - **Ledger** (`/`) — broadsheet of jobs in High / Medium / Stretch, animated fit
