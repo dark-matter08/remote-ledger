@@ -202,6 +202,37 @@ class AnthropicApiAdapter implements RunnerAdapter {
   }
 }
 
+// A local runner has no key, so "is there a key?" cannot answer whether it is usable.
+// Ollama is available when its daemon answers and not otherwise — install it, never
+// start it, and the Runners table called it ready anyway, so it could be picked as the
+// default and then fail every call with a connection error.
+//
+// The settings page asks every runner for its info on each render, so the answer is
+// held for a few seconds. The setup tab probes directly instead, because right after
+// pressing Start a stale "down" is exactly the wrong answer.
+let ollamaProbe: { at: number; up: boolean } | null = null;
+const OLLAMA_PROBE_MS = 5000;
+
+export function resetOllamaProbe(): void {
+  ollamaProbe = null;
+}
+
+export async function ollamaReachable(baseUrl: string): Promise<boolean> {
+  const now = Date.now();
+  if (ollamaProbe && now - ollamaProbe.at < OLLAMA_PROBE_MS) return ollamaProbe.up;
+  let up = false;
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/v1$/, "")}/api/version`, {
+      signal: AbortSignal.timeout(1200),
+    });
+    up = res.ok;
+  } catch {
+    // not running, not installed, or bound elsewhere — all the same to a caller
+  }
+  ollamaProbe = { at: now, up };
+  return up;
+}
+
 // --- OpenAI-compatible (OpenAI, OpenRouter, Groq, Mistral, Ollama, ...) -----
 
 class OpenAICompatAdapter implements RunnerAdapter {
@@ -214,14 +245,23 @@ class OpenAICompatAdapter implements RunnerAdapter {
     public defaultModel: string
   ) {}
   async info(): Promise<RunnerInfo> {
+    const local = !this.keyName && this.provider === "ollama";
+    const up = local ? await ollamaReachable(this.baseUrl) : false;
     return {
       id: this.id,
       label: this.label,
       kind: "api",
       provider: this.provider,
-      available: this.keyName ? !!getSecret(this.keyName) : true,
+      available: this.keyName ? !!getSecret(this.keyName) : local ? up : true,
       needsKey: this.keyName ?? undefined,
       defaultModel: this.defaultModel,
+      ...(local
+        ? {
+            detail: up
+              ? "Running locally. No key, no cost, nothing leaves this machine."
+              : "Not running — install and start it in Settings → Local.",
+          }
+        : {}),
     };
   }
   async run(req: RunRequest, model: string): Promise<AdapterResult> {

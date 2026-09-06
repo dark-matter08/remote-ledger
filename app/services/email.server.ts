@@ -13,7 +13,7 @@ import { getDb, getSetting } from "../sqlite.server";
 import { setSecret, getSecret, deleteSecret } from "../secrets.server";
 import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addEvent, getJob, restoreJob, upsertJobs, setJd, jobId as jobSlug } from "../db.server";
 import { resolveLive } from "./scrape.server";
-import { runLLM, tryParseJson } from "../llm/runner.server";
+import { defaultRunnerId, runLLM, tryParseJson } from "../llm/runner.server";
 import { STAGES, type Stage } from "../stages";
 
 const NOW = () => new Date().toISOString();
@@ -210,6 +210,14 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
   const db = getDb();
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   L("note", `Email sync started · ${acct.username} · ${acct.mailbox} (read-only)`);
+
+  // Say what is answering, on the run itself. The crawl stamps this in recordRunner
+  // and the knowledge scans stamp it inline; email never did, so its rows read "—"
+  // until the next server start, when backfillCrawlRunners guessed it from llm_calls
+  // inside the run's window. A finished run should not wait for a restart to say what
+  // read the mail — and with a local runner there may be no llm_calls to guess from.
+  const runner = (await defaultRunnerId()) || null;
+  updateCrawlRun(runId, { runner, model: runner ? getSetting(`model_${runner}`) || null : null });
   const pass = getSecret(pwKey(acct.id));
   if (!pass) { L("error", "No stored password for this account."); updateCrawlRun(runId, { status: "error", ended_at: NOW() }); return; }
 
