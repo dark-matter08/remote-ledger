@@ -29,6 +29,30 @@ that goes out is the call to the AI provider you chose.
 
 ## Quick start
 
+If you just want to *use* it, there is one command. It installs what is missing,
+gives the app a real web address, runs it in the background and brings it back every
+time you log in:
+
+```bash
+npm run ledger start     # -> https://remoteledger.dp.local
+```
+
+Later, when there is a new version — the app says so in the sidebar, and one click
+takes it. From a terminal it is:
+
+```bash
+npm run ledger restart   # discard local edits, pull, rebuild, restart
+npm run ledger status    # is it running, and where
+npm run ledger stop
+```
+
+`start` needs [Caddy](https://caddyserver.com/docs/install) and installs
+[dropport](https://github.com/dark-matter08/dropport) itself; it asks for your
+password once, to bind ports 80/443, add the hostname and trust the local
+certificate. Set `LEDGER_DOMAIN` for a different address.
+
+### Working on it
+
 ```bash
 npm install          # installs deps + Playwright Chromium (for résumé PDFs)
 npm run seed         # optional: load starter jobs

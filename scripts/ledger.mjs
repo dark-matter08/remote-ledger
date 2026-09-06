@@ -1,0 +1,295 @@
+#!/usr/bin/env node
+// The whole thing in one command, for someone who would rather not learn what a
+// terminal is.
+//
+//   npm run ledger start     set it up and leave it running, for good
+//   npm run ledger restart   take the latest code and come back up on it
+//   npm run ledger stop
+//   npm run ledger status
+//   npm run ledger logs
+//
+// This orchestrates; it does not reimplement. serve.mjs already knows how to build,
+// run detached and come back after a reboot, and dropport already knows how to put a
+// real hostname and a trusted certificate in front of a port. What was missing was
+// the step that does both, in the right order, and installs what is not there yet.
+import { spawnSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { platform } from "node:os";
+
+const ACTION = (process.argv[2] || "help").toLowerCase();
+const PROJECT = process.cwd();
+const MAC = platform() === "darwin";
+const WIN = platform() === "win32";
+
+// A bare name would become <name>.dp.local anyway; spelling it out means the value
+// you set is the address you get.
+const DOMAIN = process.env.LEDGER_DOMAIN || "remoteledger.dp.local";
+const PORT = Number(process.env.PORT || 5173) || 5173;
+const SERVE = resolve(PROJECT, "scripts", "serve.mjs");
+const LOGS = resolve(PROJECT, "logs");
+
+mkdirSync(LOGS, { recursive: true });
+
+const say = (m = "") => console.log(m);
+const step = (m) => say(`\n▸ ${m}`);
+const ok = (m) => say(`  ✓ ${m}`);
+const warn = (m) => say(`  ! ${m}`);
+
+function run(cmd, args, opts = {}) {
+  const r = spawnSync(cmd, args, { stdio: "inherit", cwd: PROJECT, ...opts });
+  return r.status === 0;
+}
+
+function capture(cmd, args, opts = {}) {
+  const r = spawnSync(cmd, args, { encoding: "utf8", cwd: PROJECT, ...opts });
+  return r.status === 0 ? String(r.stdout || "") : null;
+}
+
+function have(bin) {
+  const r = spawnSync(WIN ? "where" : "which", [bin], { stdio: "ignore" });
+  return r.status === 0;
+}
+
+// ---------- prerequisites ----------
+
+// Whatever launched this script is what the project is already installed with;
+// switching managers mid-clone is how a lockfile ends up fighting itself.
+function packageManager() {
+  const ua = String(process.env.npm_config_user_agent || "");
+  if (ua.startsWith("pnpm")) return "pnpm";
+  if (ua.startsWith("yarn")) return "yarn";
+  if (ua.startsWith("npm")) return "npm";
+  if (existsSync(resolve(PROJECT, "pnpm-lock.yaml")) && have("pnpm")) return "pnpm";
+  return "npm";
+}
+
+function installDeps({ force = false } = {}) {
+  if (!force && existsSync(resolve(PROJECT, "node_modules", ".bin"))) return true;
+  const pm = packageManager();
+  step(`Installing dependencies with ${pm} — this takes a minute the first time`);
+  return run(pm, ["install"]);
+}
+
+/** Caddy does the proxying and the certificates; dropport is a wrapper around it. */
+function ensureCaddy() {
+  if (have("caddy")) return ok("Caddy is installed");
+
+  step("Installing Caddy (it serves the https address)");
+  if (MAC && have("brew")) {
+    if (run("brew", ["install", "caddy"])) return ok("Caddy installed");
+  } else if (!MAC && !WIN) {
+    // Each of these asks for a password; announce it rather than surprising anyone.
+    say("  this needs your password, to install a system package");
+    if (have("apt-get") && run("sudo", ["apt-get", "install", "-y", "caddy"])) return ok("Caddy installed");
+    if (have("dnf") && run("sudo", ["dnf", "install", "-y", "caddy"])) return ok("Caddy installed");
+    if (have("pacman") && run("sudo", ["pacman", "-S", "--noconfirm", "caddy"])) return ok("Caddy installed");
+  }
+
+  warn("could not install Caddy automatically.");
+  say("    Install it once, then run this command again:");
+  say(MAC ? "      brew install caddy" : "      see https://caddyserver.com/docs/install");
+  return false;
+}
+
+function ensureDropport() {
+  if (have("dropport")) return ok("dropport is installed");
+  step("Installing dropport (it gives the app its web address)");
+  const pm = packageManager() === "pnpm" ? "pnpm" : "npm";
+  const args = pm === "pnpm" ? ["add", "-g", "dropport"] : ["install", "-g", "dropport"];
+  if (run(pm, args)) return ok("dropport installed");
+  // the registry copy can lag the repo, and a global install can be refused outright
+  if (run(pm, pm === "pnpm" ? ["add", "-g", "github:dark-matter08/dropport"] : ["install", "-g", "github:dark-matter08/dropport"]))
+    return ok("dropport installed from source");
+  warn("could not install dropport automatically.");
+  say(`    Run this once, then try again:  ${pm} install -g dropport`);
+  return false;
+}
+
+/**
+ * Register the name and start the proxy. dropport keeps its registry in
+ * ~/.dropport/apps.json and installs a launchd daemon (macOS) or systemd unit, so
+ * both the routes and the proxy itself are already there after a reboot — there is
+ * nothing for this script to arrange beyond running it once.
+ */
+function setupDropport() {
+  if (!ensureCaddy()) return null;
+  if (!ensureDropport()) return null;
+
+  step(`Pointing https://${DOMAIN} at the app`);
+  if (!run("dropport", ["add", DOMAIN, String(PORT)])) {
+    warn(`dropport could not register ${DOMAIN}`);
+    return null;
+  }
+  // up and trust each ask for a password: one binds 80/443, one adds the local
+  // certificate authority so the browser stops warning. Both are announced by dropport.
+  if (!run("dropport", ["up"])) {
+    warn("dropport could not start the proxy — try `dropport doctor`");
+    return null;
+  }
+  run("dropport", ["trust"]);
+  return `https://${DOMAIN}`;
+}
+
+// ---------- git ----------
+
+const gitDirty = () => Boolean(capture("git", ["status", "--porcelain"])?.trim());
+
+/**
+ * Throw away local edits, exactly as asked — but write them to logs/ on the way out.
+ * On a machine that only ever runs the app there is nothing here worth keeping, and
+ * on the one machine where there is, dropping it silently would be unforgivable.
+ */
+function discardLocalChanges() {
+  if (!gitDirty()) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const patch = join(LOGS, `discarded-${stamp}.patch`);
+  const diff = capture("git", ["diff", "HEAD"]);
+  if (diff?.trim()) {
+    writeFileSync(patch, diff);
+    say(`  local edits saved to ${patch} before being dropped`);
+  }
+  // only when there is something to stash: on a clean tree `git stash` saves nothing
+  // and the drop that follows would take an older, unrelated stash with it
+  if (run("git", ["stash", "--include-untracked"], { stdio: "ignore" })) {
+    run("git", ["stash", "drop"], { stdio: "ignore" });
+    ok("local changes discarded");
+  }
+}
+
+/**
+ * `git pull` refuses when an untracked file would be overwritten by an incoming one
+ * — a generated lockfile is the usual culprit, and it stops a non-technical user
+ * dead. Move the offenders aside and try once more.
+ */
+function pullWithRetry() {
+  const branch = capture("git", ["rev-parse", "--abbrev-ref", "HEAD"])?.trim() || "main";
+  const first = spawnSync("git", ["pull", "--ff-only", "origin", branch], { encoding: "utf8", cwd: PROJECT });
+  const output = `${first.stdout || ""}${first.stderr || ""}`;
+  say(output.trim());
+  if (first.status === 0) return true;
+
+  if (!/untracked working tree files would be overwritten/i.test(output)) return false;
+  const files = output
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^(error|Please|Aborting|Updating|hint)/i.test(l) && !l.includes(" "));
+  if (!files.length) return false;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const parked = join(LOGS, `replaced-${stamp}`);
+  step(`Moving ${files.length} file(s) aside so the update can land`);
+  for (const f of files) {
+    const from = resolve(PROJECT, f);
+    if (!existsSync(from)) continue;
+    const to = join(parked, f);
+    mkdirSync(dirname(to), { recursive: true });
+    renameSync(from, to);
+    say(`  ${f} -> ${to}`);
+  }
+  return run("git", ["pull", "--ff-only", "origin", branch]);
+}
+
+const lockPrint = () =>
+  ["pnpm-lock.yaml", "package-lock.json", "package.json"]
+    .map((f) => (existsSync(resolve(PROJECT, f)) ? readFileSync(resolve(PROJECT, f), "utf8").length : 0))
+    .join(":");
+
+// ---------- actions ----------
+
+function serve(action, env = {}) {
+  return run(process.execPath, [SERVE, action], { env: { ...process.env, ...env } });
+}
+
+async function start() {
+  say("Setting up The Remote Ledger. This can take a few minutes the first time.");
+  if (!installDeps()) {
+    warn("dependency install failed — nothing else can run until that works.");
+    process.exit(1);
+  }
+
+  const address = setupDropport();
+
+  step("Starting the app, and making it come back on its own after a restart");
+  // `enable` builds, installs the login agent and starts it. With the proxy up, the
+  // extra hosts line serve.mjs would add is a second password prompt for a name
+  // nothing asks for.
+  if (!serve("enable", address ? { LEDGER_SKIP_HOSTS: "1" } : {})) {
+    warn("could not install the background service — falling back to a plain start");
+    serve("start");
+  }
+
+  say("");
+  say("──────────────────────────────────────────────");
+  if (address) {
+    say(`  The Remote Ledger is running at  ${address}`);
+    say("");
+    say("  It starts on its own every time you log in, and the address");
+    say("  keeps working after a restart. Nothing to run again.");
+  } else {
+    say(`  The Remote Ledger is running at  http://localhost:${PORT}`);
+    say("");
+    say("  The https address needs Caddy — see the note above. Everything");
+    say("  else works, and it still starts on its own after a restart.");
+  }
+  say("");
+  say("  To take an update later:  npm run ledger restart");
+  say("──────────────────────────────────────────────");
+}
+
+async function restart() {
+  step("Fetching the latest version");
+  discardLocalChanges();
+
+  const before = lockPrint();
+  if (!pullWithRetry()) {
+    warn("could not take the update. The app has been left exactly as it was.");
+    say("    Try again in a moment, or send this output to whoever maintains it.");
+    process.exit(1);
+  }
+  if (lockPrint() !== before) installDeps({ force: true });
+
+  step("Restarting");
+  if (!serve("restart")) {
+    warn("the restart did not come up cleanly — `npm run ledger logs` will say why");
+    process.exit(1);
+  }
+  const head = capture("git", ["log", "-1", "--pretty=%h %s"])?.trim();
+  say("");
+  ok(`up to date${head ? ` — now on ${head}` : ""}`);
+}
+
+const HELP = `
+The Remote Ledger
+
+  npm run ledger start     install what is missing, then run it for good
+  npm run ledger restart   take the latest version and restart
+  npm run ledger stop      stop it (it still returns when you log in)
+  npm run ledger status    is it running, and where
+  npm run ledger logs      watch what it is doing
+
+Address: ${DOMAIN} (set LEDGER_DOMAIN to change it, PORT for the port).
+`;
+
+switch (ACTION) {
+  case "start":
+  case "install":
+    await start();
+    break;
+  case "restart":
+  case "update":
+    await restart();
+    break;
+  case "stop":
+    serve("stop");
+    break;
+  case "status":
+    serve("status");
+    if (have("dropport")) run("dropport", ["status"]);
+    break;
+  case "logs":
+    serve("logs");
+    break;
+  default:
+    say(HELP);
+}

@@ -116,6 +116,10 @@ function hostsHasEntry() {
 }
 
 function addHost() {
+  // dropport writes its own tagged line for the name it owns, so a second entry here
+  // would be a second sudo prompt for a mapping nothing reads. ledger.mjs sets this
+  // once it has the proxy working.
+  if (process.env.LEDGER_SKIP_HOSTS === "1") return;
   if (hostsHasEntry()) return say(`  hosts: ${HOSTNAME} already maps to 127.0.0.1`);
   if (WIN) {
     say(`  Windows: open an Administrator prompt and add this line to ${HOSTS_FILE}`);
