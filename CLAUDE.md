@@ -18,12 +18,16 @@ Privacy: data + keys stay on the machine; only the chosen AI provider is called.
 - `app/db.server.ts` — jobs, applications/stages, events, board, funnel, source stats, crawl upsert.
 - `app/default-boards.ts` — job boards seeded into every install (per-URL, so a deletion sticks).
 - `app/services/` — `crawl.server.ts` (in-process crawl via runner), `feeds.server.ts` (keyless
-  public job feeds: free discovery when the runner cannot browse), `scheduler.server.ts` (in-app timer).
-- `app/routes/` — pages + resource routes: `api/crawl`, `api/clip`, `version/:vid/resume.pdf`.
+  public job feeds: free discovery when the runner cannot browse), `scheduler.server.ts` (in-app timer),
+  `backup.server.ts` (VACUUM INTO, 6-hourly, keep 10), `reset.server.ts` (Settings → Danger zone:
+  per-scope wipe, backs up first, re-seeds the shipped boards, sends you back to `/setup`).
+- `app/routes/setup.tsx` — the onboarding wizard: six steps, one on screen at a time, `?step=N`.
+  Each step ends in a real proof (`api/setup`: a live model call, a live feed read, the crawl log).
+- `app/routes/` — pages + resource routes: `api/crawl`, `api/clip`, `api/setup`, `version/:vid/resume.pdf`.
 - `scripts/` — `run-crawl.ts` (CLI crawl), `os-scheduler.mjs` (cross-platform OS schedule),
   `seed.mjs` + `seed-jobs.json` + `db.mjs` (initial seed), `schema.sql`, `prompt.md` (templated).
 - `extension/` — MV3 browser clipper.
-- `data/` (gitignored) — `jobs.db`, `pdfs/`, `.master.key`.
+- `data/` (gitignored) — `jobs.db`, `pdfs/`, `apply/`, `backups/`, `.master.key`.
 
 ## Design System
 Always read DESIGN.md before any visual/UI change (Heritage Press: Fraunces / Spectral /

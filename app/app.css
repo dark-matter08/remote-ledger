@@ -722,15 +722,106 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 @keyframes typeset { 0% { transform: scaleX(0); } 45% { transform: scaleX(1); } 90%, 100% { transform: scaleX(0); } }
 .parsing-cap { font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-faint); }
 
-/* onboarding wizard */
-.wizard { margin: 18px 0; }
-.wz-step { display: grid; grid-template-columns: 46px 1fr; gap: 14px; border: 1.5px solid var(--rule); border-left: 4px solid var(--ink-faint); background: var(--card); padding: 18px 20px; margin-bottom: 12px; }
-.wz-step.done { border-left-color: var(--green); }
-.wz-num { width: 34px; height: 34px; display: grid; place-items: center; border: 1.5px solid var(--ink); border-radius: 50%; font-family: var(--display); font-weight: 900; font-size: 16px; }
-.wz-step.done .wz-num { border-color: var(--green); color: var(--green); }
-.wz-body h3 { font-family: var(--display); font-weight: 600; font-size: 19px; margin: 4px 0 0; }
-.wz-content { font-family: var(--serif); font-size: 14px; line-height: 1.55; color: var(--ink-soft); margin-top: 6px; }
-.wz-content .field label { color: var(--ink-soft); }
+/* ---- onboarding wizard ----
+   One step on screen at a time, with a rail across the top instead of five stacked
+   panels: the old shape put every unfinished step in front of you at once, and the
+   only one that mattered was the one you were on. */
+.setup-rail { display: flex; gap: 6px; flex-wrap: wrap; margin: 18px 0 4px; }
+.setup-tick {
+  flex: 1 1 auto; display: flex; align-items: center; gap: 8px; text-align: left;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  background: transparent; color: var(--ink-faint); border: 1.5px solid var(--rule-faint);
+  padding: 10px 11px; cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.setup-tick:hover { border-color: var(--ink); color: var(--ink); }
+.setup-tick.done { color: var(--green); border-color: var(--green); }
+.setup-tick.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.setup-tick-n {
+  flex: none; width: 21px; height: 21px; display: grid; place-items: center;
+  border: 1.5px solid currentColor; font-weight: 600; font-size: 11px; letter-spacing: 0;
+}
+.setup-tick-t { flex: 1; white-space: nowrap; }
+.setup-tick-v { flex: none; color: var(--vermillion); font-size: 12px; }
+.setup-tick.on .setup-tick-v { color: var(--paper); }
+
+.setup-panel { margin-top: 12px; }
+.setup-lede {
+  font-family: var(--serif); font-style: italic; font-size: 15px; line-height: 1.5;
+  color: var(--ink-faint); margin: 0 0 18px; padding-bottom: 14px;
+  border-bottom: 1.5px solid var(--rule-faint);
+}
+.setup-prose { font-family: var(--serif); font-size: 15px; line-height: 1.62; color: var(--ink-soft); margin: 0 0 16px; }
+.setup-prose strong { color: var(--ink); font-weight: 600; }
+
+/* the three ways to get an AI, side by side — none of them the default */
+.setup-routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; margin-bottom: 20px; }
+.setup-route {
+  display: flex; flex-direction: column; gap: 5px; text-align: left; cursor: pointer;
+  background: transparent; border: 1.5px solid var(--rule-faint); padding: 12px 14px;
+  transition: border-color .15s, background .15s, transform .12s;
+}
+.setup-route:hover { border-color: var(--ink); transform: translateY(-2px); }
+.setup-route.on { border-color: var(--ink); background: var(--paper-2); box-shadow: 4px 4px 0 0 var(--vermillion); }
+.setup-route-t { font-family: var(--display); font-weight: 600; font-size: 15px; color: var(--ink); }
+.setup-route-s { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); line-height: 1.5; }
+
+.setup-cmd { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.setup-cmd code {
+  flex: 1 1 240px; font-family: var(--mono); font-size: 11.5px; color: var(--ink);
+  background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 7px 9px; word-break: break-all;
+}
+.setup-cmd .ghost-btn { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+
+.setup-key {
+  display: grid; grid-template-columns: minmax(190px, 1.3fr) 1fr auto auto; gap: 10px;
+  align-items: center; padding: 11px 0; border-bottom: 1px solid var(--rule-faint);
+}
+.setup-key:last-of-type { border-bottom: 0; }
+.setup-key-l { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink); }
+.setup-key input {
+  font-family: var(--mono); font-size: 12px; background: var(--paper); color: var(--ink);
+  border: 1.5px solid var(--rule-faint); padding: 8px 10px; width: 100%;
+}
+.setup-key input:focus { outline: none; border-color: var(--ink); }
+
+.setup-pick { border-top: 1.5px solid var(--rule); margin-top: 22px; padding-top: 16px; }
+.setup-pick h4, .setup-read h4 {
+  font-family: var(--display); font-weight: 600; font-size: 17px; margin: 0 0 10px;
+  display: flex; align-items: center; gap: 9px;
+}
+.setup-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.setup-answer {
+  display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid currentColor; font-family: var(--serif); font-size: 14px;
+  font-style: italic; line-height: 1.5; text-transform: none; letter-spacing: 0;
+}
+.setup-answer svg { flex: none; margin-top: 3px; }
+
+.setup-read { border-top: 1.5px solid var(--rule-faint); margin-top: 22px; padding-top: 16px; }
+.setup-pre {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.65; color: var(--ink-soft);
+  background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 14px 16px;
+  margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto;
+}
+.setup-log { max-height: 220px; }
+.setup-sample { list-style: none; margin: 10px 0 0; padding: 0; font-family: var(--serif); font-size: 13.5px; text-transform: none; letter-spacing: 0; line-height: 1.7; }
+.setup-sample li { border-top: 1px solid currentColor; padding-top: 5px; margin-top: 5px; }
+.setup-list { font-family: var(--serif); font-size: 14.5px; line-height: 1.6; color: var(--ink-soft); margin: 0; padding-left: 20px; }
+.setup-list li { margin-bottom: 11px; }
+.setup-add { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-top: 16px; }
+
+.setup-nav { display: flex; align-items: center; gap: 16px; margin: 4px 0 40px; }
+.setup-nav > :last-child { margin-left: auto; }
+.setup-nav-mid { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); }
+.setup-nav .btn, .setup-nav .ghost-btn { display: inline-flex; align-items: center; gap: 7px; }
+.setup-finish { border-top: 1.5px solid var(--rule); margin-top: 22px; padding-top: 18px; }
+.setup-finish .btn { display: inline-flex; align-items: center; gap: 7px; }
+
+@media (max-width: 720px) {
+  .setup-key { grid-template-columns: 1fr; }
+  .setup-nav { flex-wrap: wrap; }
+  .setup-nav-mid { order: 3; width: 100%; }
+}
 
 /* ===== custom form select ===== */
 .fsel { position: relative; font-family: var(--mono); }

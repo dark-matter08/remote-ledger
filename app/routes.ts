@@ -29,4 +29,5 @@ export default [
   route("api/search", "routes/api-search.tsx"),
   route("api/update", "routes/api-update.tsx"),
   route("api/gap-draft", "routes/api-gap-draft.tsx"),
+  route("api/setup", "routes/api-setup.tsx"),
 ] satisfies RouteConfig;

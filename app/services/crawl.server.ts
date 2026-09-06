@@ -105,6 +105,33 @@ function buildPrompt(o: PromptOpts): string {
   return body + blocklistPrompt() + footer;
 }
 
+/**
+ * The part of the search prompt the user's own answers write.
+ *
+ * Onboarding asks for a location and a stack, which on their own read like a form.
+ * Showing the lines they become — the actual text an agent is about to be handed —
+ * is the difference between filling a field and understanding what it does.
+ */
+export function targetPreview(): string {
+  let tmpl = getSetting("search_prompt");
+  if (!tmpl) {
+    try {
+      tmpl = readFileSync(resolve(process.cwd(), "scripts", "prompt.md"), "utf8");
+    } catch {
+      tmpl = "Find remote jobs for {{location}} matching {{stack}}.";
+    }
+  }
+  const loc = getSetting("profile_location") || "(nowhere yet — fill in the box above)";
+  const stack = getSetting("profile_stack") || "(nothing yet — fill in the box above)";
+  return tmpl
+    .split("\n")
+    .slice(0, 14)
+    .join("\n")
+    .replaceAll("{{location}}", loc)
+    .replaceAll("{{stack}}", stack)
+    .trim();
+}
+
 // Run the research agent once and return its raw text. Streams live steps to the
 // Crawl Shell for the Claude CLI; otherwise dispatches through the runner layer.
 async function invokeAgent(
