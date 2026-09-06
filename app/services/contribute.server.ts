@@ -217,8 +217,9 @@ export async function submitBoardSuggestions(urls: string[], log: Log = noop): P
         ].filter(Boolean).join("\n")
       ),
       "",
-      "Opened from the Ledger's own Companies tab. Only the name, url, note and role",
-      "count above were read — nothing else left the machine.",
+      "Opened by The Remote Ledger on the contributor's machine — from the Companies tab,",
+      "or by the daily pass if they switched that on. Only the name, url, note and role",
+      "count above were read; nothing else left the machine.",
     ].join("\n");
 
     log("step", "opening the pull request…");
