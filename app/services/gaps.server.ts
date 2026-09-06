@@ -16,8 +16,21 @@ import { getMeta, setMeta } from "../db.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
 import { HUMAN_STYLE, stripAiTells } from "../llm/style";
 
+/**
+ * Not every gap is a skill.
+ *
+ * The analysis returns whatever the posting weighs against you, and a third of those
+ * are not things a project can answer: where you live, what timezone you overlap,
+ * how many years you have been doing it, what your GPA was. Offering "which project
+ * did you do this in?" against "Location: Cameroon, role is Americas-only" is a
+ * question with no true answer, and the only thing a model can do with it is invent
+ * one.
+ */
+export type GapKind = "skill" | "eligibility" | "credential";
+
 export interface Gap {
   skill: string;
+  kind: GapKind;
   /** Entries this could plausibly attach to, best first. */
   candidates: { id: number; label: string }[];
 }
@@ -32,6 +45,20 @@ const GAP_LINE_GUARD =
   "It routinely carries quantities, seniority levels and tool names they do not match, and restating any " +
   "of those as fact is the one thing you must never do. Take from it only the subject; every quantity, " +
   "duration, tool and outcome must come from the entries or the candidate's own notes, or be left out. ";
+
+// Where you are, and whether you may work there. Nothing you have built changes it.
+const ELIGIBILITY =
+  /\b(location|locat(ed|ion)|time ?zone|utc[+-]|visa|work authoriz|authorisation|eligib|relocat|on-?site|hybrid|must (reside|be based)|based in|citizen|residen|work permit|overlap with)\b/i;
+// A bar you clear or you do not. Naming a project adds evidence, never years.
+const CREDENTIAL =
+  /\b(\d+\s*\+?\s*years?|years? of (experience|professional)|degree|bachelor|master'?s|phd|academic|gpa|certification|clearance)\b/i;
+
+export function classifyGap(phrase: string): GapKind {
+  const s = String(phrase || "");
+  if (ELIGIBILITY.test(s)) return "eligibility";
+  if (CREDENTIAL.test(s)) return "credential";
+  return "skill";
+}
 
 const norm = (s: string) => s.trim().toLowerCase();
 const dismissKey = (jobId: string) => `gapdismiss:${jobId}`;
@@ -131,7 +158,7 @@ export function gapsForJob(jobId: string, missing: string[]): Gap[] {
     const gapWords = new Set(words(skill));
     if (have.some((t) => covers(t, gapWords, skill))) continue;
     seen.add(k);
-    out.push({ skill, candidates });
+    out.push({ skill, kind: classifyGap(skill), candidates });
   }
   return out;
 }

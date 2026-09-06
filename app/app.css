@@ -1158,10 +1158,8 @@ button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
   padding: 11px 2px; font-family: var(--mono); font-size: 12.5px;
 }
 .gap-row > summary::-webkit-details-marker { display: none; }
-.gap-row > summary::before {
-  content: "▸"; color: var(--ink-faint); font-size: 10px; transition: transform .15s;
-}
-.gap-row[open] > summary::before { transform: rotate(90deg); }
+.gap-caret { color: var(--ink-faint); flex: none; transition: transform .15s; }
+.gap-row[open] > summary .gap-caret { transform: rotate(90deg); }
 .gap-row > summary:hover { background: var(--card); }
 .gap-skill { flex: 1; }
 .gap-body { padding: 4px 0 18px 20px; }
@@ -1174,7 +1172,13 @@ button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
   display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
   font-family: var(--mono); font-size: 12px; line-height: 1.45; color: var(--ink);
 }
-.gap-pick input { margin-top: 2px; flex: none; }
+/* the real control stays in the form and keeps the keyboard behaviour; the icon is
+   what you see, so the ticks match the rest of the press */
+.gap-box-input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.gap-box { flex: none; margin-top: 1px; color: var(--ink-faint); }
+.gap-box.on { color: var(--vermillion); }
+.gap-pick:hover .gap-box { color: var(--ink); }
+.gap-btn { display: inline-flex; align-items: center; gap: 7px; }
 .gap-body textarea {
   width: 100%; font-family: var(--serif); font-size: 14px; line-height: 1.55;
   background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink-faint);
@@ -1187,3 +1191,18 @@ button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
   font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
   text-transform: uppercase; color: var(--ink-faint);
 }
+
+/* Gaps no project can answer: shown, not asked. */
+.gap-hard { border-top: 1.5px solid var(--rule); margin-top: 18px; padding-top: 16px; }
+.gap-hard h4 {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  font-family: var(--display); font-weight: 600; font-size: 15px; color: var(--ink);
+}
+.gap-hard h4 svg { color: var(--vermillion); }
+.gap-hard-row {
+  display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+  padding: 9px 2px; border-bottom: 1px solid var(--rule-faint);
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+}
+.gap-hard-row:last-child { border-bottom: 0; }
+.gap-hard-row:hover { background: var(--card); }

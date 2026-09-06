@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ChevronRight, Square, CheckSquare, Sparkles, Wand2 } from "lucide-react";
 
 export interface GapCandidate {
   id: number;
@@ -68,6 +69,7 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
   return (
     <details className="gap-row">
       <summary>
+        <ChevronRight className="gap-caret" size={13} strokeWidth={2} />
         <span className="gap-skill">{skill}</span>
         <span className={`badge ${picked.size ? "ok" : dismissed ? "off" : "warn"}`}>{summary}</span>
       </summary>
@@ -81,12 +83,16 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
             <label key={c.id} className="gap-pick">
               <input
                 type="checkbox"
+                className="gap-box-input"
                 name={`gapEntry:${skill}`}
                 value={c.id}
                 checked={picked.has(c.id)}
                 onChange={() => toggle(c.id)}
               />
-              {c.label}
+              {picked.has(c.id)
+                ? <CheckSquare className="gap-box on" size={15} strokeWidth={1.9} />
+                : <Square className="gap-box" size={15} strokeWidth={1.9} />}
+              <span>{c.label}</span>
             </label>
           ))}
         </div>
@@ -102,15 +108,18 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
           style={{ minHeight: 76 }}
         />
         <div className="gap-actions">
-          <button type="button" className="ghost-btn" disabled={!!drafting} onClick={() => draft("blank")}>
+          <button type="button" className="ghost-btn gap-btn" disabled={!!drafting} onClick={() => draft("blank")}>
+            <Sparkles size={13} strokeWidth={1.8} />
             {drafting === "blank" ? "Drafting…" : "Draft it for me"}
           </button>
-          <button type="button" className="ghost-btn" disabled={!!drafting || !note.trim()} onClick={() => draft("notes")}>
+          <button type="button" className="ghost-btn gap-btn" disabled={!!drafting || !note.trim()} onClick={() => draft("notes")}>
+            <Wand2 size={13} strokeWidth={1.8} />
             {drafting === "notes" ? "Tidying…" : "Tidy up my notes"}
           </button>
           <label className="gap-dismiss">
             <input
               type="checkbox"
+              className="gap-box-input"
               name={`gapDismiss:${skill}`}
               checked={dismissed}
               onChange={(e) => {
@@ -118,6 +127,7 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
                 if (e.target.checked) setPicked(new Set());
               }}
             />
+            {dismissed ? <CheckSquare className="gap-box on" size={14} strokeWidth={1.9} /> : <Square className="gap-box" size={14} strokeWidth={1.9} />}
             I have not done this
           </label>
         </div>

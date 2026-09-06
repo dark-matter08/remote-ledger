@@ -29,7 +29,7 @@ import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
-import { RefreshCw, Check, X, Circle, Sparkles, Trash2 } from "lucide-react";
+import { RefreshCw, Check, X, Circle, Sparkles, Trash2, ShieldAlert, Square } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -485,13 +485,42 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             </p>
             <Form method="post">
               <input type="hidden" name="intent" value="kb-gap" />
-              {gaps.map((g: any) => (
+              {gaps.filter((g: any) => g.kind === "skill").map((g: any) => (
                 <GapRow key={g.skill} skill={g.skill} candidates={g.candidates} />
               ))}
+
               <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "10px 0 12px" }}>
                 Nothing here decides you have a skill. A gap closes only because you named the place you used
                 it; the wording is all the model contributes.
               </p>
+
+              {gaps.some((g: any) => g.kind !== "skill") && (
+                <div className="gap-hard">
+                  <h4>
+                    <ShieldAlert size={14} strokeWidth={1.8} />
+                    Not something evidence can close
+                  </h4>
+                  <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "6px 0 12px" }}>
+                    These are about where you are or how long you have been at it, not what you have built.
+                    Naming a project cannot answer them, so they are listed rather than asked &mdash; know what
+                    the posting weighs against you before you spend an afternoon on it. Set aside the ones you
+                    have already accounted for.
+                  </p>
+                  {gaps.filter((g: any) => g.kind !== "skill").map((g: any) => (
+                    <label key={g.skill} className="gap-hard-row">
+                      <input type="hidden" name="gapSkill" value={g.skill} />
+                      <input type="checkbox" className="gap-box-input" name={`gapDismiss:${g.skill}`} />
+                      <Square className="gap-box" size={15} strokeWidth={1.9} />
+                      <span>
+                        <span className={`badge ${g.kind === "eligibility" ? "on" : "warn"}`} style={{ marginRight: 8 }}>
+                          {g.kind === "eligibility" ? "eligibility" : "track record"}
+                        </span>
+                        {g.skill}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
               <button className="btn" disabled={busy}>
                 {running === "kb-gap" ? "Writing to your knowledge base…" : "Add these to my knowledge base"}
               </button>
