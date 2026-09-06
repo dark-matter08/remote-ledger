@@ -685,6 +685,70 @@ test("registry: shipped job boards seed themselves, and stay deleted once remove
   assert.equal(boards(gone.url).length, 0, "a default you removed is not seeded back");
 });
 
+test("feeds: every board's own shape normalises to one posting the crawl can score", async () => {
+  const { FEEDS } = await import("../app/services/feeds.server");
+  const by = (id: string) => FEEDS.find((f: any) => f.id === id)!;
+
+  // element 0 of the RemoteOK feed is its legal notice, not a job
+  const rok = by("remoteok").parse([
+    { legal: "API Terms of Service: please link back" },
+    { company: "Warehance", position: "QA Engineer", url: "https://remoteok.com/remote-jobs/1",
+      location: "", description: "<p>Test &amp; automate</p>", date: "2026-09-04T15:13:46+00:00" },
+  ]);
+  assert.equal(rok.length, 1, "the legal notice is not a posting");
+  assert.equal(rok[0].company, "Warehance");
+  assert.equal(rok[0].title, "QA Engineer");
+  assert.equal(rok[0].source, "RemoteOK", "the board is credited as the source");
+  assert.equal(rok[0].description, "Test & automate", "html is unwrapped, entities decoded");
+  assert.equal(rok[0].remote, true, "a remote-only board needs no guessing at the location");
+
+  const rmv = by("remotive").parse({ jobs: [{ title: "Backend Engineer", company_name: "Coalition",
+    url: "https://remotive.com/remote-jobs/2", candidate_required_location: "Worldwide",
+    job_type: "full_time", description: "<p>Node</p>", publication_date: "2026-09-02T19:59:53" }] });
+  assert.equal(rmv[0].location, "Worldwide");
+  assert.equal(rmv[0].employmentType, "full_time");
+
+  // himalayas restricts by a LIST of locations and dates in epoch seconds
+  const him = by("himalayas").parse({ jobs: [{ title: "Pre-sales Engineer", companyName: "Wildix",
+    applicationLink: "https://himalayas.app/companies/wildix/jobs/x",
+    locationRestrictions: ["Italy", "Spain"], employmentType: "Full Time",
+    description: "<h3>Hello</h3>", pubDate: "1788656191" }] });
+  assert.equal(him[0].location, "Italy, Spain", "a list of restrictions reads as one place");
+  assert.equal(him[0].updatedAt, new Date(1788656191 * 1000).toISOString(), "epoch seconds become a date");
+
+  const job = by("jobicy").parse({ jobs: [{ jobTitle: "Support Associate", companyName: "Peerspace",
+    url: "https://jobicy.com/jobs/152619", jobGeo: "USA", jobType: ["Full-Time"],
+    jobExcerpt: "Customer Experience", pubDate: "2026-09-05T18:54:47+00:00" }] });
+  assert.equal(job[0].employmentType, "Full-Time", "a one-element list is still one type");
+  assert.equal(job[0].title, "Support Associate");
+
+  // a row with no employer, or nowhere to apply, dies here rather than in verification
+  assert.equal(by("remoteok").parse([{ company: "", position: "Ghost", url: "https://x.test/1" }]).length, 0);
+});
+
+test("catalogue: a model that browses is marked, with what the searching costs", async () => {
+  const { normalizeModel } = await import("../app/llm/openrouter.server");
+
+  const sonar = normalizeModel({
+    id: "perplexity/sonar", name: "Sonar",
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    supported_parameters: ["max_tokens", "temperature", "web_search_options"],
+    pricing: { prompt: "0.000001", completion: "0.000001", web_search: "0.005" },
+  })!;
+  assert.equal(sonar.web, true, "web_search_options is the provider's own search");
+  assert.equal(sonar.webSearchUsd, 0.005, "billed per request, so it is not scaled to the million");
+  assert.equal(sonar.inUsd, 1, "token prices still read per million");
+
+  const plain = normalizeModel({
+    id: "meta/llama-guess", name: "Llama",
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    supported_parameters: ["max_tokens", "tools"],
+    pricing: { prompt: "0", completion: "0" },
+  })!;
+  assert.equal(plain.web, false, "tools are not the web");
+  assert.equal(plain.webSearchUsd, null, "and an unpublished search price is not zero");
+});
+
 test("runner: web access is a capability, and free-only outranks buying it", async () => {
   const { setSecret, deleteSecret } = await import("../app/secrets.server");
   const { setSetting } = await import("../app/sqlite.server");

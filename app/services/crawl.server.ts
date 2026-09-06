@@ -5,7 +5,7 @@
 // Works best with a CLI runner that has web access (e.g. Claude Code).
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runLLM, defaultRunnerId, tryParseJson, logExternalCall } from "../llm/runner.server";
+import { runLLM, defaultRunnerId, runnerCanSearchWeb, tryParseJson, logExternalCall } from "../llm/runner.server";
 import { streamClaude } from "../llm/adapters.server";
 import { getSetting } from "../sqlite.server";
 import {
@@ -27,8 +27,8 @@ import {
   markCompanyChecked,
   boardUrl,
   type AtsPosting,
-  type Company,
 } from "./ats.server";
+import { fetchAllFeeds } from "./feeds.server";
 
 export type CrawlType = "find" | "update" | "full" | "careers";
 
@@ -234,6 +234,25 @@ function looksRelevant(p: AtsPosting, tokens: string[]): boolean {
   return tokens.some((t) => hay.includes(t));
 }
 
+// Titles only, and a narrower vocabulary than ENGINEERING_RE: no bare "data",
+// "platform" or "infrastructure", which carry a job on the ATS path but not here.
+const ENGINEERING_TITLE_RE =
+  /\b(engineer|engineering|developer|programmer|architect|sre|devops|full[- ]?stack|back[- ]?end|front[- ]?end|software|qa|sdet|tech(nical)? lead)\b/i;
+
+// The ATS path is already fenced in by the companies you chose to track, so reading
+// the description for a stack keyword is a fair net there. A public feed has no such
+// fence — the entire remote market arrives at once, and matching on the body lets
+// "FedEx courier" through on the word "express" in its own boilerplate, then spends
+// a scoring slot on it. Out here, a posting is judged by what it calls itself.
+function titleLooksRelevant(p: AtsPosting, tokens: string[]): boolean {
+  if (ENGINEERING_TITLE_RE.test(p.title)) return true;
+  // whole words: a substring match on the stack reads "Express" out of "Expression
+  // of Interest" and scores a posting that is not a role at all
+  return tokens.some((t) =>
+    new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(p.title)
+  );
+}
+
 async function pooled<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>): Promise<R[]> {
   const out: R[] = [];
   for (let i = 0; i < items.length; i += size) {
@@ -242,7 +261,10 @@ async function pooled<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>):
   return out;
 }
 
-interface Candidate { company: Company; posting: AtsPosting }
+// What a scoring batch needs: a real posting, who is hiring, and where it was read
+// from. Deliberately not a Company row — the same judgement serves a tracked
+// employer's ATS feed and a job board's public feed, which has no row at all.
+interface Candidate { companyName: string; source: string; posting: AtsPosting }
 
 // Judge a batch of real postings. They are known to exist, so the model is only
 // scoring fit — it is never asked for a URL and cannot invent one.
@@ -254,7 +276,7 @@ async function scoreCandidates(
 ): Promise<any[]> {
   const listing = batch
     .map((c, i) =>
-      `${i}. ${c.company.name} — ${c.posting.title}\n   location: ${c.posting.location || "unstated"}\n   ${(c.posting.description || "").slice(0, 600)}`
+      `${i}. ${c.companyName} — ${c.posting.title}\n   location: ${c.posting.location || "unstated"}\n   ${(c.posting.description || "").slice(0, 600)}`
     )
     .join("\n\n");
 
@@ -274,7 +296,7 @@ async function scoreCandidates(
     const c = batch[Number(row?.i)];
     if (!c) continue;
     out.push({
-      company: c.company.name,
+      company: c.companyName,
       role: c.posting.title,
       category: String(row.category || "medium").toLowerCase(),
       fit_score: Number(row.fit_score) || 0,
@@ -282,11 +304,54 @@ async function scoreCandidates(
       eligibility: row.eligibility || null,
       seniority: row.seniority || null,
       apply_url: c.posting.url,
-      source: c.company.ats ? `${c.company.name} (${c.company.ats})` : c.company.name,
+      source: c.source,
     });
   }
   L("step", `Scored ${batch.length} posting(s) → kept ${out.length}.`);
   return out;
+}
+
+// Discovery with no browsing model in the loop. The boards publish what they have;
+// we filter to remote + relevant here, and the model is left with the only job it
+// can honestly do without the web — judging fit against the candidate. Nothing in
+// this path can invent a posting, because nothing in it is asked to write a URL.
+async function findViaFeeds(
+  loc: string,
+  stack: string,
+  signal: AbortSignal,
+  L: (kind: string, text: string) => void
+): Promise<{ jobs: any[]; received: number; errors: number }> {
+  const tokens = stackTokens(stack);
+  let errors = 0;
+  const sweep = await fetchAllFeeds(signal);
+  for (const f of sweep.perFeed) L("step", `${f.name}: ${f.count} posting(s).`);
+  for (const e of sweep.errors) {
+    errors++;
+    L("error", `${e.name} unavailable — ${e.error}`);
+  }
+  if (!sweep.postings.length) {
+    L("error", "Every feed came back empty — nothing to score this run.");
+    return { jobs: [], received: 0, errors };
+  }
+
+  const keep = sweep.postings.filter((p) => remoteEligible(p) && titleLooksRelevant(p, tokens));
+  L("result", `${sweep.postings.length} posting(s) across ${sweep.perFeed.length} feed(s) → ${keep.length} remote + relevant.`);
+  const shortlist: Candidate[] = keep
+    .slice(0, MAX_CANDIDATES)
+    .map((p) => ({ companyName: p.company, source: p.source, posting: p }));
+  if (keep.length > shortlist.length)
+    L("note", `Scoring the first ${shortlist.length} of ${keep.length} this run; the rest come round next time.`);
+
+  const jobs: any[] = [];
+  for (let i = 0; i < shortlist.length && !signal.aborted; i += SCORE_BATCH) {
+    try {
+      jobs.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, L)));
+    } catch (e: any) {
+      errors++;
+      L("error", `Scoring batch failed: ${String(e?.message || e).slice(0, 100)}`);
+    }
+  }
+  return { jobs, received: sweep.postings.length, errors };
 }
 
 async function runCareersCrawl(
@@ -318,7 +383,8 @@ async function runCareersCrawl(
       received += posts.length;
       const keep = posts.filter((p) => remoteEligible(p) && looksRelevant(p, tokens)).slice(0, MAX_PER_COMPANY);
       markCompanyChecked(c.id, keep.length);
-      for (const p of keep) candidates.push({ company: c, posting: p });
+      for (const p of keep)
+        candidates.push({ companyName: c.name, source: c.ats ? `${c.name} (${c.ats})` : c.name, posting: p });
       L("step", `${c.name}: ${posts.length} open → ${keep.length} remote + relevant`);
     } catch (e: any) {
       errors++;
@@ -431,7 +497,24 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       const collected = new Map<string, { job: any; jd: string; jdHtml: string }>();
       const keyOf = (j: any) => jobId(j.company, j.role);
 
-      if (mode === "count") {
+      // A runner with no web access cannot research anything. Asked to anyway it
+      // does not fail — it answers with roles that were never posted, and the whole
+      // run is spent watching verification throw them away. Read the feeds instead.
+      const canBrowse = await runnerCanSearchWeb();
+      if (!canBrowse) {
+        const runner = (await defaultRunnerId()) || "(none)";
+        L("reasoning", `${runner} has no way to reach the live web, so there is nothing for it to research. Reading free public job feeds instead — keyless, exact, and nothing in them is imagined.`);
+        const fed = await findViaFeeds(loc, stack, ac.signal, L);
+        totals.received += fed.received;
+        totals.errors += fed.errors;
+        if (fed.jobs.length) {
+          L("result", `${fed.jobs.length} role(s) worth keeping — following each through to the employer's own posting…`);
+          const { alive, dropped } = await verifyJobs(fed.jobs, { limit: 40, signal: ac.signal, onLog: (line) => L("step", line) });
+          L("result", `Verified ${alive.length} live · dropped ${dropped.length} (dead link, closed, or never left the board).`);
+          totals.errors += dropped.length;
+          for (const a of alive) collected.set(keyOf(a.job), a);
+        }
+      } else if (mode === "count") {
         // GOAL MODE: keep searching (no time limit) until we have N verified roles.
         const target = Math.max(1, Math.min(25, Number(getSetting("crawl_target_count") || "5") || 5));
         const maxRounds = 6;

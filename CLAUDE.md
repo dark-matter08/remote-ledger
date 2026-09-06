@@ -16,7 +16,9 @@ Privacy: data + keys stay on the machine; only the chosen AI provider is called.
   anti-hallucination guard, match, cover, prep), `templates.server.ts` (4 styles),
   `pdf.server.ts` (Playwright), `versions.server.ts`, `types.ts`.
 - `app/db.server.ts` — jobs, applications/stages, events, board, funnel, source stats, crawl upsert.
-- `app/services/` — `crawl.server.ts` (in-process crawl via runner), `scheduler.server.ts` (in-app timer).
+- `app/default-boards.ts` — job boards seeded into every install (per-URL, so a deletion sticks).
+- `app/services/` — `crawl.server.ts` (in-process crawl via runner), `feeds.server.ts` (keyless
+  public job feeds: free discovery when the runner cannot browse), `scheduler.server.ts` (in-app timer).
 - `app/routes/` — pages + resource routes: `api/crawl`, `api/clip`, `version/:vid/resume.pdf`.
 - `scripts/` — `run-crawl.ts` (CLI crawl), `os-scheduler.mjs` (cross-platform OS schedule),
   `seed.mjs` + `seed-jobs.json` + `db.mjs` (initial seed), `schema.sql`, `prompt.md` (templated).
