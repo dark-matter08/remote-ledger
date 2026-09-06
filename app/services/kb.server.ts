@@ -330,8 +330,17 @@ export function importResumeToKb(): { added: number; updated: number } {
 
   const upsert = (o: {
     path: string; kind: string; title: string; summary: string; tags: string[];
+    /** The key this row was written under before dates were part of it. */
+    legacyPath?: string;
     role?: string | null; start?: string | null; end?: string | null; location?: string | null;
   }) => {
+    // Adopt the row written under the old key rather than leaving it beside the new
+    // one. It may carry a note, a context, or tags somebody added by hand, and none
+    // of that is recoverable from the résumé.
+    if (o.legacyPath && !db.prepare("SELECT 1 FROM kb_items WHERE source_path=?").get(o.path)) {
+      const stale = db.prepare("SELECT id FROM kb_items WHERE source_path=?").get(o.legacyPath) as any;
+      if (stale) db.prepare("UPDATE kb_items SET source_path=? WHERE id=?").run(o.path, stale.id);
+    }
     const ex = db.prepare("SELECT id, summary FROM kb_items WHERE source_path=?").get(o.path) as any;
     if (ex) {
       // Only the résumé's own fields are refreshed. Anything learned since — the
@@ -356,7 +365,11 @@ export function importResumeToKb(): { added: number; updated: number } {
     const company = String(e.company || "").trim();
     if (!company) continue;
     upsert({
-      path: `resume:experience:${company.toLowerCase()}`,
+      // Two stints at the same employer are two jobs, with different dates, teams and
+      // work. Keying on the company alone folded them into one entry and put a note
+      // about the second on top of the first.
+      path: `resume:experience:${[company, e.start || "", e.end || ""].join("|").toLowerCase()}`,
+      legacyPath: `resume:experience:${company.toLowerCase()}`,
       kind: "experience",
       title: company,
       summary: (e.bullets || []).join(" ").slice(0, 4000),
@@ -404,9 +417,16 @@ export async function addManualNote(text: string): Promise<number> {
     const imported = importResumeToKb();
     if (imported.added) L("step", `Brought ${imported.added} entr(y/ies) in from your résumé first, so this can attach to one.`);
 
+    // Dates are part of the label because two rows can otherwise read identically,
+    // and picking between them would be a coin toss.
     const known = kbItems().map((i) => ({
       id: i.id,
-      label: [i.title, i.role, i.kind === "experience" ? "(a job on your résumé)" : i.kind].filter(Boolean).join(" · "),
+      label: [
+        i.title,
+        i.role,
+        i.start_date || i.end_date ? `${i.start_date || "?"}–${i.end_date || "present"}` : "",
+        i.kind === "experience" ? "(a job on your résumé)" : i.kind,
+      ].filter(Boolean).join(" · "),
     }));
 
     const a = await analyze("note", "Recent work", text, undefined, false, known);
