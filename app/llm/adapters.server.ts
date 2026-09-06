@@ -4,7 +4,7 @@
 //   - API:  direct HTTP with a BYO key — exact usage returned.
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
-import type { AdapterResult, RunnerAdapter, RunnerInfo, RunRequest, Usage } from "./types";
+import type { AdapterResult, ChatMessage, RunnerAdapter, RunnerInfo, RunRequest, ToolCall, Usage } from "./types";
 import { getSecret } from "../secrets.server";
 import { getSetting } from "../sqlite.server";
 import {
@@ -202,6 +202,48 @@ class AnthropicApiAdapter implements RunnerAdapter {
   }
 }
 
+/** Our ChatMessage in the shape the OpenAI-compatible wire format expects. */
+function toWireMessage(m: ChatMessage): any {
+  if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+  if (m.role === "assistant" && m.toolCalls?.length) {
+    return {
+      role: "assistant",
+      content: m.content || null,
+      tool_calls: m.toolCalls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.name, arguments: JSON.stringify(c.args ?? {}) },
+      })),
+    };
+  }
+  return { role: m.role, content: m.content };
+}
+
+/**
+ * Tool calls out of a response message.
+ *
+ * `arguments` arrives as a JSON *string*, and a small model will sometimes emit one
+ * that does not parse. A malformed call is not worth failing the turn over: hand back
+ * empty arguments and let the tool say what it is missing, which the model can fix.
+ */
+function parseToolCalls(msg: any): ToolCall[] | undefined {
+  const raw = msg?.tool_calls;
+  if (!Array.isArray(raw) || !raw.length) return undefined;
+  const out = raw
+    .map((c: any, i: number) => {
+      let args: Record<string, any> = {};
+      try {
+        const a = c?.function?.arguments;
+        args = typeof a === "string" ? JSON.parse(a || "{}") : a && typeof a === "object" ? a : {};
+      } catch {
+        args = {};
+      }
+      return { id: String(c?.id || `call_${i}`), name: String(c?.function?.name || ""), args };
+    })
+    .filter((c: ToolCall) => c.name);
+  return out.length ? out : undefined;
+}
+
 // A local runner has no key, so "is there a key?" cannot answer whether it is usable.
 // Ollama is available when its daemon answers and not otherwise — install it, never
 // start it, and the Runners table called it ready anyway, so it could be picked as the
@@ -253,6 +295,9 @@ class OpenAICompatAdapter implements RunnerAdapter {
       kind: "api",
       provider: this.provider,
       available: this.keyName ? !!getSecret(this.keyName) : local ? up : true,
+      // every OpenAI-compatible endpoint accepts the tools parameter; whether the
+      // chosen *model* honours it is a per-model question the caller checks
+      tools: true,
       needsKey: this.keyName ?? undefined,
       defaultModel: this.defaultModel,
       ...(local
@@ -267,10 +312,13 @@ class OpenAICompatAdapter implements RunnerAdapter {
   async run(req: RunRequest, model: string): Promise<AdapterResult> {
     const key = this.keyName ? getSecret(this.keyName) : null;
     if (this.keyName && !key) throw new Error(`${this.keyName} not set`);
-    const messages = [
-      ...(req.system ? [{ role: "system", content: req.system }] : []),
-      { role: "user", content: req.prompt },
-    ];
+    // A tool loop supplies the whole conversation; everything else is one turn.
+    const messages = req.messages?.length
+      ? req.messages.map(toWireMessage)
+      : [
+          ...(req.system ? [{ role: "system", content: req.system }] : []),
+          { role: "user", content: req.prompt },
+        ];
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -281,14 +329,28 @@ class OpenAICompatAdapter implements RunnerAdapter {
         model,
         messages,
         temperature: req.temperature ?? 0.4,
-        ...(req.json ? { response_format: { type: "json_object" } } : {}),
+        // response_format and tools together confuse several providers: the model is
+        // told to emit an object while also being offered functions, and some answer
+        // with neither. While tools are on the table, let it talk.
+        ...(req.json && !req.tools?.length ? { response_format: { type: "json_object" } } : {}),
+        ...(req.tools?.length
+          ? {
+              tools: req.tools.map((t) => ({
+                type: "function",
+                function: { name: t.name, description: t.description, parameters: t.parameters },
+              })),
+              tool_choice: "auto",
+            }
+          : {}),
       }),
     });
     const j: any = await res.json();
     if (!res.ok) throw new Error(`${this.label} ${res.status}: ${JSON.stringify(j).slice(0, 300)}`);
-    const text = j.choices?.[0]?.message?.content ?? "";
+    const msg = j.choices?.[0]?.message ?? {};
+    const text = msg.content ?? "";
     return {
       text,
+      toolCalls: parseToolCalls(msg),
       model,
       usage: {
         inTok: j.usage?.prompt_tokens ?? 0,
@@ -376,6 +438,10 @@ class OpenRouterAdapter implements RunnerAdapter {
       needsKey: "openrouter_api_key",
       // the one API runner that can be given the live web — for a price
       web: !!getSecret("openrouter_api_key") && !!webEngine(),
+      // Distinct from web above: web means OpenRouter searches for us and bills for it,
+      // tools means we search and hand over what we found. The second costs nothing and
+      // is checkable, so a free model with tools is the better of the two.
+      tools: true,
       defaultModel: defaultFreeModelId(),
       detail: free
         ? `One key, every lab — including ${free} model${free === 1 ? "" : "s"} that cost nothing to run.`
@@ -384,7 +450,7 @@ class OpenRouterAdapter implements RunnerAdapter {
   }
 
   // primary + free fallbacks, so a 429 on the free pool is a detour, not a dead end
-  private modelChain(model: string, needsJson: boolean): string[] {
+  private modelChain(model: string, needsJson: boolean, needsTools = false): string[] {
     const chain = [model];
     const freeOnly = getSetting("openrouter_free_only") === "true";
     const configured = (getSetting("openrouter_fallbacks") || "")
@@ -401,6 +467,9 @@ class OpenRouterAdapter implements RunnerAdapter {
       if (chain.length >= OR_MAX_MODELS) break;
       if (chain.includes(m.id)) continue;
       if (needsJson && !m.jsonMode) continue; // don't fall back into a model that can't answer in JSON
+      // a model without tool support does not refuse a tool — it ignores it and
+      // answers from memory, which is the failure this whole path exists to avoid
+      if (needsTools && !m.tools) continue;
       chain.push(m.id);
     }
     return chain;
@@ -421,12 +490,14 @@ class OpenRouterAdapter implements RunnerAdapter {
     if (!cachedCatalog().length && isFreeModelId(model)) await warmCatalog();
 
     const known = cachedModel(model);
-    const chain = this.modelChain(model, !!req.json);
+    const chain = this.modelChain(model, !!req.json, !!req.tools?.length);
     const web = req.allowWeb ? webPlugin() : null;
-    const messages = [
-      ...(req.system ? [{ role: "system", content: req.system }] : []),
-      { role: "user", content: req.prompt },
-    ];
+    const messages = req.messages?.length
+      ? req.messages.map(toWireMessage)
+      : [
+          ...(req.system ? [{ role: "system", content: req.system }] : []),
+          { role: "user", content: req.prompt },
+        ];
 
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: "POST",
@@ -445,7 +516,20 @@ class OpenRouterAdapter implements RunnerAdapter {
         ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
         // only ask for JSON mode where the model actually supports it; elsewhere the
         // runner's tryParseJson pulls the object back out of prose
-        ...(req.json && (!known || known.jsonMode) ? { response_format: { type: "json_object" } } : {}),
+        // json mode only when no tools are on the table — asked for both, models answer
+        // with neither. The loop turns tools off on its final turn to collect the object.
+        ...(req.json && !req.tools?.length && (!known || known.jsonMode)
+          ? { response_format: { type: "json_object" } }
+          : {}),
+        ...(req.tools?.length
+          ? {
+              tools: req.tools.map((t) => ({
+                type: "function",
+                function: { name: t.name, description: t.description, parameters: t.parameters },
+              })),
+              tool_choice: "auto",
+            }
+          : {}),
         ...(web ? { plugins: [web] } : {}), // billed per search, never on a free-only key
         usage: { include: true }, // return real, post-discount cost
       }),
@@ -457,7 +541,8 @@ class OpenRouterAdapter implements RunnerAdapter {
     if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, model));
 
     const used = String(j.model || model);
-    const text = j.choices?.[0]?.message?.content ?? "";
+    const message = j.choices?.[0]?.message ?? {};
+    const text = message.content ?? "";
     const inTok = j.usage?.prompt_tokens ?? 0;
     const outTok = j.usage?.completion_tokens ?? 0;
     // OpenRouter reports the charge it actually made; fall back to catalogue rates,
@@ -467,6 +552,7 @@ class OpenRouterAdapter implements RunnerAdapter {
 
     return {
       text,
+      toolCalls: parseToolCalls(message),
       model: used,
       usage: {
         inTok,

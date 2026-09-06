@@ -4,7 +4,7 @@ import { getDb, getSetting } from "../sqlite.server";
 import { ADAPTERS, adapterById } from "./adapters.server";
 import { costFor, estimateTokens } from "./pricing.server";
 import { isFreeModelId } from "./openrouter.server";
-import type { RunRequest, RunResult, RunnerInfo, Usage } from "./types";
+import type { ChatMessage, RunRequest, RunResult, RunnerInfo, ToolCall, ToolDef, Usage } from "./types";
 
 export async function listRunners(): Promise<RunnerInfo[]> {
   return Promise.all(ADAPTERS.map((a) => a.info()));
@@ -29,6 +29,18 @@ export async function defaultRunnerId(): Promise<string | null> {
  * answers, fluently, with postings that were never there. Callers that need real
  * pages check this first and pick another route.
  */
+/**
+ * Can we hand this runner functions and run them here? Different question from
+ * runnerCanSearchWeb, which asks whether the provider browses for itself. A runner
+ * that answers no to that and yes to this can still work from live pages — we do the
+ * fetching, which is the arrangement that keeps the result checkable.
+ */
+export async function runnerCanUseTools(runnerId?: string): Promise<boolean> {
+  const id = runnerId || (await defaultRunnerId());
+  if (!id) return false;
+  return !!(await adapterById(id)?.info())?.tools;
+}
+
 export async function runnerCanSearchWeb(runnerId?: string): Promise<boolean> {
   const id = runnerId || (await defaultRunnerId());
   if (!id) return false;
@@ -146,7 +158,7 @@ async function runOne(req: RunRequest, runnerId: string): Promise<RunResult> {
 
     let json: any;
     if (req.json) json = tryParseJson(r.text);
-    return { text: r.text, json, usage, runner: runnerId, model: r.model || model, durationMs, callId };
+    return { text: r.text, json, usage, runner: runnerId, model: r.model || model, durationMs, callId, toolCalls: r.toolCalls };
   } catch (e: any) {
     logCall({
       runner: runnerId,
@@ -300,4 +312,74 @@ export function logExternalCall(o: {
   usage: Usage; durationMs: number;
 }): void {
   logCall({ runner: o.runner, model: o.model, purpose: o.purpose, jobId: o.jobId, usage: o.usage, durationMs: o.durationMs, status: "ok" });
+}
+
+// --- tool loop --------------------------------------------------------------
+
+/**
+ * Run a request with tools, executing what the model asks for until it stops asking.
+ *
+ * This is what makes a non-browsing runner useful on live pages. The model cannot
+ * reach the network; it requests a search or a page, we perform it, and it reasons
+ * over text the app actually holds. The provider-side "web" capability and this are
+ * two routes to the same place — the difference is who does the fetching, and here
+ * it is us, which is why the result can be checked.
+ *
+ * Every iteration is a normal runLLM call, so budget, cost and llm_calls logging all
+ * apply per step rather than being bypassed by the loop.
+ */
+export async function runLLMWithTools(
+  req: RunRequest,
+  opts: {
+    tools: ToolDef[];
+    execute: (call: ToolCall) => Promise<string>;
+    /** Model turns, not tool calls — one turn may ask for several. */
+    maxSteps?: number;
+    onLog?: (kind: string, text: string) => void;
+  }
+): Promise<RunResult & { steps: number; toolRuns: number }> {
+  const maxSteps = Math.max(1, Math.min(12, opts.maxSteps ?? 6));
+  const log = (kind: string, text: string) => opts.onLog?.(kind, text);
+
+  const messages: ChatMessage[] = [
+    ...(req.system ? [{ role: "system" as const, content: req.system }] : []),
+    { role: "user" as const, content: req.prompt },
+  ];
+
+  let last: RunResult | null = null;
+  let toolRuns = 0;
+  let step = 0;
+
+  for (; step < maxSteps; step++) {
+    // JSON mode is asked for only on the final turn: while tools are offered the model
+    // should be free to call one, and several providers answer with neither a tool call
+    // nor an object when told to do both.
+    const lastTurn = step === maxSteps - 1;
+    const res = await runLLM({
+      ...req,
+      messages,
+      tools: lastTurn ? undefined : opts.tools,
+      json: lastTurn ? req.json : false,
+    });
+    last = res;
+
+    const calls = res.toolCalls ?? [];
+    if (!calls.length) {
+      if (step > 0) log("reasoning", `Answered after ${step} tool round(s).`);
+      return { ...res, steps: step + 1, toolRuns };
+    }
+
+    messages.push({ role: "assistant", content: res.text || "", toolCalls: calls });
+    for (const call of calls) {
+      toolRuns++;
+      const out = await opts.execute(call);
+      messages.push({ role: "tool", toolCallId: call.id, content: out });
+    }
+  }
+
+  // Out of turns. Ask once more with no tools, so the run ends with an answer rather
+  // than a dangling tool call the caller cannot use.
+  log("note", `Reached the ${maxSteps}-turn limit — asking for a final answer with what it has.`);
+  const final = await runLLM({ ...req, messages, tools: undefined });
+  return { ...final, steps: step + 1, toolRuns };
 }
