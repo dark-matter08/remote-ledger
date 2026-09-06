@@ -4,6 +4,7 @@ import { Form, Link, useNavigation, useFetcher } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { GapRow } from "../components/GapRow";
 import {
   getJob,
   ensureApplication,
@@ -113,12 +114,19 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (intent === "kb-gap") {
       // one row per gap: a chosen entry, or "dismiss" for this posting
-      const picks: { skill: string; itemId: number }[] = [];
+      const picks: { skill: string; itemId: number; note?: string }[] = [];
       const dismiss: string[] = [];
       for (const skill of form.getAll("gapSkill").map(String)) {
-        const choice = String(form.get(`gap:${skill}`) || "");
-        if (choice === "dismiss") dismiss.push(skill);
-        else if (Number(choice)) picks.push({ skill, itemId: Number(choice) });
+        if (form.get(`gapDismiss:${skill}`)) {
+          dismiss.push(skill);
+          continue;
+        }
+        const note = String(form.get(`gapNote:${skill}`) || "").trim();
+        // one skill can belong to several places, and each gets its own bullet
+        for (const raw of form.getAll(`gapEntry:${skill}`)) {
+          const itemId = Number(raw);
+          if (itemId) picks.push({ skill, itemId, note: note || undefined });
+        }
       }
       if (!picks.length && !dismiss.length) return { error: "Nothing selected." };
       const r = await loggedTask("kb-gap", `Knowledge gaps · ${job.company} — ${job.role}`, async (L) => {
@@ -477,39 +485,9 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             </p>
             <Form method="post">
               <input type="hidden" name="intent" value="kb-gap" />
-              <table className="ledger-table">
-                {/* auto layout sized this column from whatever the analysis happened to
-                    write: 600px of empty box on one posting, 200px and a truncated job
-                    title on the next. The picker is the point, so it gets a fixed width
-                    and the skill text takes the rest. */}
-                <colgroup>
-                  <col />
-                  <col style={{ width: 420 }} />
-                </colgroup>
-                <thead><tr><th>Skill</th><th>Where did you do this?</th></tr></thead>
-                <tbody>
-                  {gaps.map((g: any) => (
-                    <tr key={g.skill}>
-                      <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-                        <input type="hidden" name="gapSkill" value={g.skill} />
-                        {g.skill}
-                      </td>
-                      <td>
-                        <Select
-                          className="fsel-wide"
-                          name={`gap:${g.skill}`}
-                          defaultValue=""
-                          options={[
-                            { value: "", label: "— leave it —" },
-                            ...g.candidates.map((c: any) => ({ value: String(c.id), label: c.label })),
-                            { value: "dismiss", label: "I have not done this" },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {gaps.map((g: any) => (
+                <GapRow key={g.skill} skill={g.skill} candidates={g.candidates} />
+              ))}
               <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "10px 0 12px" }}>
                 Nothing here decides you have a skill. A gap closes only because you named the place you used
                 it; the wording is all the model contributes.

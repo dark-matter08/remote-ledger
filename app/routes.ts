@@ -28,4 +28,5 @@ export default [
   route("api/ollama", "routes/api-ollama.tsx"),
   route("api/search", "routes/api-search.tsx"),
   route("api/update", "routes/api-update.tsx"),
+  route("api/gap-draft", "routes/api-gap-draft.tsx"),
 ] satisfies RouteConfig;

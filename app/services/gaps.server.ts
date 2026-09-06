@@ -22,6 +22,17 @@ export interface Gap {
   candidates: { id: number; label: string }[];
 }
 
+// A gap is phrased by the analysis as the posting's requirement, so the skill line
+// is the least trustworthy string in the whole exchange. Asked to describe
+// "10+ years of software engineering experience (candidate has ~4-5 years)", a model
+// will write "I have spent about ten years writing software" unless told plainly not
+// to — inventing the exact fact the candidate is short of.
+const GAP_LINE_GUARD =
+  "The SKILL line is the POSTING's wording of what it wants. It is not a claim the candidate has made. " +
+  "It routinely carries quantities, seniority levels and tool names they do not match, and restating any " +
+  "of those as fact is the one thing you must never do. Take from it only the subject; every quantity, " +
+  "duration, tool and outcome must come from the entries or the candidate's own notes, or be left out. ";
+
 const norm = (s: string) => s.trim().toLowerCase();
 const dismissKey = (jobId: string) => `gapdismiss:${jobId}`;
 
@@ -168,7 +179,7 @@ export interface FillResult {
  */
 export async function fillGaps(
   jobId: string,
-  picks: { skill: string; itemId: number }[],
+  picks: { skill: string; itemId: number; note?: string }[],
   dismiss: string[]
 ): Promise<FillResult> {
   for (const s of dismiss) dismissGap(jobId, s);
@@ -183,15 +194,26 @@ export async function fillGaps(
   }
 
   const grouped = new Map<number, string[]>();
+  const notes = new Map<number, string[]>();
   for (const p of picks) {
     if (!rows.has(p.itemId)) continue;
     grouped.set(p.itemId, [...(grouped.get(p.itemId) || []), p.skill]);
+    const n = String(p.note || "").trim();
+    // what they wrote about this skill at this entry beats anything inferred
+    if (n && !(notes.get(p.itemId) || []).includes(n))
+      notes.set(p.itemId, [...(notes.get(p.itemId) || []), n]);
   }
   if (!grouped.size) return { filled: [], dismissed: dismiss, error: "those entries no longer exist" };
 
   const blocks = [...grouped.entries()].map(([id, skills]) => {
     const r = rows.get(id);
-    return `ENTRY ${id}: ${r.title}${r.role ? ` — ${r.role}` : ""}\nWhat is already recorded: ${(r.summary || "(nothing yet)").slice(0, 700)}\nThe candidate says they used: ${skills.join(", ")}`;
+    const own = (notes.get(id) || []).join(" ");
+    return (
+      `ENTRY ${id}: ${r.title}${r.role ? ` — ${r.role}` : ""}\n` +
+      `What is already recorded: ${(r.summary || "(nothing yet)").slice(0, 700)}\n` +
+      `The candidate says they used: ${skills.join(", ")}` +
+      (own ? `\nIn their own words: ${own.slice(0, 1200)}` : "")
+    );
   });
 
   const r = await runLLM({
@@ -203,10 +225,13 @@ export async function fillGaps(
       "You write résumé bullets from facts the candidate has just supplied about their own work. " +
       "They have told you which job or project they used each skill in; that is a given, not something to hedge. " +
       "Write only what those facts support — never invent a metric, a team size, a customer or an outcome. " +
+      GAP_LINE_GUARD +
       HUMAN_STYLE,
     prompt:
       `${blocks.join("\n\n")}\n\n` +
-      `For each ENTRY, write ONE résumé bullet covering the skill(s) named for it, grounded in what is already recorded about that entry. ` +
+      `For each ENTRY, write ONE résumé bullet covering the skill(s) named for it. Where the candidate ` +
+      `described the work in their own words, that description is the source — follow it and do not ` +
+      `contradict or embellish it. Otherwise ground the bullet in what is already recorded about that entry. ` +
       `If the recorded summary gives you nothing to anchor to, write the plainest possible statement of the work and nothing more.\n\n` +
       `Also give each skill a short tag — the two or three words someone would actually list, not the ` +
       `phrase the analysis used. "Named headless CMS platforms common at agencies (Contentful, Sanity, ` +
@@ -259,4 +284,50 @@ export async function fillGaps(
   }
 
   return { filled, dismissed: dismiss };
+}
+
+/**
+ * Draft "how you used it" for the candidate to correct.
+ *
+ * Writing, not deciding: they have already said which skill and which entries, and
+ * this only puts words to it. With notes, the notes ARE the content and the model
+ * tidies them. Without notes it stays deliberately thin — a sentence naming the work
+ * and nothing invented around it, because there is nothing to invent from.
+ */
+export async function draftGapUsage(o: {
+  skill: string;
+  itemIds: number[];
+  notes?: string;
+}): Promise<{ text: string; error?: string }> {
+  const db = getDb();
+  const entries = o.itemIds
+    .map((id) => db.prepare("SELECT title, role, summary FROM kb_items WHERE id=?").get(id) as any)
+    .filter(Boolean);
+  if (!entries.length) return { text: "", error: "pick where you did this first" };
+
+  const own = String(o.notes || "").trim();
+  const where = entries
+    .map((e: any) => `- ${e.title}${e.role ? ` (${e.role})` : ""}: ${(e.summary || "no summary recorded").slice(0, 500)}`)
+    .join("\n");
+
+  const r = await runLLM({
+    purpose: "misc",
+    temperature: 0.3,
+    maxTokens: 400,
+    system:
+      "You put words to work someone has already told you they did. You never decide what they did, " +
+      "never invent a metric, a team size, a customer or an outcome, and never hedge about whether they did it. " +
+      GAP_LINE_GUARD +
+      "Plain first person, one or two sentences. " +
+      HUMAN_STYLE,
+    prompt:
+      `SKILL: ${o.skill}\n\nWHERE THEY USED IT:\n${where}\n\n` +
+      (own
+        ? `THEIR NOTES (this is the content — tidy it, do not add to it):\n${own.slice(0, 2000)}\n\n`
+        : `They have not written notes. Say only what the entries above support, and keep it short rather than filling space.\n\n`) +
+      `Write the description. Prose only — no preamble, no bullet marker, no quotes.`,
+  });
+
+  const text = stripAiTells(String(r.text || "")).trim().replace(/^["']|["']$/g, "");
+  return text ? { text } : { text: "", error: "the runner returned nothing usable" };
 }

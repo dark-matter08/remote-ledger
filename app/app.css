@@ -1147,3 +1147,43 @@ button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
   .status-stamp.slam { animation: none; }
   .entry { transition: none; }
 }
+
+/* ---- knowledge gaps on the job page ---- */
+/* Collapsed by default: a posting can raise nine of these, and nine open forms is a
+   wall you scroll past rather than answer. */
+.gap-row { border-bottom: 1px solid var(--rule-faint); }
+.gap-row:last-of-type { border-bottom: 0; }
+.gap-row > summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 12px;
+  padding: 11px 2px; font-family: var(--mono); font-size: 12.5px;
+}
+.gap-row > summary::-webkit-details-marker { display: none; }
+.gap-row > summary::before {
+  content: "▸"; color: var(--ink-faint); font-size: 10px; transition: transform .15s;
+}
+.gap-row[open] > summary::before { transform: rotate(90deg); }
+.gap-row > summary:hover { background: var(--card); }
+.gap-skill { flex: 1; }
+.gap-body { padding: 4px 0 18px 20px; }
+.gap-label {
+  display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-soft); margin-bottom: 8px;
+}
+.gap-picks { display: grid; gap: 7px; max-height: 210px; overflow: auto; padding-right: 4px; }
+.gap-pick {
+  display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
+  font-family: var(--mono); font-size: 12px; line-height: 1.45; color: var(--ink);
+}
+.gap-pick input { margin-top: 2px; flex: none; }
+.gap-body textarea {
+  width: 100%; font-family: var(--serif); font-size: 14px; line-height: 1.55;
+  background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink-faint);
+  padding: 9px 11px; resize: vertical;
+}
+.gap-body textarea:focus { outline: none; border-color: var(--ink); }
+.gap-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.gap-dismiss {
+  display: flex; align-items: center; gap: 7px; margin-left: auto; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
