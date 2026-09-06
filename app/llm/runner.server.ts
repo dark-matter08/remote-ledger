@@ -23,6 +23,18 @@ export async function defaultRunnerId(): Promise<string | null> {
   return avail.find((r) => r.id === "claude-cli")?.id ?? avail[0].id;
 }
 
+/**
+ * Can the runner that would actually take the work reach the live web? Asking a
+ * plain chat completion to "search the job boards" does not fail loudly — it
+ * answers, fluently, with postings that were never there. Callers that need real
+ * pages check this first and pick another route.
+ */
+export async function runnerCanSearchWeb(runnerId?: string): Promise<boolean> {
+  const id = runnerId || (await defaultRunnerId());
+  if (!id) return false;
+  return !!(await adapterById(id)?.info())?.web;
+}
+
 function modelFor(runnerId: string, info: RunnerInfo, override?: string): string {
   return (
     override ||

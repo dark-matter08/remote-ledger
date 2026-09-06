@@ -75,6 +75,8 @@ export async function loader() {
       openrouterFreeOnly: getSetting("openrouter_free_only") === "true",
       openrouterFreeFallback: getSetting("openrouter_free_fallback") !== "false",
       openrouterFallbacks: getSetting("openrouter_fallbacks") || "",
+      openrouterWebSearch: getSetting("openrouter_web_search") || "off",
+      openrouterWebMaxResults: getSetting("openrouter_web_max_results") || "5",
       schedulerInterval: getSetting("scheduler_interval_hours") || "4",
       schedulerEnabled: getSetting("scheduler_enabled") !== "false",
       scrapeJds: getSetting("scrape_jds") !== "false",
@@ -118,6 +120,9 @@ export async function action({ request }: Route.ActionArgs) {
   }
   if (intent === "openrouter-save") {
     save("openrouter_fallbacks");
+    setSetting("openrouter_web_search", String(form.get("openrouter_web_search") || "off"));
+    // the field is only rendered for the engine that takes one, so keep the old value
+    if (form.get("openrouter_web_max_results")) save("openrouter_web_max_results");
     setSetting("openrouter_free_only", form.get("openrouter_free_only") ? "true" : "false");
     setSetting("openrouter_free_fallback", form.get("openrouter_free_fallback") ? "true" : "false");
     return { ok: true, msg: "OpenRouter settings saved." };
@@ -288,6 +293,8 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           freeOnly={settings.openrouterFreeOnly}
           freeFallback={settings.openrouterFreeFallback}
           fallbacks={settings.openrouterFallbacks}
+          webSearch={settings.openrouterWebSearch}
+          webMaxResults={settings.openrouterWebMaxResults}
           hasKey={keys.some((k) => k.name === "openrouter_api_key" && k.set)}
         />
       )}

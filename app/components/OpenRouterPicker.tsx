@@ -24,6 +24,8 @@ interface OrModel {
   tools: boolean;
   reasoning: boolean;
   jsonMode: boolean;
+  web: boolean;
+  webSearchUsd: number | null;
   intelligence: number | null;
   created: number;
 }
@@ -42,6 +44,14 @@ const CAPS = [
   { id: "jsonMode", label: "JSON mode", hint: "Honours response_format — best for résumé + match work" },
   { id: "tools", label: "Tools", hint: "Supports tool / function calling" },
   { id: "reasoning", label: "Reasoning", hint: "Exposes a thinking budget" },
+  {
+    id: "web",
+    label: "Browses",
+    hint:
+      "Native web search — the provider searches for itself, so the model answers from live pages. " +
+      "This is what Find new jobs needs. Any other model can be given the Exa plugin instead, but that " +
+      "is a search bolted on in front of it. Either way the search is billed on top of tokens.",
+  },
   { id: "vision", label: "Vision", hint: "Accepts images" },
   { id: "long", label: "200K+ context", hint: "Fits a long job description plus your whole résumé" },
 ] as const;
@@ -70,17 +80,27 @@ function price(m: OrModel): string {
   return `$${fmtUsd(m.inUsd)} / $${fmtUsd(m.outUsd)}`;
 }
 
+// Cents-and-under, so fmtUsd's two decimals would round $0.018 down to $0.02 and
+// lose the number that matters.
+function perSearch(n: number): string {
+  return `$${n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
 export function OpenRouterPicker({
   selected,
   freeOnly,
   freeFallback,
   fallbacks,
+  webSearch,
+  webMaxResults,
   hasKey,
 }: {
   selected: string;
   freeOnly: boolean;
   freeFallback: boolean;
   fallbacks: string;
+  webSearch: string;
+  webMaxResults: string;
   hasKey: boolean;
 }) {
   const fetcher = useFetcher();
@@ -90,6 +110,8 @@ export function OpenRouterPicker({
   const [caps, setCaps] = useState<Cap[]>([]);
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(PAGE);
+  // controlled so the result-count field can appear only when it applies
+  const [web, setWeb] = useState(webSearch || "off");
 
   // load once on mount; the route answers from the disk cache, so this is cheap
   const asked = useRef(false);
@@ -178,6 +200,36 @@ export function OpenRouterPicker({
           <label>Fallback chain (optional, comma-separated model ids)</label>
           <input type="text" name="openrouter_fallbacks" defaultValue={fallbacks} placeholder="leave blank to let the Ledger pick free fallbacks" />
         </div>
+
+        <div className="field">
+          <label>
+            Web search{" "}
+            {freeOnly ? <span className="badge off">held off by free models only</span> : null}
+          </label>
+          <Select
+            name="openrouter_web_search"
+            value={web}
+            onChange={setWeb}
+            options={[
+              { value: "off", label: "Off — costs nothing; the crawl reads job feeds instead" },
+              { value: "exa", label: "Exa — search for any model (~$0.007 a request)" },
+              { value: "native", label: "Native — the provider's own search, at their price" },
+            ]}
+          />
+        </div>
+        {web === "exa" && !freeOnly && (
+          <div className="field">
+            <label>Results per search</label>
+            <input type="number" name="openrouter_web_max_results" min={1} max={20} defaultValue={webMaxResults || "5"} />
+          </div>
+        )}
+        <p className="hint" style={{ marginTop: 0 }}>
+          There is no free tier for web search. Exa bills per request and a native engine passes the
+          provider's own charge through &mdash; on free models too. So &ldquo;free models only&rdquo;
+          wins: while it is ticked this stays off, and <strong>Find new jobs</strong> reads RemoteOK,
+          Remotive, Himalayas and Jobicy straight from their public feeds instead. That path costs
+          nothing, needs no key, and cannot invent a posting.
+        </p>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <button className="btn" disabled={save.state !== "idle"}>Save</button>
           <span className="hint" style={{ margin: 0 }}>
@@ -308,13 +360,25 @@ export function OpenRouterPicker({
                       </div>
                     ) : null}
                   </td>
-                  <td style={{ fontFamily: "var(--mono)", fontSize: 12, whiteSpace: "nowrap" }}>{price(m)}</td>
+                  <td style={{ fontFamily: "var(--mono)", fontSize: 12, whiteSpace: "nowrap" }}>
+                    {price(m)}
+                    {m.web && m.webSearchUsd !== null ? (
+                      <div style={{ color: "var(--ochre)", fontSize: 11, marginTop: 3 }}>
+                        + {perSearch(m.webSearchUsd)}/search
+                      </div>
+                    ) : null}
+                  </td>
                   <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{fmtContext(m.context)}</td>
                   <td style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 170 }}>
                     {m.jsonMode ? <span className="badge off">json</span> : null}
                     {m.tools ? <span className="badge off">tools</span> : null}
                     {m.reasoning ? <span className="badge off">think</span> : null}
                     {m.vision ? <span className="badge off">vision</span> : null}
+                    {m.web ? (
+                      <span className="badge warn" title="Native web search — reads live pages, billed per search">
+                        browses
+                      </span>
+                    ) : null}
                     {m.intelligence !== null ? (
                       <span className="badge warn" title="Artificial Analysis intelligence index — higher is smarter">
                         AA {Math.round(m.intelligence)}

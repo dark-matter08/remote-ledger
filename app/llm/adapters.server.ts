@@ -82,6 +82,7 @@ class ClaudeCliAdapter implements RunnerAdapter {
       kind: "cli",
       provider: "anthropic",
       available: await which("claude"),
+      web: true, // WebSearch/WebFetch, when req.allowWeb asks for them
       detail: "Uses your Claude Code subscription. Reports tokens + cost.",
     };
   }
@@ -134,6 +135,7 @@ class GenericCliAdapter implements RunnerAdapter {
       kind: "cli",
       provider: this.provider,
       available: await which(this.bin),
+      web: true, // every agent CLI we shell out to can open a page
       detail: `Uses your ${this.label} install. Tokens estimated (CLI does not report usage).`,
     };
   }
@@ -298,6 +300,28 @@ async function warmCatalog(): Promise<void> {
   clearTimeout(timer);
 }
 
+// OpenRouter can run a search before the model answers, but there is no free tier
+// for it: the Exa fallback bills per request and a native engine passes the
+// provider's own search charge through, on free models too. So "free models only"
+// has to win — it is a promise not to spend, and a silent $0.007 a call would break
+// it. With web search off this runner honestly reports web:false, and the find
+// crawl reads that and goes to the feeds instead (services/feeds.server.ts).
+function webEngine(): "exa" | "native" | null {
+  if (getSetting("openrouter_free_only") === "true") return null;
+  const e = getSetting("openrouter_web_search") || "off";
+  return e === "exa" || e === "native" ? e : null;
+}
+
+function webPlugin(): Record<string, unknown> | null {
+  const engine = webEngine();
+  if (!engine) return null;
+  // native search is priced and shaped by the provider, so only the Exa path takes
+  // a result count from us
+  if (engine === "native") return { id: "web", engine: "native" };
+  const max = Math.max(1, Math.min(20, Number(getSetting("openrouter_web_max_results") || "5") || 5));
+  return { id: "web", engine: "exa", max_results: max };
+}
+
 class OpenRouterAdapter implements RunnerAdapter {
   id = "openrouter-api";
 
@@ -310,6 +334,8 @@ class OpenRouterAdapter implements RunnerAdapter {
       provider: "openrouter",
       available: !!getSecret("openrouter_api_key"),
       needsKey: "openrouter_api_key",
+      // the one API runner that can be given the live web — for a price
+      web: !!getSecret("openrouter_api_key") && !!webEngine(),
       defaultModel: defaultFreeModelId(),
       detail: free
         ? `One key, every lab — including ${free} model${free === 1 ? "" : "s"} that cost nothing to run.`
@@ -356,6 +382,7 @@ class OpenRouterAdapter implements RunnerAdapter {
 
     const known = cachedModel(model);
     const chain = this.modelChain(model, !!req.json);
+    const web = req.allowWeb ? webPlugin() : null;
     const messages = [
       ...(req.system ? [{ role: "system", content: req.system }] : []),
       { role: "user", content: req.prompt },
@@ -379,6 +406,7 @@ class OpenRouterAdapter implements RunnerAdapter {
         // only ask for JSON mode where the model actually supports it; elsewhere the
         // runner's tryParseJson pulls the object back out of prose
         ...(req.json && (!known || known.jsonMode) ? { response_format: { type: "json_object" } } : {}),
+        ...(web ? { plugins: [web] } : {}), // billed per search, never on a free-only key
         usage: { include: true }, // return real, post-discount cost
       }),
     });

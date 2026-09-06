@@ -685,6 +685,32 @@ test("registry: shipped job boards seed themselves, and stay deleted once remove
   assert.equal(boards(gone.url).length, 0, "a default you removed is not seeded back");
 });
 
+test("runner: web access is a capability, and free-only outranks buying it", async () => {
+  const { setSecret, deleteSecret } = await import("../app/secrets.server");
+  const { setSetting } = await import("../app/sqlite.server");
+  const { runnerCanSearchWeb } = await import("../app/llm/runner.server");
+
+  setSecret("openrouter_api_key", "sk-or-test-key");
+  setSetting("openrouter_free_only", "false");
+  setSetting("openrouter_web_search", "off");
+  assert.equal(await runnerCanSearchWeb("openrouter-api"), false,
+    "a plain chat completion cannot reach a page, whatever the prompt asks");
+
+  setSetting("openrouter_web_search", "exa");
+  assert.equal(await runnerCanSearchWeb("openrouter-api"), true, "the web plugin buys it real pages");
+
+  // web search bills even on a free model, so the promise not to spend has to win
+  setSetting("openrouter_free_only", "true");
+  assert.equal(await runnerCanSearchWeb("openrouter-api"), false, "free-only holds it off");
+
+  assert.equal(await runnerCanSearchWeb("anthropic-api"), false, "a bare API runner never browses");
+  assert.equal(await runnerCanSearchWeb("claude-cli"), true, "an agent CLI does");
+
+  setSetting("openrouter_free_only", "false");
+  setSetting("openrouter_web_search", "off");
+  deleteSecret("openrouter_api_key");
+});
+
 test("cover letter PDF: letterhead added, salutation and sign-off never duplicated", async () => {
   const { renderCoverHtml } = await import("../app/resume/templates.server");
   const contact = {
@@ -911,7 +937,7 @@ test("openrouter: :free ids are recognised without the catalogue", async () => {
 test("openrouter adapter: request shape, free fallbacks, guard rails", async () => {
   const { writeFileSync } = await import("node:fs");
   const { dirname, resolve: r } = await import("node:path");
-  const { normalizeCatalog } = await import("../app/llm/openrouter.server");
+  const { normalizeCatalog, CACHE_VERSION } = await import("../app/llm/openrouter.server");
 
   const catRaw = (id: string, price: string, params: string[]) => ({
     id,
@@ -926,6 +952,7 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
   writeFileSync(
     r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json"),
     JSON.stringify({
+      version: CACHE_VERSION,
       fetchedAt: new Date().toISOString(),
       models: normalizeCatalog({
         data: [
@@ -1071,6 +1098,7 @@ test("openrouter: a synchronous cache read does not make the catalogue look offl
   writeFileSync(
     r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json"),
     JSON.stringify({
+      version: mod.CACHE_VERSION,
       fetchedAt: new Date().toISOString(),
       models: mod.normalizeCatalog({
         data: [
@@ -1103,6 +1131,7 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   const cachePath = r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json");
   const raw = (fetchedAt: string) =>
     JSON.stringify({
+      version: mod.CACHE_VERSION,
       fetchedAt,
       models: mod.normalizeCatalog({
         data: [
