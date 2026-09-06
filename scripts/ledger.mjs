@@ -48,6 +48,44 @@ function capture(cmd, args, opts = {}) {
   return r.status === 0 ? String(r.stdout || "") : null;
 }
 
+const napBuf = new SharedArrayBuffer(4);
+const nap = (ms) => Atomics.wait(new Int32Array(napBuf), 0, 0, ms);
+
+/**
+ * Does the browser's answer match ours? curl without -k validates the whole chain,
+ * so exit 0 here means a real browser will not warn either.
+ */
+function certTrusted() {
+  const r = spawnSync("curl", ["-sS", "-o", "/dev/null", "--max-time", "10", `https://${DOMAIN}`], { stdio: "ignore" });
+  return r.status === 0;
+}
+
+/**
+ * Trust the local certificate authority, and check that it took.
+ *
+ * `dropport trust` asks the RUNNING proxy for its CA over its admin API, so it fails
+ * if the proxy is still coming up — and `dropport up` exits 0 even when it reports
+ * the proxy is not answering, so nothing upstream catches that. This is the step that
+ * decides whether the browser shows a padlock or a full-page warning, so it is worth
+ * retrying and worth verifying rather than assuming.
+ */
+function ensureTrust() {
+  if (certTrusted()) return ok("certificate already trusted");
+  for (const waitMs of [0, 3000, 6000]) {
+    if (waitMs) {
+      say(`  the proxy may still be starting — waiting ${waitMs / 1000}s and trying again…`);
+      nap(waitMs);
+    }
+    run("dropport", ["trust"]);
+    if (certTrusted()) return ok("certificate trusted — the browser will not warn");
+  }
+  warn(`the certificate is still untrusted, so ${DOMAIN} will show a browser warning.`);
+  say("    The app itself is fine — this is only the certificate. To fix it:");
+  say("      npm run ledger trust");
+  say("    If it keeps failing, `dropport doctor` will say why.");
+  return false;
+}
+
 function have(bin) {
   const r = spawnSync(WIN ? "where" : "which", [bin], { stdio: "ignore" });
   return r.status === 0;
@@ -131,8 +169,12 @@ function setupDropport() {
     warn("dropport could not start the proxy — try `dropport doctor`");
     return null;
   }
-  run("dropport", ["trust"]);
-  return `https://${DOMAIN}`;
+
+  step("Trusting the local certificate authority");
+  const trusted = ensureTrust();
+  // The address works either way; an untrusted certificate is a warning to click
+  // through, not a broken app. Say which one they have.
+  return trusted ? `https://${DOMAIN}` : `https://${DOMAIN}  (certificate not trusted yet — see above)`;
 }
 
 // ---------- git ----------
@@ -290,6 +332,7 @@ function doctor() {
     ["caddy", have("caddy") ? (capture("caddy", ["version"]) || "").split("\n")[0].trim() || "present" : "missing — start will try to install it"],
     ["dropport", have("dropport") ? "present" : "missing — start will install it"],
     ["git", have("git") ? (capture("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || "").trim() : "missing — restart cannot update"],
+    ["certificate", have("dropport") ? (certTrusted() ? "trusted" : "NOT trusted — run `npm run ledger trust`") : "n/a"],
   ];
   say("What `npm run ledger start` finds on this machine:\n");
   for (const [k, v] of rows) say(`  ${k.padEnd(17)}${v}`);
@@ -306,6 +349,7 @@ The Remote Ledger
   npm run ledger stop      stop it (it still returns when you log in)
   npm run ledger status    is it running, and where
   npm run ledger logs      watch what it is doing
+  npm run ledger trust     fix the browser's certificate warning
   npm run ledger doctor    what start will find, without changing anything
 
 Address: ${DOMAIN} (set LEDGER_DOMAIN to change it, PORT for the port).
@@ -329,6 +373,15 @@ switch (ACTION) {
     break;
   case "logs":
     serve("logs");
+    break;
+  case "trust":
+    step("Trusting the local certificate authority");
+    if (!have("dropport")) warn("dropport is not installed — run `npm run ledger start` first.");
+    else if (ensureTrust()) {
+      say("");
+      say(`  Reload https://${DOMAIN}. If the tab still warns, close and reopen it —`);
+      say("  a tab that already failed keeps showing the old error.");
+    }
     break;
   case "doctor":
     doctor();
