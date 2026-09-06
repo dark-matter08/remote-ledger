@@ -53,6 +53,14 @@ export interface OrModel {
   reasoning: boolean;
   /** Model honours `response_format` — the Ledger asks for JSON a lot. */
   jsonMode: boolean;
+  /**
+   * Native web search: the provider searches for itself, so the model can answer
+   * from live pages. Any model can be given OpenRouter's Exa plugin instead, but
+   * that is a search bolted on in front of it — this flag is the real thing.
+   */
+  web: boolean;
+  /** USD per search request, flat, on top of tokens. null = the price is not published. */
+  webSearchUsd: number | null;
   /** Artificial Analysis intelligence index, when OpenRouter publishes one. */
   intelligence: number | null;
   created: number; // unix seconds
@@ -120,6 +128,12 @@ function perMillion(v: unknown): number | null {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return null;
   return n * 1e6;
+}
+
+// Search is billed per request, not per token, so this one is not scaled.
+function flatUsd(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 // Vendor descriptions are markdown, and the picker renders plain text.
@@ -199,6 +213,8 @@ export function normalizeModel(raw: any): OrModel | null {
     tools: params.includes("tools"),
     reasoning: params.includes("reasoning") || params.includes("include_reasoning"),
     jsonMode: params.includes("response_format") || params.includes("structured_outputs"),
+    web: params.includes("web_search_options"),
+    webSearchUsd: flatUsd(raw.pricing?.web_search),
     intelligence:
       typeof raw.benchmarks?.artificial_analysis?.intelligence_index === "number"
         ? raw.benchmarks.artificial_analysis.intelligence_index
@@ -248,10 +264,16 @@ let memo: {
   error?: string;
 } | null = null;
 
+// Bumped whenever OrModel gains a field. A cache written before the bump parses
+// perfectly well and is entirely wrong — every model in it would report itself as
+// unable to browse — so it is discarded rather than shown.
+export const CACHE_VERSION = 2;
+
 function readCache(): { fetchedAt: string; models: OrModel[] } | null {
   try {
     if (!existsSync(CACHE_PATH)) return null;
     const j = JSON.parse(readFileSync(CACHE_PATH, "utf8"));
+    if (Number(j?.version) !== CACHE_VERSION) return null;
     if (!Array.isArray(j?.models) || !j.models.length) return null;
     return { fetchedAt: String(j.fetchedAt || ""), models: j.models as OrModel[] };
   } catch {
@@ -262,7 +284,7 @@ function readCache(): { fetchedAt: string; models: OrModel[] } | null {
 function writeCache(models: OrModel[], fetchedAt: string): void {
   try {
     mkdirSync(dirname(CACHE_PATH), { recursive: true });
-    writeFileSync(CACHE_PATH, JSON.stringify({ fetchedAt, models }));
+    writeFileSync(CACHE_PATH, JSON.stringify({ version: CACHE_VERSION, fetchedAt, models }));
   } catch {
     // a read-only data dir just means we re-fetch next time
   }

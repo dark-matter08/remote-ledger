@@ -19,7 +19,7 @@ export interface RunRequest {
   temperature?: number;
   runnerId?: string; // override default runner
   model?: string; // override model
-  allowWeb?: boolean; // CLI runners: allow WebSearch/WebFetch (for job research)
+  allowWeb?: boolean; // let the runner reach the live web, where it can (for job research)
 }
 
 export interface Usage {
@@ -48,6 +48,10 @@ export interface RunnerInfo {
   available: boolean;
   needsKey?: string; // secret name required (api runners)
   defaultModel?: string;
+  // Can this runner actually reach the live web? A CLI agent can; a plain chat
+  // completion cannot, whatever the prompt asks of it. The find crawl reads this to
+  // decide whether to research or to fall back to reading feeds.
+  web?: boolean;
   detail?: string; // human note (version, why unavailable, etc.)
 }
 
