@@ -304,13 +304,16 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           <input type="hidden" name="intent" value="save-scheduler" />
           <h3>Scheduler &amp; scraping</h3>
           <p className="hint">The built-in scheduler crawls for fresh jobs while the app runs, and scrapes each posting's full JD.</p>
+          {/* numbers pair with numbers, so the labels and boxes sit on one baseline */}
           <div className="row2">
             <div className="field"><label>Crawl every (hours)</label><input type="number" min="1" name="scheduler_interval_hours" defaultValue={settings.schedulerInterval} /></div>
-            <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><label style={{ margin: 0 }}><input type="checkbox" name="scheduler_enabled" defaultChecked={settings.schedulerEnabled} /> Scheduler enabled</label></div>
-          </div>
-          <div className="row2">
-            <div className="field" style={{ display: "flex", alignItems: "flex-end" }}><label style={{ margin: 0 }}><input type="checkbox" name="scrape_jds" defaultChecked={settings.scrapeJds} /> Scrape full JDs on crawl</label></div>
             <div className="field"><label>Max postings to scrape per crawl</label><input type="number" min="0" name="scrape_limit" defaultValue={settings.scrapeLimit} /></div>
+          </div>
+          {/* the toggles belong together on their own line — a checkbox pushed to the
+              bottom of a grid cell to meet an input's baseline never quite lands */}
+          <div className="checkrow" style={{ margin: "16px 0 20px" }}>
+            <label><input type="checkbox" name="scheduler_enabled" defaultChecked={settings.schedulerEnabled} /> Scheduler enabled</label>
+            <label><input type="checkbox" name="scrape_jds" defaultChecked={settings.scrapeJds} /> Scrape full JDs on crawl</label>
           </div>
           <div className="row2">
             <div className="field">
@@ -323,29 +326,30 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
                   { value: "attach", label: "My Chrome (opens a tab, keeps my logins)" },
                 ]}
               />
-              <p className="hint" style={{ margin: "6px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
-                &ldquo;My Chrome&rdquo; opens the application as a tab in a Chrome you are already running, so the
-                form loads with your cookies and autofill. Start it with{" "}
-                <code>npm run apply-browser start</code> and log in there once. Chrome refuses a debugging
-                port on your <em>default</em> profile, so this is a dedicated profile that remembers its
-                sessions, not the exact window you have open.
-              </p>
             </div>
             <div className="field">
               <label>Chrome debugging address</label>
               <input type="text" name="apply_cdp_url" defaultValue={settings.applyCdpUrl} placeholder="http://127.0.0.1:9222" />
             </div>
           </div>
+          {/* six lines of prose in a half-width cell is what left the other half empty */}
+          <p className="hint" style={{ margin: "-2px 0 18px", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+            &ldquo;My Chrome&rdquo; opens the application as a tab in a Chrome you are already running, so the
+            form loads with your cookies and autofill. Start it with <code>npm run apply-browser start</code>{" "}
+            and log in there once. Chrome refuses a debugging port on your <em>default</em> profile, so this
+            is a dedicated profile that remembers its sessions, not the exact window you have open.
+          </p>
+          {/* one control in a two-column grid left half the row blank; the note fills it */}
           <div className="row2">
             <div className="field">
               <label>Trash untouched jobs after (days)</label>
               <input type="number" min="0" name="stale_trash_days" defaultValue={settings.staleTrashDays} />
-              <p className="hint" style={{ margin: "6px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
-                A job still at &ldquo;Saved&rdquo; this long after it appeared is deleted for good and blocked, so a
-                crawl cannot re-add it. Anything you touched is kept: moved past Saved, given notes, or
-                had a r&eacute;sum&eacute; generated. <strong>0 turns this off.</strong>
-              </p>
             </div>
+            <p className="hint" style={{ margin: 0, alignSelf: "end", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+              A job still at &ldquo;Saved&rdquo; this long after it appeared is deleted for good and blocked, so a
+              crawl cannot re-add it. Anything you touched is kept: moved past Saved, given notes, or
+              had a r&eacute;sum&eacute; generated. <strong>0 turns this off.</strong>
+            </p>
           </div>
           <div className="row2">
             <div className="field">
@@ -370,7 +374,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           {crawlMode === "time"
             ? <input type="hidden" name="crawl_target_count" value={settings.crawlTarget} />
             : <input type="hidden" name="crawl_timeout_min" value={settings.crawlTimeout} />}
-          <p className="hint" style={{ marginTop: 0 }}>
+          <p className="hint" style={{ margin: "-2px 0 18px", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
             {crawlMode === "time"
               ? "Time budget: the agent self-paces by an action cap derived from this timeout, and is hard-stopped only at 2× if it runs away."
               : "Goal mode: the agent keeps searching and following links to employer pages over several rounds until it has this many verified-open roles. No time limit (a per-round safety net still applies)."}

@@ -81,7 +81,7 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
 
       <div className="panel">
         <h3>Run a crawl {active && <span className="badge warn">running #{active.id}</span>}</h3>
-        <p className="hint">Find researches the open web, so it needs a runner that can actually browse \u2014 it stops rather than guess. Free job boards reads RemoteOK, Remotive, Himalayas and Jobicy straight from their public feeds, and Company career pages reads your tracked companies\u2019 own ATS feeds: both are exact, cost nothing to search, and work on any runner. Update re-scrapes descriptions for jobs already on file. Full does find and update.</p>
+        <p className="hint">Find researches the open web, so it needs a runner that can actually browse &mdash; it stops rather than guess. Free job boards reads RemoteOK, Remotive, Himalayas and Jobicy straight from their public feeds, and Company career pages reads your tracked companies&rsquo; own ATS feeds: both are exact, cost nothing to search, and work on any runner. Update re-scrapes descriptions for jobs already on file. Full does find and update.</p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           {(["find", "feeds", "careers", "update", "full"] as CrawlType[]).map((t) => (
             <Form method="post" key={t}>
