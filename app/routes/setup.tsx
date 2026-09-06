@@ -134,6 +134,9 @@ export async function loader({ request }: Route.LoaderArgs) {
       runner: getSetting("setup_runner_tested"),
       feeds: getSetting("setup_feeds_tested"),
     },
+    // A first run is a walkthrough; a return visit is a check-up. Which one this is
+    // decides where you land, so the flag has to reach the component.
+    firstRun: getSetting("setup_complete") !== "true",
     crawling: isCrawlRunning(),
     run: runId ? getCrawlRun(runId) : null,
   };
@@ -284,8 +287,11 @@ export default function Setup({ loaderData, actionData }: Route.ComponentProps) 
   };
   const verified: Record<number, boolean> = { 1: !!d.tested.runner, 4: !!d.tested.feeds };
 
-  // First unfinished step, so a returning user lands where they stopped.
-  const firstOpen = STEPS.find((s) => !done[s.n])?.n ?? 6;
+  // A brand-new install opens at step 1 even when a runner happens to be installed
+  // already: step 1 is where you *choose* one, and "something is available" is not the
+  // same as "you have decided". Someone re-opening the wizard from Settings is doing
+  // the opposite job — checking what is still missing — so they land there instead.
+  const firstOpen = d.firstRun ? 1 : (STEPS.find((s) => !done[s.n])?.n ?? 6);
   const step = Math.min(6, Math.max(1, Number(params.get("step") || firstOpen)));
   const go = (n: number) => {
     const next = new URLSearchParams(params);
