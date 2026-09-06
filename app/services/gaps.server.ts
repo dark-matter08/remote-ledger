@@ -1,0 +1,195 @@
+// The skills a posting asked for that your knowledge base cannot evidence.
+//
+// Step 1 already works this out — `missing` on the match analysis — and then nothing
+// is done with it. The list is the most useful thing on the page and the least
+// actionable: it tells you what is absent without offering anywhere to put it.
+//
+// So it is offered back. For each gap you say which job or project you actually did
+// it in, and that goes to the knowledge base permanently: the skill onto that entry's
+// tags, and a drafted bullet as a *pending suggestion* you accept on /knowledge. The
+// next application already knows, and the one after that.
+//
+// Nothing here decides you have a skill. A gap is only ever closed by you naming the
+// place you used it — the model's only job is wording the evidence you supplied.
+import { getDb } from "../sqlite.server";
+import { getMeta, setMeta } from "../db.server";
+import { runLLM, tryParseJson } from "../llm/runner.server";
+import { HUMAN_STYLE, stripAiTells } from "../llm/style";
+
+export interface Gap {
+  skill: string;
+  /** Entries this could plausibly attach to, best first. */
+  candidates: { id: number; label: string }[];
+}
+
+const norm = (s: string) => s.trim().toLowerCase();
+const dismissKey = (jobId: string) => `gapdismiss:${jobId}`;
+
+/** Skills dismissed for THIS posting. Not having a skill for one job is not a fact
+ *  about you; a global "never show this again" would quietly bury it forever. */
+export function dismissedGaps(jobId: string): string[] {
+  try {
+    const raw = getMeta(dismissKey(jobId));
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function dismissGap(jobId: string, skill: string): void {
+  const next = Array.from(new Set([...dismissedGaps(jobId), skill.trim()])).filter(Boolean);
+  setMeta(dismissKey(jobId), JSON.stringify(next.slice(0, 100)));
+}
+
+/**
+ * What the posting wanted, minus what you already have, minus what you have waved
+ * away for this job.
+ */
+export function gapsForJob(jobId: string, missing: string[]): Gap[] {
+  const db = getDb();
+  const items = db
+    .prepare("SELECT id, title, kind, role, start_date, end_date, tags FROM kb_items ORDER BY kind, title")
+    .all() as any[];
+
+  const have = new Set<string>();
+  for (const i of items) {
+    try {
+      for (const t of JSON.parse(i.tags || "[]")) have.add(norm(String(t)));
+    } catch {}
+  }
+  const waved = new Set(dismissedGaps(jobId).map(norm));
+
+  const candidates = items.map((i) => ({
+    id: Number(i.id),
+    label: [
+      i.title,
+      i.role,
+      i.kind === "experience" && (i.start_date || i.end_date)
+        ? `${i.start_date || "?"}–${i.end_date || "present"}`
+        : i.kind,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  }));
+
+  const seen = new Set<string>();
+  const out: Gap[] = [];
+  for (const raw of missing || []) {
+    const skill = String(raw || "").trim();
+    if (!skill) continue;
+    const k = norm(skill);
+    // already evidenced, already waved away, or already listed
+    if (have.has(k) || waved.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    out.push({ skill, candidates });
+  }
+  return out;
+}
+
+export interface FillResult {
+  filled: { skill: string; entry: string }[];
+  dismissed: string[];
+  error?: string;
+}
+
+/**
+ * Attach gaps to the entries you say you did them in.
+ *
+ * One model call for the whole batch: it is wording bullets, not deciding facts, and
+ * a call per skill would be slow and no more accurate.
+ */
+export async function fillGaps(
+  jobId: string,
+  picks: { skill: string; itemId: number }[],
+  dismiss: string[]
+): Promise<FillResult> {
+  for (const s of dismiss) dismissGap(jobId, s);
+  if (!picks.length) return { filled: [], dismissed: dismiss };
+
+  const db = getDb();
+  const rows = new Map<number, any>();
+  for (const p of picks) {
+    if (rows.has(p.itemId)) continue;
+    const r = db.prepare("SELECT * FROM kb_items WHERE id=?").get(p.itemId) as any;
+    if (r) rows.set(p.itemId, r);
+  }
+
+  const grouped = new Map<number, string[]>();
+  for (const p of picks) {
+    if (!rows.has(p.itemId)) continue;
+    grouped.set(p.itemId, [...(grouped.get(p.itemId) || []), p.skill]);
+  }
+  if (!grouped.size) return { filled: [], dismissed: dismiss, error: "those entries no longer exist" };
+
+  const blocks = [...grouped.entries()].map(([id, skills]) => {
+    const r = rows.get(id);
+    return `ENTRY ${id}: ${r.title}${r.role ? ` — ${r.role}` : ""}\nWhat is already recorded: ${(r.summary || "(nothing yet)").slice(0, 700)}\nThe candidate says they used: ${skills.join(", ")}`;
+  });
+
+  const r = await runLLM({
+    purpose: "misc",
+    json: true,
+    temperature: 0.3,
+    maxTokens: 1400,
+    system:
+      "You write résumé bullets from facts the candidate has just supplied about their own work. " +
+      "They have told you which job or project they used each skill in; that is a given, not something to hedge. " +
+      "Write only what those facts support — never invent a metric, a team size, a customer or an outcome. " +
+      HUMAN_STYLE,
+    prompt:
+      `${blocks.join("\n\n")}\n\n` +
+      `For each ENTRY, write ONE résumé bullet covering the skill(s) named for it, grounded in what is already recorded about that entry. ` +
+      `If the recorded summary gives you nothing to anchor to, write the plainest possible statement of the work and nothing more.\n\n` +
+      `Also give each skill a short tag — the two or three words someone would actually list, not the ` +
+      `phrase the analysis used. "Named headless CMS platforms common at agencies (Contentful, Sanity, ` +
+      `Strapi)" is a description of a gap; "Headless CMS" is the skill.\n\n` +
+      `Return ONLY JSON: { "bullets": [ { "entry": 123, "bullet": "...", "tags": ["Headless CMS"] } ] }`,
+  });
+
+  const parsed = tryParseJson(r.text);
+  const bullets: { entry: number; bullet: string }[] = Array.isArray(parsed?.bullets) ? parsed.bullets : [];
+  const byEntry = new Map<number, string>();
+  const tagsByEntry = new Map<number, string[]>();
+  for (const b of bullets as any[]) {
+    const id = Number(b?.entry);
+    if (!id || !grouped.has(id)) continue;
+    const text = stripAiTells(String(b?.bullet || "")).trim();
+    if (text) byEntry.set(id, text);
+    const short = (Array.isArray(b?.tags) ? b.tags : []).map((t: unknown) => String(t).trim()).filter(Boolean);
+    if (short.length) tagsByEntry.set(id, short.slice(0, 4));
+  }
+
+  const now = new Date().toISOString();
+  const filled: FillResult["filled"] = [];
+  for (const [id, skills] of grouped) {
+    const row = rows.get(id);
+    // The tags are the candidate's own claim and go on regardless of what the model
+    // returned; the bullet is a draft and waits to be accepted like every other one.
+    let tags: string[] = [];
+    try {
+      tags = JSON.parse(row.tags || "[]").map(String);
+    } catch {}
+    // The analysis phrases a gap as a sentence; a tag is what someone would list.
+    // Fall back to the raw phrase only when nothing shorter came back.
+    const merged = Array.from(new Set([...tags, ...(tagsByEntry.get(id) || skills)]));
+    db.prepare("UPDATE kb_items SET tags=?, updated_at=? WHERE id=?").run(JSON.stringify(merged.slice(0, 40)), now, id);
+
+    const bullet = byEntry.get(id);
+    if (bullet) {
+      const dupe = db
+        .prepare("SELECT 1 FROM kb_suggestions WHERE item_id=? AND bullet=?")
+        .get(id, bullet);
+      if (!dupe)
+        db.prepare("INSERT INTO kb_suggestions (item_id,section,bullet,created_at) VALUES (?,?,?,?)").run(
+          id,
+          row.kind === "experience" ? "experience" : "project",
+          bullet,
+          now
+        );
+    }
+    for (const s of skills) filled.push({ skill: s, entry: row.title });
+  }
+
+  return { filled, dismissed: dismiss };
+}

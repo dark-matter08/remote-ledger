@@ -18,6 +18,7 @@ import {
   answerPooledQuestion,
   trashJob,
 } from "../db.server";
+import { gapsForJob, fillGaps } from "../services/gaps.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
 import { kbBuildSources, kbAllSkills, rankKbForJob, buildResumeFromKb, type BuildInclude } from "../resume/build.server";
@@ -49,11 +50,25 @@ export async function loader({ params }: Route.LoaderArgs) {
     defaultProfileId: getDefaultProfile()?.id ?? null,
     kbSources: kbBuildSources(),
     kbSkills: kbAllSkills(),
-    // ranked against this posting so the useful entries arrive pre-ticked
-    kbSuggested: rankKbForJob(
-      [job.role, job.company, job.stack, job.jd].filter(Boolean).join(" ")
-    ).map((r) => r.source.id),
+    // Ranked so the useful entries arrive pre-ticked. Where step 1 has run, its terms
+    // lead: the analysis has already thrown away the company boilerplate that a raw
+    // posting drags into a keyword overlap. The posting still contributes, weakly,
+    // because the analysis names skills and not the projects that evidence them.
+    kbSuggested: (() => {
+      const m = getMeta(`match:${job.id}`);
+      const analysis = m ? (JSON.parse(m) as { matched?: string[]; atsKeywords?: string[] }) : null;
+      const distilled = [...(analysis?.matched || []), ...(analysis?.atsKeywords || [])].join(" ");
+      const posting = [job.role, job.company, job.stack, job.jd].filter(Boolean).join(" ");
+      // repeated so overlap with it outweighs overlap with the posting's prose
+      return rankKbForJob(distilled ? `${distilled} ${distilled} ${distilled} ${posting}` : posting).map(
+        (r) => r.source.id
+      );
+    })(),
     storedMatch: getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!) : null,
+    gaps: gapsForJob(
+      job.id,
+      getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!).missing || [] : []
+    ),
     storedPrep: getMeta(`prep:${job.id}`),
     storedAnswers: getMeta(`answers:${job.id}`) ? JSON.parse(getMeta(`answers:${job.id}`)!) : null,
     applyActivity: jobApplyActivity(job.id),
@@ -87,6 +102,30 @@ export async function action({ request, params }: Route.ActionArgs) {
     if (intent === "answer-pooled") {
       answerPooledQuestion(Number(form.get("qid")), String(form.get("answer") || "").trim());
       return { ok: true, msg: "Saved. Prefill again and it will use this answer." };
+    }
+    if (intent === "kb-gap") {
+      // one row per gap: a chosen entry, or "dismiss" for this posting
+      const picks: { skill: string; itemId: number }[] = [];
+      const dismiss: string[] = [];
+      for (const skill of form.getAll("gapSkill").map(String)) {
+        const choice = String(form.get(`gap:${skill}`) || "");
+        if (choice === "dismiss") dismiss.push(skill);
+        else if (Number(choice)) picks.push({ skill, itemId: Number(choice) });
+      }
+      if (!picks.length && !dismiss.length) return { error: "Nothing selected." };
+      const r = await loggedTask("kb-gap", `Knowledge gaps · ${job.company} — ${job.role}`, async (L) => {
+        L("step", `${picks.length} skill(s) to attach, ${dismiss.length} set aside for this posting.`);
+        const out = await fillGaps(job.id, picks, dismiss);
+        for (const f of out.filled) L("result", `${f.skill} → ${f.entry}`);
+        return out;
+      });
+      if (r.error) return { error: r.error };
+      return {
+        ok: true,
+        msg: r.filled.length
+          ? `Added ${r.filled.length} skill(s) to your knowledge base — the drafted bullets are waiting on /knowledge.`
+          : "Set aside for this posting.",
+      };
     }
     if (intent === "kb-build") {
       const r = buildResumeFromKb({
@@ -290,7 +329,7 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
 }
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
+  const { job, events, versions, profiles, gaps, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
   const [tab, setTab] = useState<Tab>("Overview");
   const [step, setStep] = useState(1);
@@ -411,6 +450,50 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
 
       {tab === "Guided Application" && step === 2 && (
         <>
+        {gaps.length > 0 && (
+          <div className="panel">
+            <h3>Gaps this posting will notice <span className="badge warn">{gaps.length}</span></h3>
+            <p className="hint">
+              Skills the analysis found in the posting that nothing in your knowledge base evidences yet. Say
+              where you actually did each one and it is written back &mdash; the skill onto that entry, and a
+              drafted bullet waiting for you on the Knowledge Base. Anything you have not done, set aside.
+            </p>
+            <Form method="post">
+              <input type="hidden" name="intent" value="kb-gap" />
+              <table className="ledger-table">
+                <thead><tr><th>Skill</th><th>Where did you do this?</th></tr></thead>
+                <tbody>
+                  {gaps.map((g: any) => (
+                    <tr key={g.skill}>
+                      <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
+                        <input type="hidden" name="gapSkill" value={g.skill} />
+                        {g.skill}
+                      </td>
+                      <td>
+                        <Select
+                          name={`gap:${g.skill}`}
+                          defaultValue=""
+                          options={[
+                            { value: "", label: "— leave it —" },
+                            ...g.candidates.map((c: any) => ({ value: String(c.id), label: c.label })),
+                            { value: "dismiss", label: "I have not done this" },
+                          ]}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "10px 0 12px" }}>
+                Nothing here decides you have a skill. A gap closes only because you named the place you used
+                it; the wording is all the model contributes.
+              </p>
+              <button className="btn" disabled={busy}>
+                {running === "kb-gap" ? "Writing to your knowledge base…" : "Add these to my knowledge base"}
+              </button>
+            </Form>
+          </div>
+        )}
         <KbBuilder
           sources={kbSources}
           skills={kbSkills}
@@ -418,6 +501,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           busy={busy}
           jobTitle={`${job.company} — ${job.role}`}
           suggestedIds={kbSuggested}
+          match={storedMatch}
         />
         <div className="panel">
           <h3>Tailor a résumé</h3>
