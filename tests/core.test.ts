@@ -1337,7 +1337,7 @@ test("openrouter: the advice names the cheapest model that can actually search",
   assert.equal(pick.id, "lab/browser", "cheapest is not the same as usable: a batch queue cannot serve a crawl");
 
   setSetting("openrouter_free_only", "true");
-  const advice = mod.webSearchAdvice().join(" ");
+  const advice = (await mod.webSearchAdvice()).join(" ");
   assert.match(advice, /lab\/browser/, "it names what to switch to");
   assert.match(advice, /\$2\.00 in \/ \$2\.00 out/, "and what that costs");
   assert.match(advice, /plus \$0\.005 a search/, "including the part that is not tokens");

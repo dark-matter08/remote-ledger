@@ -539,7 +539,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
         // honest answer available here.
         const runner = (await defaultRunnerId()) || "(none)";
         L("error", `${runner} cannot reach the live web, so there is nothing here to research. Stopping rather than inventing roles that were never posted.`);
-        if (runner === "openrouter-api") for (const line of webSearchAdvice()) L("note", line);
+        if (runner === "openrouter-api") for (const line of await webSearchAdvice()) L("note", line);
         else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
         L("note", 'Free job boards and Company career pages both find real postings without a browsing model — either will work right now.');
         if (type === "find") {
