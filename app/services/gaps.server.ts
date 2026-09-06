@@ -25,6 +25,42 @@ export interface Gap {
 const norm = (s: string) => s.trim().toLowerCase();
 const dismissKey = (jobId: string) => `gapdismiss:${jobId}`;
 
+// Words that carry no signal about a skill, and would otherwise let a one-word tag
+// swallow half the gap list.
+const NOISE = new Set([
+  "and", "or", "the", "a", "an", "of", "in", "on", "at", "for", "with", "to", "from",
+  "explicit", "named", "common", "experience", "work", "context", "framing", "focused",
+  "platforms", "platform", "based", "using", "use", "used", "strong", "solid", "deep",
+]);
+
+const words = (s: string): string[] =>
+  norm(s)
+    .split(/[^a-z0-9+#.]+/)
+    .map((w) => w.replace(/^[.]+|[.]+$/g, ""))
+    .filter((w) => w.length > 1 && !NOISE.has(w));
+
+/**
+ * Does something already in the knowledge base cover this gap?
+ *
+ * The analysis phrases a gap as a sentence — "Named headless CMS platforms common at
+ * agencies (Contentful, Sanity, Strapi)" — while a tag is two words. Comparing them
+ * as strings meant a gap you had already closed came back on the next posting, under
+ * a name you would never recognise as the same thing.
+ *
+ * So it is containment either way: every meaningful word of the tag appearing in the
+ * gap, or every meaningful word of the gap appearing in the tag. A single-word tag
+ * has to be at least three characters, or "AI" would answer for everything.
+ */
+function covers(tag: string, gapWords: Set<string>, gapText: string): boolean {
+  const t = words(tag);
+  if (!t.length) return false;
+  if (t.length === 1 && t[0].length < 3) return false;
+  if (t.every((w) => gapWords.has(w))) return true;
+  const tagWords = new Set(t);
+  const g = words(gapText);
+  return g.length > 0 && g.every((w) => tagWords.has(w));
+}
+
 /** Skills dismissed for THIS posting. Not having a skill for one job is not a fact
  *  about you; a global "never show this again" would quietly bury it forever. */
 export function dismissedGaps(jobId: string): string[] {
@@ -52,10 +88,10 @@ export function gapsForJob(jobId: string, missing: string[]): Gap[] {
     .prepare("SELECT id, title, kind, role, start_date, end_date, tags FROM kb_items ORDER BY kind, title")
     .all() as any[];
 
-  const have = new Set<string>();
+  const have: string[] = [];
   for (const i of items) {
     try {
-      for (const t of JSON.parse(i.tags || "[]")) have.add(norm(String(t)));
+      for (const t of JSON.parse(i.tags || "[]")) have.push(String(t));
     } catch {}
   }
   const waved = new Set(dismissedGaps(jobId).map(norm));
@@ -79,8 +115,10 @@ export function gapsForJob(jobId: string, missing: string[]): Gap[] {
     const skill = String(raw || "").trim();
     if (!skill) continue;
     const k = norm(skill);
-    // already evidenced, already waved away, or already listed
-    if (have.has(k) || waved.has(k) || seen.has(k)) continue;
+    if (waved.has(k) || seen.has(k)) continue;
+    // already evidenced under whatever name it was recorded as
+    const gapWords = new Set(words(skill));
+    if (have.some((t) => covers(t, gapWords, skill))) continue;
     seen.add(k);
     out.push({ skill, candidates });
   }

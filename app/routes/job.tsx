@@ -140,6 +140,7 @@ export async function action({ request, params }: Route.ActionArgs) {
         name: String(form.get("name") || "") || `${job.company} — ${job.role}`,
         itemIds: form.getAll("itemId").map((v) => Number(v)).filter(Boolean),
         skills: form.getAll("skill").map(String),
+        builtForJobId: job.id,
       });
       if (r.error) return { error: r.error };
       return { ok: true, msg: `Built from ${r.added} knowledge-base entr${r.added === 1 ? "y" : "ies"} — pick it as the base profile below and tailor.` };
@@ -349,9 +350,10 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
 
   // Progress is read from the work itself — a match that exists, a résumé that was
   // built — so it cannot drift from reality or need repairing when it does.
-  // Evidence is "done" once a profile has been built for this job — KbBuilder names
-  // it after the role — or once a résumé exists, which cannot happen without it.
-  const builtForJob = profiles.some((p) => p.name === `${job.company} — ${job.role}`);
+  // Evidence is "done" once a profile was built for this posting, or once a résumé
+  // exists, which cannot happen without it. Recorded against the job id rather than
+  // matched on a name, so renaming the profile does not un-tick the step.
+  const builtForJob = profiles.some((p: any) => p.built_for_job_id === job.id);
   const done: Record<number, boolean> = {
     1: !!storedMatch,
     2: builtForJob || resumeVersions.length > 0,

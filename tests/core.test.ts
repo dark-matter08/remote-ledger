@@ -1348,6 +1348,42 @@ test("kb: the résumé is mirrored in, and re-importing refreshes rather than du
   assert.ok(again.updated >= 2, "existing rows are refreshed instead");
 });
 
+test("gaps: a gap already closed under a shorter name does not come back", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { gapsForJob, dismissGap } = await import("../app/services/gaps.server");
+  const db = getDb();
+  const now = "2026-09-06T00:00:00.000Z";
+  const add = (title: string, tags: string[]) =>
+    db.prepare(
+      "INSERT INTO kb_items (kind,title,summary,tags,source,created_at,updated_at) VALUES ('project',?,'',?,'manual',?,?)"
+    ).run(title, JSON.stringify(tags), now, now);
+
+  add("Gap Test Project", ["Headless CMS", "GraphQL", "AI"]);
+
+  const missing = [
+    // the shape the analysis actually produces: a sentence, not a skill
+    "Named headless CMS platforms common at agencies (Contentful, Sanity, Strapi)",
+    "GraphQL",                                  // exactly a tag
+    "Explicit accessibility (WCAG/a11y) work",  // genuinely absent
+    "Kubernetes cluster operations",            // genuinely absent
+  ];
+
+  const offered = gapsForJob("gap-test-job", missing).map((g) => g.skill);
+  assert.ok(!offered.some((g) => /headless cms/i.test(g)), "covered by the 'Headless CMS' tag, however it was phrased");
+  assert.ok(!offered.includes("GraphQL"), "covered exactly");
+  assert.ok(offered.includes("Explicit accessibility (WCAG/a11y) work"), "a real gap is still offered");
+  assert.ok(offered.includes("Kubernetes cluster operations"), "and so is this one");
+
+  // "AI" is a tag on that project, and must not answer for everything with an i in it
+  const noisy = gapsForJob("gap-test-job", ["AI-assisted code review tooling"]).map((g) => g.skill);
+  assert.equal(noisy.length, 1, "a two-letter tag cannot cover a gap");
+
+  // dismissal is per posting
+  dismissGap("gap-test-job", "Kubernetes cluster operations");
+  assert.ok(!gapsForJob("gap-test-job", missing).some((g) => /Kubernetes/.test(g.skill)), "set aside here");
+  assert.ok(gapsForJob("another-job", missing).some((g) => /Kubernetes/.test(g.skill)), "but not for every other posting");
+});
+
 test("kb: a company folder enriches the job already on the résumé", async () => {
   const { getDb } = await import("../app/sqlite.server");
   const db = getDb();
