@@ -270,7 +270,10 @@ class OpenAICompatAdapter implements RunnerAdapter {
 //     on the Usage page instead of an estimate;
 //   - translate 401/402/429 into what the person can actually do about it.
 
-const OR_MAX_FALLBACKS = 3;
+// OpenRouter rejects a `models` array longer than this outright — "'models' array
+// must have 3 items or fewer", HTTP 400, before it looks at anything else. So it is a
+// hard cap on the whole chain, primary included, not a count of spare tyres.
+const OR_MAX_MODELS = 3;
 
 // Longest we will wait for the catalogue before giving up and calling anyway. The
 // fallback chain is a nice-to-have; the user's actual request is not.
@@ -325,11 +328,11 @@ class OpenRouterAdapter implements RunnerAdapter {
       .filter((m) => m && (!freeOnly || isFreeModelId(m)));
     if (configured.length) {
       for (const m of configured) if (!chain.includes(m)) chain.push(m);
-      return chain;
+      return chain.slice(0, OR_MAX_MODELS); // a long hand-written list is a 400, not a longer chain
     }
     if (!isFreeModelId(model) || getSetting("openrouter_free_fallback") === "false") return chain;
     for (const m of freeModels()) {
-      if (chain.length > OR_MAX_FALLBACKS) break;
+      if (chain.length >= OR_MAX_MODELS) break;
       if (chain.includes(m.id)) continue;
       if (needsJson && !m.jsonMode) continue; // don't fall back into a model that can't answer in JSON
       chain.push(m.id);
