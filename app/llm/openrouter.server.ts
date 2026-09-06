@@ -371,11 +371,26 @@ const money = (n: number) => `$${n.toFixed(2)}`;
  * it is.
  *
  * An offer, not a scolding: free is the default here on purpose (see the header of
- * this file), and the feeds the crawl falls back to are not a degraded mode. Reads
- * the catalogue synchronously, so a run is never held up by a price lookup — if it
- * is cold, the advice simply names one thing less.
+ * this file), and the boards it points at are not a degraded mode.
+ *
+ * Warms the catalogue when it is cold, because the naming-a-model line is the whole
+ * point and a version bump or a fresh clone leaves nothing on disk to read. Bounded
+ * tightly: the only caller is a run that has already decided to stop, and a price
+ * lookup must not be what makes it look hung.
  */
-export function webSearchAdvice(): string[] {
+export async function webSearchAdvice(): Promise<string[]> {
+  if (!cachedCatalog().length) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      openRouterCatalog().catch(() => undefined),
+      new Promise<void>((r) => { timer = setTimeout(r, 2500); }),
+    ]);
+    clearTimeout(timer);
+  }
+  return adviceLines();
+}
+
+function adviceLines(): string[] {
   const out: string[] = [
     "OpenRouter never includes the searching: the Exa plugin bills about $0.007 a request, and a native " +
       "engine passes the provider's own charge through. A :free model makes the tokens free, never the search.",
