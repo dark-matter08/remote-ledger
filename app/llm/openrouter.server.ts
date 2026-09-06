@@ -11,7 +11,7 @@
 // stays instant and keeps working offline.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { DB_PATH } from "../sqlite.server";
+import { DB_PATH, getSetting } from "../sqlite.server";
 
 export const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const CATALOG_URL = `${OPENROUTER_BASE}/models`;
@@ -346,6 +346,62 @@ export function cachedCatalog(): OrModel[] {
 
 export function cachedModel(id: string): OrModel | null {
   return cachedCatalog().find((m) => m.id === id) ?? null;
+}
+
+/**
+ * The least expensive model that can search for itself.
+ *
+ * `:batch` variants undercut everything and are the wrong answer: that is a delayed
+ * queue, not something a crawl can sit and wait on. Routers price as null and are
+ * skipped for the same reason a quote of "varies" is not a quote.
+ */
+export function cheapestWebModel(): OrModel | null {
+  const priced = cachedCatalog().filter(
+    (m) => m.web && m.inUsd !== null && m.outUsd !== null && !m.id.includes(":batch")
+  );
+  if (!priced.length) return null;
+  return priced.sort((a, b) => a.inUsd! + a.outUsd! - (b.inUsd! + b.outUsd!))[0];
+}
+
+const money = (n: number) => `$${n.toFixed(2)}`;
+
+/**
+ * Why this key cannot search, and what it would take — written for the crawl log,
+ * where someone is looking at a run that found nothing and wants to know whose fault
+ * it is.
+ *
+ * An offer, not a scolding: free is the default here on purpose (see the header of
+ * this file), and the feeds the crawl falls back to are not a degraded mode. Reads
+ * the catalogue synchronously, so a run is never held up by a price lookup — if it
+ * is cold, the advice simply names one thing less.
+ */
+export function webSearchAdvice(): string[] {
+  const out: string[] = [
+    "OpenRouter never includes the searching: the Exa plugin bills about $0.007 a request, and a native " +
+      "engine passes the provider's own charge through. A :free model makes the tokens free, never the search.",
+  ];
+
+  if (getSetting("openrouter_free_only") === "true")
+    out.push(
+      '"Free models only" is on, so the Ledger holds web search off rather than spend behind a promise not to.'
+    );
+  else if ((getSetting("openrouter_web_search") || "off") === "off")
+    out.push("Web search is switched off in Settings \u2192 OpenRouter.");
+
+  const cheapest = cheapestWebModel();
+  if (cheapest)
+    out.push(
+      `Cheapest model that can search for itself: ${cheapest.id} \u2014 ${money(cheapest.inUsd!)} in / ` +
+        `${money(cheapest.outUsd!)} out per 1M tokens` +
+        (cheapest.webSearchUsd !== null ? `, plus $${cheapest.webSearchUsd} a search` : "") +
+        "."
+    );
+
+  out.push(
+    "To switch: put credit on the account at openrouter.ai/credits, then in Settings \u2192 OpenRouter untick " +
+      '"free models only", pick that model, and set Web search. Nothing here charges you until you do.'
+  );
+  return out;
 }
 
 // A `:free` id is free even before the catalogue has loaded — the suffix is

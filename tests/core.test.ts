@@ -1272,6 +1272,52 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("openrouter: the advice names the cheapest model that can actually search", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const { dirname, resolve: r } = await import("node:path");
+  const { setSetting } = await import("../app/sqlite.server");
+  const mod = await import("../app/llm/openrouter.server?advice=" + Date.now());
+
+  const raw = (id: string, price: string, params: string[], webPrice?: string) => ({
+    id,
+    name: id,
+    description: "",
+    context_length: 128000,
+    architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+    pricing: { prompt: price, completion: price, ...(webPrice ? { web_search: webPrice } : {}) },
+    supported_parameters: params,
+  });
+
+  writeFileSync(
+    r(dirname(process.env.JOBS_DB_PATH!), "openrouter-models.json"),
+    JSON.stringify({
+      version: mod.CACHE_VERSION,
+      fetchedAt: new Date().toISOString(),
+      models: mod.normalizeCatalog({
+        data: [
+          raw("lab/cheap-blind", "0.0000001", ["tools"]),                  // cheapest of all, cannot search
+          raw("lab/browser", "0.000002", ["web_search_options"], "0.005"), // the honest answer
+          raw("lab/browser-dear", "0.00001", ["web_search_options"]),
+          raw("lab/browser:batch", "0.00000001", ["web_search_options"]),  // a delayed queue, not a crawl
+        ],
+      }),
+    })
+  );
+
+  const pick = mod.cheapestWebModel()!;
+  assert.equal(pick.id, "lab/browser", "cheapest is not the same as usable: a batch queue cannot serve a crawl");
+
+  setSetting("openrouter_free_only", "true");
+  const advice = mod.webSearchAdvice().join(" ");
+  assert.match(advice, /lab\/browser/, "it names what to switch to");
+  assert.match(advice, /\$2\.00 in \/ \$2\.00 out/, "and what that costs");
+  assert.match(advice, /plus \$0\.005 a search/, "including the part that is not tokens");
+  assert.match(advice, /free models only/i, "and why searching is off right now");
+  assert.match(advice, /openrouter\.ai\/credits/, "and where the money goes");
+
+  setSetting("openrouter_free_only", "false");
+});
+
 test.after(cleanup);
 
 test("job identity: a posting is its url, not its title", async () => {
