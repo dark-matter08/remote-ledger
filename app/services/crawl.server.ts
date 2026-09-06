@@ -29,6 +29,7 @@ import {
   type AtsPosting,
 } from "./ats.server";
 import { fetchAllFeeds } from "./feeds.server";
+import { webSearchAdvice } from "../llm/openrouter.server";
 
 export type CrawlType = "find" | "update" | "full" | "careers";
 
@@ -503,7 +504,12 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       const canBrowse = await runnerCanSearchWeb();
       if (!canBrowse) {
         const runner = (await defaultRunnerId()) || "(none)";
-        L("reasoning", `${runner} has no way to reach the live web, so there is nothing for it to research. Reading free public job feeds instead — keyless, exact, and nothing in them is imagined.`);
+        // Say it plainly. Someone reading a run that found nothing needs to know this
+        // is a capability the runner does not have, not a crawl that went wrong.
+        L("note", `${runner} cannot reach the live web, so the research agent was not invoked. A chat model with no search tool does not refuse the job — it answers with roles that were never posted, and link verification then throws away every one.`);
+        if (runner === "openrouter-api") for (const line of webSearchAdvice()) L("note", line);
+        else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
+        L("reasoning", "Reading free public job feeds instead — keyless, exact, and nothing in them is imagined.");
         const fed = await findViaFeeds(loc, stack, ac.signal, L);
         totals.received += fed.received;
         totals.errors += fed.errors;
