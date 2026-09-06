@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { redirect } from "react-router";
 import { Form, Link, useNavigation, useFetcher } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
@@ -15,7 +16,9 @@ import {
   setMeta,
   jobApplyActivity,
   answerPooledQuestion,
+  trashJob,
 } from "../db.server";
+import { gapsForJob, coveredGaps, fillGaps } from "../services/gaps.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
 import { kbBuildSources, kbAllSkills, rankKbForJob, buildResumeFromKb, type BuildInclude } from "../resume/build.server";
@@ -25,7 +28,7 @@ import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
-import { RefreshCw, Check, X, Circle, Sparkles } from "lucide-react";
+import { RefreshCw, Check, X, Circle, Sparkles, Trash2 } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -47,11 +50,29 @@ export async function loader({ params }: Route.LoaderArgs) {
     defaultProfileId: getDefaultProfile()?.id ?? null,
     kbSources: kbBuildSources(),
     kbSkills: kbAllSkills(),
-    // ranked against this posting so the useful entries arrive pre-ticked
-    kbSuggested: rankKbForJob(
-      [job.role, job.company, job.stack, job.jd].filter(Boolean).join(" ")
-    ).map((r) => r.source.id),
+    // Ranked so the useful entries arrive pre-ticked. Where step 1 has run, its terms
+    // lead: the analysis has already thrown away the company boilerplate that a raw
+    // posting drags into a keyword overlap. The posting still contributes, weakly,
+    // because the analysis names skills and not the projects that evidence them.
+    kbSuggested: (() => {
+      const m = getMeta(`match:${job.id}`);
+      const analysis = m ? (JSON.parse(m) as { matched?: string[]; atsKeywords?: string[] }) : null;
+      const distilled = [...(analysis?.matched || []), ...(analysis?.atsKeywords || [])].join(" ");
+      const posting = [job.role, job.company, job.stack, job.jd].filter(Boolean).join(" ");
+      // repeated so overlap with it outweighs overlap with the posting's prose
+      return rankKbForJob(distilled ? `${distilled} ${distilled} ${distilled} ${posting}` : posting).map(
+        (r) => r.source.id
+      );
+    })(),
     storedMatch: getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!) : null,
+    gaps: gapsForJob(
+      job.id,
+      getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!).missing || [] : []
+    ),
+    gapsCovered: coveredGaps(
+      job.id,
+      getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!).missing || [] : []
+    ),
     storedPrep: getMeta(`prep:${job.id}`),
     storedAnswers: getMeta(`answers:${job.id}`) ? JSON.parse(getMeta(`answers:${job.id}`)!) : null,
     applyActivity: jobApplyActivity(job.id),
@@ -59,7 +80,11 @@ export async function loader({ params }: Route.LoaderArgs) {
     styles: RESUME_STYLES,
     stages: STAGES,
     stageLabels: STAGE_LABEL,
-    defaultStyle: getMeta("default_resume_style") || "letterpress",
+    // The Settings preference governs r\u00e9sum\u00e9s you hand to a person. This one is being
+    // posted into an applicant tracking system, which reads plain structure and
+    // mangles the rest \u2014 so an application starts at ats-plain unless you have
+    // already chosen otherwise for an application.
+    defaultStyle: getMeta("apply_resume_style") || "ats-plain",
   };
 }
 
@@ -86,6 +111,30 @@ export async function action({ request, params }: Route.ActionArgs) {
       answerPooledQuestion(Number(form.get("qid")), String(form.get("answer") || "").trim());
       return { ok: true, msg: "Saved. Prefill again and it will use this answer." };
     }
+    if (intent === "kb-gap") {
+      // one row per gap: a chosen entry, or "dismiss" for this posting
+      const picks: { skill: string; itemId: number }[] = [];
+      const dismiss: string[] = [];
+      for (const skill of form.getAll("gapSkill").map(String)) {
+        const choice = String(form.get(`gap:${skill}`) || "");
+        if (choice === "dismiss") dismiss.push(skill);
+        else if (Number(choice)) picks.push({ skill, itemId: Number(choice) });
+      }
+      if (!picks.length && !dismiss.length) return { error: "Nothing selected." };
+      const r = await loggedTask("kb-gap", `Knowledge gaps · ${job.company} — ${job.role}`, async (L) => {
+        L("step", `${picks.length} skill(s) to attach, ${dismiss.length} set aside for this posting.`);
+        const out = await fillGaps(job.id, picks, dismiss);
+        for (const f of out.filled) L("result", `${f.skill} → ${f.entry}`);
+        return out;
+      });
+      if (r.error) return { error: r.error };
+      return {
+        ok: true,
+        msg: r.filled.length
+          ? `Added ${r.filled.length} skill(s) to your knowledge base — the drafted bullets are waiting on /knowledge.`
+          : "Set aside for this posting.",
+      };
+    }
     if (intent === "kb-build") {
       const r = buildResumeFromKb({
         mode: String(form.get("mode")) === "merge" ? "merge" : "new",
@@ -95,6 +144,7 @@ export async function action({ request, params }: Route.ActionArgs) {
         name: String(form.get("name") || "") || `${job.company} — ${job.role}`,
         itemIds: form.getAll("itemId").map((v) => Number(v)).filter(Boolean),
         skills: form.getAll("skill").map(String),
+        builtForJobId: job.id,
       });
       if (r.error) return { error: r.error };
       return { ok: true, msg: `Built from ${r.added} knowledge-base entr${r.added === 1 ? "y" : "ies"} — pick it as the base profile below and tailor.` };
@@ -108,6 +158,11 @@ export async function action({ request, params }: Route.ActionArgs) {
       return r.saved
         ? { ok: true, msg: `Fetched ${r.text.length} chars from the posting${r.html ? " (rich)" : ""}.` }
         : { error: `Couldn't read the posting: ${r.error || "no text found"}. Paste it manually.` };
+    }
+    if (intent === "trash") {
+      // deletes the row AND remembers it, so the next crawl cannot bring it back
+      trashJob(job.id, { reason: "not-interested", scope: "job" });
+      return redirect("/");
     }
     if (intent === "stage") {
       setStage(job.id, String(form.get("stage")) as Stage, {
@@ -127,6 +182,8 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     const base = (form.get("profileId") ? getProfile(String(form.get("profileId"))) : getDefaultProfile())?.data;
     if (intent === "tailor") {
+      const chosen = String(form.get("style") || "");
+      if (chosen) setMeta("apply_resume_style", chosen);
       if (!base) return { error: "Upload a base résumé first (Résumés page)." };
       const style = (String(form.get("style") || "letterpress") as ResumeStyle);
       const t = await loggedTask("tailor", `Tailor résumé · ${job.company} — ${job.role}`, async (L) => {
@@ -219,7 +276,17 @@ export async function action({ request, params }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Overview", "Tailor", "Cover", "Apply", "Prep", "Application", "History"] as const;
+const TABS = ["Overview", "Guided Application", "Prep", "Application", "History"] as const;
+
+// The application, in the order it actually happens. Each step is a panel that
+// already existed as its own tab; what was missing was the sequence between them.
+const STEPS = [
+  { n: 1, title: "Analyze & match", hint: "What this posting wants, and where you already meet it." },
+  { n: 2, title: "Evidence", hint: "Close the gaps it found, then pick what belongs on this résumé." },
+  { n: 3, title: "Résumé", hint: "Tailor it to the posting and choose the template it will be read by." },
+  { n: 4, title: "Cover letter", hint: "Optional — skip it and come back if the posting wants one." },
+  { n: 5, title: "Apply", hint: "Draft the answers, fill the form, mark it applied." },
+] as const;
 type Tab = (typeof TABS)[number];
 
 // A question the prefill could not answer truthfully. Answering it here writes to the
@@ -274,15 +341,38 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
 }
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
+  const { job, events, versions, profiles, gaps, gapsCovered, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
   const [tab, setTab] = useState<Tab>("Overview");
+  const [step, setStep] = useState(1);
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const running = nav.formData?.get("intent")?.toString(); // which action is in flight
   const resumeVersions = versions.filter((v) => v.kind === "resume");
   const coverVersions = versions.filter((v) => v.kind === "cover-letter");
   const catCls = job.category === "high" ? "sh-high" : job.category === "medium" ? "sh-medium" : "sh-stretch";
+
+  // Progress is read from the work itself — a match that exists, a résumé that was
+  // built — so it cannot drift from reality or need repairing when it does.
+  // Evidence is "done" once a profile was built for this posting, or once a résumé
+  // exists, which cannot happen without it. Recorded against the job id rather than
+  // matched on a name, so renaming the profile does not un-tick the step.
+  const builtForJob = profiles.some((p: any) => p.built_for_job_id === job.id);
+  const done: Record<number, boolean> = {
+    1: !!storedMatch,
+    2: builtForJob || resumeVersions.length > 0,
+    3: resumeVersions.length > 0,
+    4: coverVersions.length > 0,
+    5: job.stage !== "saved",
+  };
+  const skipped = [1, 2, 3, 4].filter((n) => !done[n]);
+  const stepTitle = (n: number) => STEPS.find((x) => x.n === n)!.title;
+
+  // Land on the first thing not done, so reopening a job resumes rather than restarts.
+  useEffect(() => {
+    if (tab === "Guided Application") setStep([1, 2, 3, 4, 5].find((n) => !done[n]) ?? 5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   return (
     <Shell>
@@ -299,6 +389,12 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <input type="hidden" name="stage" value="applied" />
             <button className="ghost-btn" disabled={job.stage !== "saved"}>Mark applied</button>
           </Form>
+          <Form method="post" style={{ display: "inline" }} onSubmit={(e) => { if (!confirm(`Trash ${job.company} — ${job.role}? It is deleted and blocked, so a crawl cannot re-add it.`)) e.preventDefault(); }}>
+            <input type="hidden" name="intent" value="trash" />
+            <button className="ghost-btn" disabled={busy} style={{ color: "var(--vermillion)" }}>
+              <Trash2 size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Trash
+            </button>
+          </Form>
         </div>
       </div>
       <hr className="rule double" />
@@ -312,6 +408,29 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{t}</button>
         ))}
       </div>
+
+      {tab === "Guided Application" && (
+        <div className="panel" style={{ paddingBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch" }}>
+            {STEPS.map((st) => (
+              <button
+                key={st.n}
+                type="button"
+                onClick={() => setStep(st.n)}
+                className={`tab ${step === st.n ? "on" : ""}`}
+                style={{ flex: "1 1 160px", textAlign: "left", padding: "10px 12px" }}
+                title={st.hint}
+              >
+                <span style={{ opacity: 0.6 }}>{done[st.n] ? "✓" : st.n}</span>{" "}
+                {st.title}
+              </button>
+            ))}
+          </div>
+          <p className="hint" style={{ margin: "12px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+            {STEPS.find((x) => x.n === step)!.hint} Steps are not locked &mdash; skip what this posting does not need.
+          </p>
+        </div>
+      )}
 
       {tab === "Overview" && (
         <>
@@ -339,12 +458,73 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               </Form>
             </details>
           </div>
-          <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
         </>
       )}
 
-      {tab === "Tailor" && (
+      {tab === "Guided Application" && step === 1 && (
+        <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
+      )}
+
+      {tab === "Guided Application" && step === 2 && (
         <>
+        {gaps.length > 0 && (
+          <div className="panel">
+            <h3>Gaps this posting will notice <span className="badge warn">{gaps.length}</span></h3>
+            <p className="hint">
+              Skills the analysis found in the posting that nothing in your knowledge base evidences yet. Say
+              where you actually did each one and it is written back &mdash; the skill onto that entry, and a
+              drafted bullet waiting for you on the Knowledge Base. Anything you have not done, set aside.
+            </p>
+            <Form method="post">
+              <input type="hidden" name="intent" value="kb-gap" />
+              <table className="ledger-table">
+                <thead><tr><th>Skill</th><th>Where did you do this?</th></tr></thead>
+                <tbody>
+                  {gaps.map((g: any) => (
+                    <tr key={g.skill}>
+                      <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
+                        <input type="hidden" name="gapSkill" value={g.skill} />
+                        {g.skill}
+                      </td>
+                      <td>
+                        <Select
+                          name={`gap:${g.skill}`}
+                          defaultValue=""
+                          options={[
+                            { value: "", label: "— leave it —" },
+                            ...g.candidates.map((c: any) => ({ value: String(c.id), label: c.label })),
+                            { value: "dismiss", label: "I have not done this" },
+                          ]}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "10px 0 12px" }}>
+                Nothing here decides you have a skill. A gap closes only because you named the place you used
+                it; the wording is all the model contributes.
+              </p>
+              <button className="btn" disabled={busy}>
+                {running === "kb-gap" ? "Writing to your knowledge base…" : "Add these to my knowledge base"}
+              </button>
+              {gapsCovered.length > 0 && (
+                <details style={{ marginTop: 14 }}>
+                  <summary className="jd-edit-toggle">
+                    {gapsCovered.length} more the posting asked for, already covered
+                  </summary>
+                  <ul className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, marginTop: 8 }}>
+                    {gapsCovered.map((c: any) => (
+                      <li key={c.skill}>
+                        {c.skill} &mdash; matched by your <strong>{c.byTag}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </Form>
+          </div>
+        )}
         <KbBuilder
           sources={kbSources}
           skills={kbSkills}
@@ -352,7 +532,13 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           busy={busy}
           jobTitle={`${job.company} — ${job.role}`}
           suggestedIds={kbSuggested}
+          match={storedMatch}
         />
+        </>
+      )}
+
+      {tab === "Guided Application" && step === 3 && (
+        <>
         <div className="panel">
           <h3>Tailor a résumé</h3>
           <p className="hint">Reorders & rewords your base résumé for this role. Never invents facts — a guard flags anything new.</p>
@@ -370,6 +556,11 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               <div className="field">
                 <label>Style</label>
                 <Select name="style" defaultValue={defaultStyle} options={styles.map((s) => ({ value: s, label: s }))} />
+                <p className="hint" style={{ margin: "6px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+                  Applications start at <code>ats-plain</code>: most postings are read by a tracker first, and
+                  the typeset styles are for the copy a person opens. Change it and the next application
+                  remembers. The Settings preference still governs everything outside this flow.
+                </p>
               </div>
             </div>
             <button className="btn" disabled={busy || profiles.length === 0}>{running === "tailor" ? "Tailoring…" : "Tailor & build PDF"}</button>
@@ -401,7 +592,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </>
       )}
 
-      {tab === "Cover" && (
+      {tab === "Guided Application" && step === 4 && (
         <div className="panel">
           <h3>Cover letter</h3>
           <Form method="post"><input type="hidden" name="intent" value="cover" /><button className="btn" disabled={busy}>{running === "cover" ? "Writing…" : "Generate cover letter"}</button></Form>
@@ -417,7 +608,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </div>
       )}
 
-      {tab === "Apply" && (
+      {tab === "Guided Application" && step === 5 && (
         <div className="panel">
           <h3>Auto-apply assist</h3>
           <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
@@ -542,6 +733,33 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             </>
           ) : (
             <p className="hint" style={{ marginTop: 10 }}>No drafted answers yet.</p>
+          )}
+        </div>
+      )}
+
+      {tab === "Guided Application" && (
+        <div className="panel" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="ghost-btn" disabled={step === 1} onClick={() => setStep((n) => Math.max(1, n - 1))}>◂ Back</button>
+          <button className="btn" disabled={step === 5} onClick={() => setStep((n) => Math.min(5, n + 1))}>
+            Next: {stepTitle(Math.min(5, step + 1))} ▸
+          </button>
+          {step === 5 && (
+            <Form
+              method="post"
+              style={{ marginLeft: "auto" }}
+              onSubmit={(e) => {
+                // free movement, but not silent movement: say what was skipped once,
+                // at the only point where it stops being reversible
+                if (skipped.length && !confirm(`You have not done: ${skipped.map(stepTitle).join(", ")}.\n\nMark this applied anyway?`))
+                  e.preventDefault();
+              }}
+            >
+              <input type="hidden" name="intent" value="stage" />
+              <input type="hidden" name="stage" value="applied" />
+              <button className="btn" disabled={busy || job.stage !== "saved"}>
+                {job.stage === "saved" ? "Mark as applied" : `Already ${stageLabels[job.stage]}`}
+              </button>
+            </Form>
           )}
         </div>
       )}

@@ -418,6 +418,65 @@ export function funnel(): Funnel {
 }
 
 export interface SourceStat { source: string; total: number; applied: number; interview: number }
+export interface ChannelStat {
+  channel: string;
+  found: number;
+  applied: number;
+  interview: number;
+  offer: number;
+}
+
+/**
+ * How a role reached you, rather than who was hiring.
+ *
+ * `source` is written per posting — "G2i (ashby)", "Fueled (greenhouse)",
+ * "Email · alerts.jobot.com" — so grouping by it answers "which companies do I have
+ * jobs from", which you can already see by looking at the ledger. The question worth
+ * a table is which *route* is worth your time: the boards, the feeds, the tracked
+ * companies, or the ones you clipped yourself.
+ */
+export function channelOf(source: string | null | undefined): string {
+  const s = String(source || "").trim();
+  if (!s) return "Unattributed";
+  if (/^email\s*·/i.test(s)) return "Email alerts";
+  if (/^clipped$/i.test(s)) return "Clipped by hand";
+  // "Fueled (greenhouse)" and a bare "Greenhouse" are both a company's own feed
+  if (/\((greenhouse|lever|ashby|recruitee)\)/i.test(s)) return "Company ATS feed";
+  if (/^(greenhouse|lever|ashby|recruitee)$/i.test(s)) return "Company ATS feed";
+  if (/^(remoteok|remotive|himalayas|jobicy)$/i.test(s)) return "Free job feeds";
+  if (/careers?$/i.test(s)) return "Careers page";
+  return "Job boards & research";
+}
+
+/**
+ * Counted across every job, not just the active ones.
+ *
+ * A posting you applied to and which has since closed is the most informative row
+ * there is — filtering it out is how a channel that actually works comes to look
+ * like it does nothing.
+ */
+export function channelStats(): ChannelStat[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT j.source source, a.stage stage
+         FROM jobs j LEFT JOIN applications a ON a.job_id=j.id`
+    )
+    .all() as { source: string | null; stage: string | null }[];
+
+  const by = new Map<string, ChannelStat>();
+  for (const r of rows) {
+    const channel = channelOf(r.source);
+    const c = by.get(channel) || { channel, found: 0, applied: 0, interview: 0, offer: 0 };
+    c.found++;
+    const st = String(r.stage || "");
+    if (["applied", "screening", "interview", "offer"].includes(st)) c.applied++;
+    if (["interview", "offer"].includes(st)) c.interview++;
+    if (st === "offer") c.offer++;
+    by.set(channel, c);
+  }
+  return [...by.values()].sort((a, b) => b.applied - a.applied || b.found - a.found);
+}
+
 export function sourceStats(): SourceStat[] {
   return getDb()
     .prepare(

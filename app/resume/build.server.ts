@@ -167,6 +167,8 @@ export function buildResumeFromKb(o: {
   targetProfileId?: string | null;
   name?: string;
   makeDefault?: boolean;
+  /** the posting this was assembled for, so the guided flow can see it exists */
+  builtForJobId?: string | null;
 }): { profileId?: string; added?: number; error?: string } {
   const profiles = listProfiles();
   if (!profiles.length)
@@ -202,6 +204,9 @@ export function buildResumeFromKb(o: {
     name,
     data,
     makeDefault: o.makeDefault,
+    // merging edits a profile that already exists for its own reasons; only a
+    // freshly built one belongs to the posting it was built for
+    builtForJobId: o.mode === "merge" ? null : o.builtForJobId ?? null,
   });
   return { profileId, added: picks.length };
 }

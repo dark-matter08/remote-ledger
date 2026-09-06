@@ -1348,6 +1348,42 @@ test("kb: the résumé is mirrored in, and re-importing refreshes rather than du
   assert.ok(again.updated >= 2, "existing rows are refreshed instead");
 });
 
+test("gaps: a gap already closed under a shorter name does not come back", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { gapsForJob, dismissGap } = await import("../app/services/gaps.server");
+  const db = getDb();
+  const now = "2026-09-06T00:00:00.000Z";
+  const add = (title: string, tags: string[]) =>
+    db.prepare(
+      "INSERT INTO kb_items (kind,title,summary,tags,source,created_at,updated_at) VALUES ('project',?,'',?,'manual',?,?)"
+    ).run(title, JSON.stringify(tags), now, now);
+
+  add("Gap Test Project", ["Headless CMS", "GraphQL", "AI"]);
+
+  const missing = [
+    // the shape the analysis actually produces: a sentence, not a skill
+    "Named headless CMS platforms common at agencies (Contentful, Sanity, Strapi)",
+    "GraphQL",                                  // exactly a tag
+    "Explicit accessibility (WCAG/a11y) work",  // genuinely absent
+    "Kubernetes cluster operations",            // genuinely absent
+  ];
+
+  const offered = gapsForJob("gap-test-job", missing).map((g) => g.skill);
+  assert.ok(!offered.some((g) => /headless cms/i.test(g)), "covered by the 'Headless CMS' tag, however it was phrased");
+  assert.ok(!offered.includes("GraphQL"), "covered exactly");
+  assert.ok(offered.includes("Explicit accessibility (WCAG/a11y) work"), "a real gap is still offered");
+  assert.ok(offered.includes("Kubernetes cluster operations"), "and so is this one");
+
+  // "AI" is a tag on that project, and must not answer for everything with an i in it
+  const noisy = gapsForJob("gap-test-job", ["AI-assisted code review tooling"]).map((g) => g.skill);
+  assert.equal(noisy.length, 1, "a two-letter tag cannot cover a gap");
+
+  // dismissal is per posting
+  dismissGap("gap-test-job", "Kubernetes cluster operations");
+  assert.ok(!gapsForJob("gap-test-job", missing).some((g) => /Kubernetes/.test(g.skill)), "set aside here");
+  assert.ok(gapsForJob("another-job", missing).some((g) => /Kubernetes/.test(g.skill)), "but not for every other posting");
+});
+
 test("kb: a company folder enriches the job already on the résumé", async () => {
   const { getDb } = await import("../app/sqlite.server");
   const db = getDb();
@@ -1455,6 +1491,29 @@ test("runner: JSON survives a model that answers and then explains itself", asyn
   assert.deepEqual(tryParseJson('[{"a":1},{"a":2}] done'), [{ a: 1 }, { a: 2 }]);
   assert.equal(tryParseJson("no json here at all"), null);
   assert.equal(tryParseJson(""), null);
+
+  // Every JSON call in the app goes through here, and it silently discarded good
+  // answers until this session. It is worth being paranoid about.
+  assert.deepEqual(tryParseJson('  \n\t {"a":1}  \n '), { a: 1 }, "surrounding whitespace");
+  assert.deepEqual(tryParseJson('```\n{"a":1}\n```'), { a: 1 }, "unlabelled fence");
+  assert.deepEqual(tryParseJson('```json\n{"a":1}\n```\nAnd here is why.'), { a: 1 }, "fence then prose");
+  assert.deepEqual(tryParseJson('{"a":{"b":{"c":[1,2,{"d":3}]}}} trailing'), { a: { b: { c: [1, 2, { d: 3 }] } } }, "deep nesting");
+  assert.deepEqual(tryParseJson('{"s":"he said \\"}\\" to me"} after'), { s: 'he said "}" to me' }, "escaped quote before a brace in a string");
+  assert.deepEqual(tryParseJson('{"s":"c:\\\\path\\\\"} after'), { s: "c:\\path\\" }, "a string ending in an escaped backslash");
+  assert.deepEqual(tryParseJson('{"a":1}\n{"b":2}'), { a: 1 }, "two objects: the first one wins");
+  assert.deepEqual(tryParseJson('Note: [1,2] then {"a":1}'), [1, 2], "the first value, array or object");
+  assert.deepEqual(tryParseJson('{"unicode":"café ✓ 日本語"} done'), { unicode: "café ✓ 日本語" }, "non-ascii survives");
+  assert.deepEqual(tryParseJson('{"empty":{},"arr":[]} tail'), { empty: {}, arr: [] }, "empty containers");
+  assert.deepEqual(tryParseJson('{"n":-1.5e3,"t":true,"z":null} tail'), { n: -1500, t: true, z: null }, "numbers, booleans, null");
+
+  // malformed input must be null, never a throw — callers treat null as "no answer"
+  assert.equal(tryParseJson('{"a":1'), null, "unclosed object");
+  assert.equal(tryParseJson("{'a':1}"), null, "single quotes are not JSON");
+  assert.equal(tryParseJson('{"a":1,}'), null, "trailing comma");
+  assert.equal(tryParseJson("{"), null, "a lone brace");
+  assert.equal(tryParseJson("prose { not json } prose"), null, "brace-shaped prose");
+  assert.equal(tryParseJson(null as any), null, "null input");
+  assert.equal(tryParseJson(undefined as any), null, "undefined input");
 });
 
 test("community: only boards the shipped list lacks are ever offered", async () => {

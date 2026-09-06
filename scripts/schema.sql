@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS resume_profiles (
   data_json   TEXT NOT NULL,     -- structured resume
   raw_text    TEXT,
   source_file TEXT,
+  built_for_job_id TEXT,          -- built from the KB for one posting, by the guided flow
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
