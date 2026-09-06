@@ -76,7 +76,11 @@ export async function loader({ params }: Route.LoaderArgs) {
     styles: RESUME_STYLES,
     stages: STAGES,
     stageLabels: STAGE_LABEL,
-    defaultStyle: getMeta("default_resume_style") || "letterpress",
+    // The Settings preference governs r\u00e9sum\u00e9s you hand to a person. This one is being
+    // posted into an applicant tracking system, which reads plain structure and
+    // mangles the rest \u2014 so an application starts at ats-plain unless you have
+    // already chosen otherwise for an application.
+    defaultStyle: getMeta("apply_resume_style") || "ats-plain",
   };
 }
 
@@ -173,6 +177,8 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     const base = (form.get("profileId") ? getProfile(String(form.get("profileId"))) : getDefaultProfile())?.data;
     if (intent === "tailor") {
+      const chosen = String(form.get("style") || "");
+      if (chosen) setMeta("apply_resume_style", chosen);
       if (!base) return { error: "Upload a base résumé first (Résumés page)." };
       const style = (String(form.get("style") || "letterpress") as ResumeStyle);
       const t = await loggedTask("tailor", `Tailor résumé · ${job.company} — ${job.role}`, async (L) => {
@@ -271,9 +277,10 @@ const TABS = ["Overview", "Guided Application", "Prep", "Application", "History"
 // already existed as its own tab; what was missing was the sequence between them.
 const STEPS = [
   { n: 1, title: "Analyze & match", hint: "What this posting wants, and where you already meet it." },
-  { n: 2, title: "Tailor", hint: "Pick the evidence, then build the résumé from it." },
-  { n: 3, title: "Cover letter", hint: "Optional — skip it and come back if the posting wants one." },
-  { n: 4, title: "Apply", hint: "Draft the answers, fill the form, mark it applied." },
+  { n: 2, title: "Evidence", hint: "Close the gaps it found, then pick what belongs on this résumé." },
+  { n: 3, title: "Résumé", hint: "Tailor it to the posting and choose the template it will be read by." },
+  { n: 4, title: "Cover letter", hint: "Optional — skip it and come back if the posting wants one." },
+  { n: 5, title: "Apply", hint: "Draft the answers, fill the form, mark it applied." },
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -342,18 +349,22 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
 
   // Progress is read from the work itself — a match that exists, a résumé that was
   // built — so it cannot drift from reality or need repairing when it does.
+  // Evidence is "done" once a profile has been built for this job — KbBuilder names
+  // it after the role — or once a résumé exists, which cannot happen without it.
+  const builtForJob = profiles.some((p) => p.name === `${job.company} — ${job.role}`);
   const done: Record<number, boolean> = {
     1: !!storedMatch,
-    2: resumeVersions.length > 0,
-    3: coverVersions.length > 0,
-    4: job.stage !== "saved",
+    2: builtForJob || resumeVersions.length > 0,
+    3: resumeVersions.length > 0,
+    4: coverVersions.length > 0,
+    5: job.stage !== "saved",
   };
-  const skipped = [1, 2, 3].filter((n) => !done[n]);
+  const skipped = [1, 2, 3, 4].filter((n) => !done[n]);
   const stepTitle = (n: number) => STEPS.find((x) => x.n === n)!.title;
 
   // Land on the first thing not done, so reopening a job resumes rather than restarts.
   useEffect(() => {
-    if (tab === "Guided Application") setStep([1, 2, 3, 4].find((n) => !done[n]) ?? 4);
+    if (tab === "Guided Application") setStep([1, 2, 3, 4, 5].find((n) => !done[n]) ?? 5);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -503,6 +514,11 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           suggestedIds={kbSuggested}
           match={storedMatch}
         />
+        </>
+      )}
+
+      {tab === "Guided Application" && step === 3 && (
+        <>
         <div className="panel">
           <h3>Tailor a résumé</h3>
           <p className="hint">Reorders & rewords your base résumé for this role. Never invents facts — a guard flags anything new.</p>
@@ -520,6 +536,11 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               <div className="field">
                 <label>Style</label>
                 <Select name="style" defaultValue={defaultStyle} options={styles.map((s) => ({ value: s, label: s }))} />
+                <p className="hint" style={{ margin: "6px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+                  Applications start at <code>ats-plain</code>: most postings are read by a tracker first, and
+                  the typeset styles are for the copy a person opens. Change it and the next application
+                  remembers. The Settings preference still governs everything outside this flow.
+                </p>
               </div>
             </div>
             <button className="btn" disabled={busy || profiles.length === 0}>{running === "tailor" ? "Tailoring…" : "Tailor & build PDF"}</button>
@@ -551,7 +572,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </>
       )}
 
-      {tab === "Guided Application" && step === 3 && (
+      {tab === "Guided Application" && step === 4 && (
         <div className="panel">
           <h3>Cover letter</h3>
           <Form method="post"><input type="hidden" name="intent" value="cover" /><button className="btn" disabled={busy}>{running === "cover" ? "Writing…" : "Generate cover letter"}</button></Form>
@@ -567,7 +588,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </div>
       )}
 
-      {tab === "Guided Application" && step === 4 && (
+      {tab === "Guided Application" && step === 5 && (
         <div className="panel">
           <h3>Auto-apply assist</h3>
           <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
@@ -699,10 +720,10 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
       {tab === "Guided Application" && (
         <div className="panel" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <button className="ghost-btn" disabled={step === 1} onClick={() => setStep((n) => Math.max(1, n - 1))}>◂ Back</button>
-          <button className="btn" disabled={step === 4} onClick={() => setStep((n) => Math.min(4, n + 1))}>
-            Next: {stepTitle(Math.min(4, step + 1))} ▸
+          <button className="btn" disabled={step === 5} onClick={() => setStep((n) => Math.min(5, n + 1))}>
+            Next: {stepTitle(Math.min(5, step + 1))} ▸
           </button>
-          {step === 4 && (
+          {step === 5 && (
             <Form
               method="post"
               style={{ marginLeft: "auto" }}
