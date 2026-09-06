@@ -22,12 +22,14 @@ export interface AtsPosting {
   remote: boolean | null;
   employmentType: string | null;
   description: string | null;
+  /** The board's own markup, when it publishes any. Stored as the rich JD. */
+  descriptionHtml: string | null;
   updatedAt: string | null;
 }
 
 const UA = "the-remote-ledger (personal job tracker)";
 const TIMEOUT_MS = 15_000;
-const DESC_CAP = 4000;
+const DESC_CAP = 16_000; // matches the scrape cap: this text is stored as the JD, not just scored
 
 async function getJson(url: string): Promise<any> {
   const r = await fetch(url, {
@@ -39,6 +41,12 @@ async function getJson(url: string): Promise<any> {
 }
 
 // Greenhouse ships job bodies as escaped HTML; the rest give plain text already.
+const unescape = (s: unknown): string | null =>
+  typeof s === "string" && s.trim()
+    ? s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+       .replace(/&#39;/g, "'").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+    : null;
+
 function unhtml(s: unknown): string | null {
   if (typeof s !== "string" || !s) return null;
   const txt = s
@@ -70,6 +78,7 @@ const ADAPTERS: Record<AtsKind, Adapter> = {
         remote: null, // greenhouse has no remote flag; the location string is all we get
         employmentType: null,
         description: unhtml(x?.content),
+        descriptionHtml: unescape(x?.content),
         updatedAt: str(x?.updated_at),
       })),
   },
@@ -83,6 +92,7 @@ const ADAPTERS: Record<AtsKind, Adapter> = {
         remote: typeof x?.workplaceType === "string" ? /remote/i.test(x.workplaceType) : null,
         employmentType: str(x?.categories?.commitment),
         description: plain(x?.descriptionPlain),
+        descriptionHtml: str(x?.description),
         updatedAt: x?.createdAt ? new Date(Number(x.createdAt)).toISOString() : null,
       })),
   },
@@ -103,6 +113,7 @@ const ADAPTERS: Record<AtsKind, Adapter> = {
                 : null,
           employmentType: str(x?.employmentType),
           description: plain(x?.descriptionPlain),
+          descriptionHtml: str(x?.descriptionHtml),
           updatedAt: str(x?.publishedAt),
         })),
   },
@@ -116,6 +127,7 @@ const ADAPTERS: Record<AtsKind, Adapter> = {
         remote: typeof x?.remote === "boolean" ? x.remote : null,
         employmentType: str(x?.employment_type_code),
         description: unhtml(x?.description),
+        descriptionHtml: str(x?.description),
         updatedAt: str(x?.published_at) || str(x?.created_at),
       })),
   },

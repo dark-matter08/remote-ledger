@@ -20,7 +20,7 @@ import {
   activeCrawl,
   blocklistPrompt,
 } from "../db.server";
-import { scrapeJds, verifyJobs } from "./scrape.server";
+import { scrapeJds, verifyJobs, sanitizeJdHtml } from "./scrape.server";
 import {
   activeCompanies,
   fetchBoard,
@@ -306,6 +306,11 @@ async function scoreCandidates(
       seniority: row.seniority || null,
       apply_url: c.posting.url,
       source: c.source,
+      // The feed already handed us the posting in full. Dropping it here is what sent
+      // every ATS job to the ledger blank, to be re-fetched later with a headless
+      // browser — a second download of text we were already holding.
+      jd: c.posting.description,
+      jd_html: c.posting.descriptionHtml,
     });
   }
   L("step", `Scored ${batch.length} posting(s) → kept ${out.length}.`);
@@ -423,7 +428,8 @@ async function runCareersCrawl(
       // the agent could have imagined these, so they go through link verification
       const { alive, dropped } = await verifyJobs(rows, { limit: 25, signal, onLog: (l) => L("step", l) });
       errors += dropped.length;
-      scored.push(...alive.map((a) => a.job));
+      // verification already opened the page and read it; carry that through
+      scored.push(...alive.map((a) => ({ ...a.job, jd: a.jd, jd_html: a.jdHtml })));
       L("result", `${label}: ${alive.length} verified, ${dropped.length} dropped.`);
     } catch (e: any) {
       errors++;
@@ -475,7 +481,18 @@ async function runCareersCrawl(
   const res = upsertJobs(scored);
   for (const e of res.errors.slice(0, 5)) L("error", `Rejected ${e.job}: ${e.error}`);
   if (res.blocked) L("note", `${res.blocked} posting(s) skipped — you trashed them before.`);
-  L("result", `Saved ${res.inserted} new, ${res.updated} refreshed from company career pages.`);
+
+  // upsertJobs ignores fields it does not know, so the description rides along on the
+  // same row and is written here rather than left for a later scrape to go and find.
+  let saved = 0;
+  for (const j of scored) {
+    if (!j.jd && !j.jd_html) continue;
+    try {
+      setJd(jobId(j.company, j.role), j.jd || "", j.jd_html ? sanitizeJdHtml(j.jd_html) : null);
+      saved++;
+    } catch {}
+  }
+  L("result", `Saved ${res.inserted} new, ${res.updated} refreshed from company career pages · ${saved} description(s) captured.`);
   return { received, inserted: res.inserted, updated: res.updated, errors: errors + res.errors.length };
 }
 

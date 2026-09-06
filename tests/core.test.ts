@@ -1272,6 +1272,35 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("ats: a board's own description is kept, as text and as markup", async () => {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      jobs: [
+        {
+          title: "Senior Full Stack Engineer",
+          absolute_url: "https://job-boards.greenhouse.io/acme/jobs/1",
+          location: { name: "Remote" },
+          content: "&lt;p&gt;Hello &amp; welcome&lt;/p&gt;",
+          updated_at: "2026-09-06T00:00:00Z",
+        },
+      ],
+    }),
+  })) as any;
+
+  try {
+    const { fetchBoard } = await import("../app/services/ats.server");
+    const [p] = await fetchBoard("greenhouse", "acme");
+    // the feed is the best copy of a posting there is — keeping it is what stops the
+    // ledger filling with blank jobs that each need a second, headless fetch later
+    assert.equal(p.description, "Hello & welcome", "entities decoded, tags flattened");
+    assert.equal(p.descriptionHtml, "<p>Hello & welcome</p>", "and the markup survives for the rich render");
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
 test("verify: a careers index is not a posting, whoever produced it", async () => {
   const { isCareersIndex } = await import("../app/services/scrape.server");
 
