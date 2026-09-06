@@ -18,6 +18,9 @@ interface Status {
   hasUv: boolean;
   hasGit: boolean;
   python: string | null;
+  pythonVersion: string | null;
+  pythonTooNew: boolean;
+  pythonInstall: string | null;
   canInstall: boolean;
   version: string | null;
 }
@@ -137,10 +140,16 @@ export function SearchSetup() {
                 {s.hasUv
                   ? "uv is installed, so this pins its own Python 3.12 and takes about a minute."
                   : s.python
-                    ? `Using ${s.python} with a virtualenv. Installing uv would make this faster.`
-                    : "No usable Python found — install Python 3.12 (brew install python@3.12) first."}
+                    ? `Using ${s.python}${s.pythonVersion ? ` (Python ${s.pythonVersion})` : ""} with a virtualenv.${
+                        s.pythonTooNew
+                          ? " That is newer than SearXNG pins for, so the install may fail on a missing wheel. You can try it anyway, or install uv and it will fetch its own Python 3.12:"
+                          : " Installing uv would make this faster."
+                      }`
+                    : "No Python found. Install uv and it will fetch its own Python 3.12:"}
                 {!s.hasGit && " git is required and was not found."}
               </p>
+              {/* the command for THIS machine — Homebrew is not an instruction you can follow on Linux */}
+              {s.pythonInstall && <pre className="jd-rendered" style={{ padding: 10, marginTop: -4 }}>{s.pythonInstall}</pre>}
               <button className="btn" disabled={busy || installing || !s.canInstall} onClick={() => run("install")}>
                 <Download size={13} /> {installing ? "Installing…" : "Install SearXNG"}
               </button>

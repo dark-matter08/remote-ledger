@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defaultRunnerId, logExternalCall, runLLM, runLLMWithTools, runnerCanSearchWeb, runnerCanUseTools, tryParseJson } from "../llm/runner.server";
-import { streamClaude, adapterById } from "../llm/adapters.server";
+import { streamClaude, adapterById, isPermanentModelError } from "../llm/adapters.server";
 import { getSetting } from "../sqlite.server";
 import {
   upsertJobs,
@@ -356,7 +356,14 @@ async function findViaFeeds(
       jobs.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, L)));
     } catch (e: any) {
       errors++;
-      L("error", `Scoring batch failed: ${String(e?.message || e).slice(0, 100)}`);
+      const why = String(e?.message || e);
+      // a model the runner cannot load will not load for the next batch either
+      if (isPermanentModelError(why)) {
+        L("error", why.slice(0, 400));
+        L("note", `Stopping here — the remaining ${Math.max(0, shortlist.length - i - SCORE_BATCH)} posting(s) would fail the same way. The boards were read fine; only the scoring needs a working model.`);
+        break;
+      }
+      L("error", `Scoring batch failed: ${why.slice(0, 200)}`);
     }
   }
   return { jobs, received: sweep.postings.length, errors };
@@ -413,7 +420,13 @@ async function runCareersCrawl(
       scored.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, L)));
     } catch (e: any) {
       errors++;
-      L("error", `Scoring batch failed: ${String(e?.message || e).slice(0, 100)}`);
+      const why = String(e?.message || e);
+      if (isPermanentModelError(why)) {
+        L("error", why.slice(0, 400));
+        L("note", "Stopping here — every remaining batch would fail the same way.");
+        break;
+      }
+      L("error", `Scoring batch failed: ${why.slice(0, 200)}`);
     }
   }
 

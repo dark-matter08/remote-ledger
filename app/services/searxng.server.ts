@@ -16,8 +16,8 @@
 //      but nothing works" cause.
 //   3. It needs a secret_key. Without one it refuses to start.
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
 import { resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
@@ -39,9 +39,35 @@ const REPO = "https://github.com/searxng/searxng.git";
 
 export const DEFAULT_PORT = 8899;
 
+const MAC = platform() === "darwin";
+const WIN = platform() === "win32";
+
 // SearXNG lags the newest CPython by a release or two, and the machine default may be
 // ahead of it. Pin something known-good and let uv fetch it if it is missing.
 const PY_VERSION = "3.12";
+// The window SearXNG's pinned requirements resolve wheels for. Outside it we still
+// offer to try — a distro that ships only 3.14 should not be a dead end — but we say
+// so first, because the failure would otherwise land as an opaque pip error.
+const PY_MIN = 10;
+const PY_MAX = 13;
+// Preference, not numeric order: PY_VERSION first, then out from it.
+const PY_PREFERRED = [12, 11, 13, 10];
+// Where each platform actually puts CPython. The old list was Homebrew-only, which is
+// why a Linux box with a perfectly good interpreter reported having none. macOS stays
+// off /usr/bin deliberately: python3 there is the Xcode stub, and running one to ask
+// its version is enough to raise the developer-tools install dialog.
+// LEDGER_PYTHON_DIRS covers what no fixed list can: pyenv, asdf, conda, /opt/pythonX.
+const PY_PREFIXES = (process.env.LEDGER_PYTHON_DIRS || "")
+  .split(":")
+  .map((d) => d.trim())
+  .filter(Boolean)
+  .concat(
+    MAC
+      ? ["/opt/homebrew/bin", "/usr/local/bin"]
+      : WIN
+        ? []
+        : ["/usr/bin", "/usr/local/bin", resolve(homedir(), ".local", "bin")]
+  );
 
 const venvPython = () => resolve(VENV, "bin", "python");
 
@@ -55,19 +81,83 @@ async function which(bin: string): Promise<string | null> {
   }
 }
 
-/** An interpreter we can trust — never the one PATH happens to point at. */
-export async function systemPython(): Promise<string | null> {
-  for (const p of [
-    "/opt/homebrew/bin/python3.12",
-    "/opt/homebrew/bin/python3.11",
-    "/opt/homebrew/bin/python3.13",
-    "/usr/local/bin/python3.12",
-    "/usr/local/bin/python3.11",
-    "/opt/homebrew/bin/python3",
-  ]) {
-    if (existsSync(p)) return p;
+// Asking an interpreter its version costs a process, and the Search tab polls status
+// every 15s. Keyed by absolute path, so a python installed mid-session is a new key
+// and still gets picked up.
+const pyVersions = new Map<string, number | null>();
+
+/** The minor version the interpreter reports for itself. The filename is only a hint. */
+async function pythonMinor(bin: string): Promise<number | null> {
+  const cached = pyVersions.get(bin);
+  if (cached !== undefined) return cached;
+  let minor: number | null = null;
+  try {
+    const { stdout } = await pexecFile(bin, ["-c", "import sys; print(sys.version_info[0], sys.version_info[1])"], {
+      timeout: 5000,
+      env: { ...process.env, VIRTUAL_ENV: "", PYTHONHOME: "", PYTHONPATH: "" },
+    });
+    const m = stdout.trim().match(/^(\d+)\s+(\d+)/);
+    if (m && m[1] === "3") minor = Number(m[2]);
+  } catch {}
+  pyVersions.set(bin, minor);
+  return minor;
+}
+
+/** Every `python3.N` on this machine, in the order we would rather use them. */
+function pythonCandidates(): string[] {
+  const out: string[] = [];
+  const add = (p: string) => {
+    if (!out.includes(p) && existsSync(p)) out.push(p);
+  };
+  for (const v of PY_PREFERRED) for (const dir of PY_PREFIXES) add(resolve(dir, `python3.${v}`));
+  // Anything else installed, including versions newer than we know about. Without this
+  // a machine whose only interpreter is /usr/bin/python3.14 looks empty.
+  for (const dir of PY_PREFIXES) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir);
+    } catch {}
+    for (const n of names.filter((n) => /^python3\.\d+$/.test(n)).sort()) add(resolve(dir, n));
   }
-  return null;
+  for (const dir of PY_PREFIXES) add(resolve(dir, "python3"));
+  return out;
+}
+
+/**
+ * An interpreter we can trust — never the one PATH happens to point at.
+ *
+ * Probed by absolute path and then asked its own version, because the name lies in
+ * both directions: `python3` is whatever the distro moved to last, and a `python3.12`
+ * on PATH may belong to another project's virtualenv.
+ */
+export async function findPython(): Promise<{ path: string; minor: number; tooNew: boolean } | null> {
+  let newest: { path: string; minor: number; tooNew: boolean } | null = null;
+  for (const p of pythonCandidates()) {
+    const minor = await pythonMinor(p);
+    if (minor === null || minor < PY_MIN) continue;
+    if (minor <= PY_MAX) return { path: p, minor, tooNew: false };
+    // too new for the pins — keep the least-new one in case it is all there is
+    if (!newest || minor < newest.minor) newest = { path: p, minor, tooNew: true };
+  }
+  return newest;
+}
+
+export async function systemPython(): Promise<string | null> {
+  return (await findPython())?.path ?? null;
+}
+
+/**
+ * How to get an interpreter SearXNG will build against, on THIS machine.
+ *
+ * uv everywhere, rather than a per-distro python3.12 package: it fetches its own
+ * pinned CPython, so it is the one answer that does not depend on the distro still
+ * packaging a release the current one is two ahead of. Homebrew is macOS-only and
+ * printing it on Linux was the bug that sent us here.
+ */
+export function pythonInstallCommand(): string {
+  if (MAC) return "brew install uv";
+  if (WIN) return "winget install --id=astral-sh.uv -e";
+  return "curl -LsSf https://astral.sh/uv/install.sh | sh";
 }
 
 export interface SearxngStatus {
@@ -82,6 +172,12 @@ export interface SearxngStatus {
   hasUv: boolean;
   hasGit: boolean;
   python: string | null;
+  /** e.g. "3.14" — what the interpreter above reports, not what its name claims. */
+  pythonVersion: string | null;
+  /** Found one, but newer than SearXNG pins for. Installable, with a warning. */
+  pythonTooNew: boolean;
+  /** The command to run HERE to fix it, or null when nothing needs fixing. */
+  pythonInstall: string | null;
   canInstall: boolean;
   version: string | null;
 }
@@ -131,11 +227,13 @@ export async function searxngStatus(): Promise<SearxngStatus> {
   const port = searxngPort();
   const installed = existsSync(venvPython()) && existsSync(SRC) && existsSync(MARKER);
   const pid = readPid();
-  const [hasUv, hasGit, python] = await Promise.all([which("uv"), which("git"), systemPython()]);
+  const [hasUv, hasGit, py] = await Promise.all([which("uv"), which("git"), findPython()]);
   let jsonEnabled = false;
   try {
     jsonEnabled = /^\s*-\s*json\s*$/m.test(readFileSync(SETTINGS, "utf8"));
   } catch {}
+  // uv brings its own PY_VERSION, so nothing about the machine's python matters then.
+  const python = py?.path ?? null;
   return {
     installed,
     running: await searxngRunning(port),
@@ -147,6 +245,9 @@ export async function searxngStatus(): Promise<SearxngStatus> {
     hasUv: !!hasUv,
     hasGit: !!hasGit,
     python,
+    pythonVersion: py ? `3.${py.minor}` : null,
+    pythonTooNew: !!py?.tooNew,
+    pythonInstall: hasUv || (py && !py.tooNew) ? null : pythonInstallCommand(),
     canInstall: !!hasGit && (!!hasUv || !!python),
     version: installed ? readVersion() : null,
   };
@@ -262,9 +363,25 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
     if (!(await run(uv, ["pip", "install", "--python", venvPython(), "-r", reqs], "Installing dependencies", SRC)))
       return { ok: false, steps };
   } else {
-    const py = await systemPython();
-    if (!py) return { ok: !push({ step: "python", ok: false, output: "No usable Python found." }), steps };
-    if (!(await run(py, ["-m", "venv", VENV], "Creating a virtual environment"))) return { ok: false, steps };
+    const py = await findPython();
+    if (!py)
+      return {
+        ok: !push({
+          step: "python",
+          ok: false,
+          output: `No Python 3.${PY_MIN}+ found in ${PY_PREFIXES.join(", ")}.\nInstall uv and it will fetch its own Python ${PY_VERSION}:\n\n  ${pythonInstallCommand()}`,
+        }),
+        steps,
+      };
+    // A pip failure two steps down is opaque; name the likely cause before it happens.
+    if (py.tooNew)
+      push({
+        step: `Python 3.${py.minor} is newer than SearXNG pins for — trying it anyway`,
+        ok: true,
+        output: `If the dependency install fails, install uv and it will fetch Python ${PY_VERSION}:\n\n  ${pythonInstallCommand()}`,
+      });
+    if (!(await run(py.path, ["-m", "venv", VENV], `Creating a virtual environment (Python 3.${py.minor})`)))
+      return { ok: false, steps };
     if (!(await run(venvPython(), ["-m", "pip", "install", "--upgrade", "pip"], "Updating pip"))) return { ok: false, steps };
     if (!(await run(venvPython(), ["-m", "pip", "install", "-r", reqs], "Installing dependencies", SRC)))
       return { ok: false, steps };

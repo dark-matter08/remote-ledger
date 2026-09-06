@@ -1468,6 +1468,27 @@ test("kb: an entry already scanned from its folder is adopted, not duplicated", 
   );
 });
 
+test("runner: a model the server cannot load is a permanent failure, not a retry", async () => {
+  const { isPermanentModelError } = await import("../app/llm/adapters.server");
+
+  // the exact string Ollama returned for llama3.2-vision on a build without mllama
+  assert.equal(
+    isPermanentModelError(
+      `Ollama (local) 500: {"error":{"message":"llama-server process has terminated: exit status 1: error loading model: unknown model architecture: 'mllama'"}}`
+    ),
+    true,
+    "grinding through 37 more postings would produce this same line 37 more times"
+  );
+  assert.equal(isPermanentModelError("model 'llama3.1:8b' not found, try pulling it first"), true);
+  assert.equal(isPermanentModelError("this model does not support tools"), true);
+
+  // things that WILL differ next time must stay retryable
+  assert.equal(isPermanentModelError("429 Too Many Requests"), false);
+  assert.equal(isPermanentModelError("fetch failed"), false);
+  assert.equal(isPermanentModelError("context deadline exceeded"), false);
+  assert.equal(isPermanentModelError(""), false);
+});
+
 test("runner: JSON survives a model that answers and then explains itself", async () => {
   const { tryParseJson } = await import("../app/llm/runner.server");
 

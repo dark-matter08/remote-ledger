@@ -275,6 +275,48 @@ export async function ollamaReachable(baseUrl: string): Promise<boolean> {
   return up;
 }
 
+/**
+ * A failure the same request will keep hitting.
+ *
+ * A model the server cannot load does not become loadable on the next batch, so
+ * grinding through the remaining ones produces the identical 500 several times and
+ * buries the one line that matters. Callers check this to stop rather than retry.
+ */
+export function isPermanentModelError(message: string): boolean {
+  return /unknown model architecture|error loading model|llama-server process has terminated|model .*not found|no such model|does not support/i.test(
+    String(message || "")
+  );
+}
+
+/**
+ * Turn a provider's 500 into something a person can act on.
+ *
+ * Ollama answers a model it cannot load with the raw llama-server stderr, which names
+ * the architecture and nothing else — "unknown model architecture: 'mllama'" tells
+ * you neither which model nor what to do. The model is ours to name, and the fix is
+ * knowable from the shape of the error.
+ */
+function explainProviderError(label: string, provider: string, status: number, body: any, model: string): string {
+  const raw = String(body?.error?.message || body?.error || JSON.stringify(body || {})).slice(0, 400);
+
+  if (provider === "ollama") {
+    if (/unknown model architecture/i.test(raw)) {
+      const arch = /architecture:\s*'([^']+)'/i.exec(raw)?.[1];
+      return (
+        `Ollama cannot load "${model}"${arch ? ` — this build does not know the '${arch}' architecture` : ""}. ` +
+        `Update Ollama (\`brew upgrade ollama\` or ollama.com/download), or pick a model it can run: ` +
+        `\`ollama pull llama3.1:8b\`, then choose it in Settings → Runners. ` +
+        `A text model is the better fit here in any case — this app asks for JSON, never images.`
+      );
+    }
+    if (/model .*not found|no such model/i.test(raw))
+      return `Ollama has no model called "${model}". Pull it first: \`ollama pull ${model}\` — or pick one you already have in Settings → Runners.`;
+    if (/terminated|loading model/i.test(raw))
+      return `Ollama failed to start "${model}": ${raw}. Try \`ollama run ${model}\` in a terminal to see the full reason.`;
+  }
+  return `${label} ${status}: ${raw}`;
+}
+
 // --- OpenAI-compatible (OpenAI, OpenRouter, Groq, Mistral, Ollama, ...) -----
 
 class OpenAICompatAdapter implements RunnerAdapter {
@@ -345,7 +387,7 @@ class OpenAICompatAdapter implements RunnerAdapter {
       }),
     });
     const j: any = await res.json();
-    if (!res.ok) throw new Error(`${this.label} ${res.status}: ${JSON.stringify(j).slice(0, 300)}`);
+    if (!res.ok) throw new Error(explainProviderError(this.label, this.provider, res.status, j, model));
     const msg = j.choices?.[0]?.message ?? {};
     const text = msg.content ?? "";
     return {
