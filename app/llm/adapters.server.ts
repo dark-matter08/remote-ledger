@@ -438,6 +438,10 @@ class OpenRouterAdapter implements RunnerAdapter {
       needsKey: "openrouter_api_key",
       // the one API runner that can be given the live web — for a price
       web: !!getSecret("openrouter_api_key") && !!webEngine(),
+      // Distinct from web above: web means OpenRouter searches for us and bills for it,
+      // tools means we search and hand over what we found. The second costs nothing and
+      // is checkable, so a free model with tools is the better of the two.
+      tools: true,
       defaultModel: defaultFreeModelId(),
       detail: free
         ? `One key, every lab — including ${free} model${free === 1 ? "" : "s"} that cost nothing to run.`
@@ -446,7 +450,7 @@ class OpenRouterAdapter implements RunnerAdapter {
   }
 
   // primary + free fallbacks, so a 429 on the free pool is a detour, not a dead end
-  private modelChain(model: string, needsJson: boolean): string[] {
+  private modelChain(model: string, needsJson: boolean, needsTools = false): string[] {
     const chain = [model];
     const freeOnly = getSetting("openrouter_free_only") === "true";
     const configured = (getSetting("openrouter_fallbacks") || "")
@@ -463,6 +467,9 @@ class OpenRouterAdapter implements RunnerAdapter {
       if (chain.length >= OR_MAX_MODELS) break;
       if (chain.includes(m.id)) continue;
       if (needsJson && !m.jsonMode) continue; // don't fall back into a model that can't answer in JSON
+      // a model without tool support does not refuse a tool — it ignores it and
+      // answers from memory, which is the failure this whole path exists to avoid
+      if (needsTools && !m.tools) continue;
       chain.push(m.id);
     }
     return chain;
@@ -483,12 +490,14 @@ class OpenRouterAdapter implements RunnerAdapter {
     if (!cachedCatalog().length && isFreeModelId(model)) await warmCatalog();
 
     const known = cachedModel(model);
-    const chain = this.modelChain(model, !!req.json);
+    const chain = this.modelChain(model, !!req.json, !!req.tools?.length);
     const web = req.allowWeb ? webPlugin() : null;
-    const messages = [
-      ...(req.system ? [{ role: "system", content: req.system }] : []),
-      { role: "user", content: req.prompt },
-    ];
+    const messages = req.messages?.length
+      ? req.messages.map(toWireMessage)
+      : [
+          ...(req.system ? [{ role: "system", content: req.system }] : []),
+          { role: "user", content: req.prompt },
+        ];
 
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: "POST",
@@ -507,7 +516,20 @@ class OpenRouterAdapter implements RunnerAdapter {
         ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
         // only ask for JSON mode where the model actually supports it; elsewhere the
         // runner's tryParseJson pulls the object back out of prose
-        ...(req.json && (!known || known.jsonMode) ? { response_format: { type: "json_object" } } : {}),
+        // json mode only when no tools are on the table — asked for both, models answer
+        // with neither. The loop turns tools off on its final turn to collect the object.
+        ...(req.json && !req.tools?.length && (!known || known.jsonMode)
+          ? { response_format: { type: "json_object" } }
+          : {}),
+        ...(req.tools?.length
+          ? {
+              tools: req.tools.map((t) => ({
+                type: "function",
+                function: { name: t.name, description: t.description, parameters: t.parameters },
+              })),
+              tool_choice: "auto",
+            }
+          : {}),
         ...(web ? { plugins: [web] } : {}), // billed per search, never on a free-only key
         usage: { include: true }, // return real, post-discount cost
       }),
@@ -519,7 +541,8 @@ class OpenRouterAdapter implements RunnerAdapter {
     if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, model));
 
     const used = String(j.model || model);
-    const text = j.choices?.[0]?.message?.content ?? "";
+    const message = j.choices?.[0]?.message ?? {};
+    const text = message.content ?? "";
     const inTok = j.usage?.prompt_tokens ?? 0;
     const outTok = j.usage?.completion_tokens ?? 0;
     // OpenRouter reports the charge it actually made; fall back to catalogue rates,
@@ -529,6 +552,7 @@ class OpenRouterAdapter implements RunnerAdapter {
 
     return {
       text,
+      toolCalls: parseToolCalls(message),
       model: used,
       usage: {
         inTok,

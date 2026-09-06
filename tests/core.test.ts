@@ -1958,3 +1958,14 @@ test("upsertJobs: a model that answers with a list does not lose the job", async
   assert.equal(row.stack, "TypeScript, JavaScript, React", "a list is joined, not dropped");
   assert.equal(row.eligibility, "Remote, US");
 });
+
+test("openrouter: tools are offered, and the fallback chain keeps them", async () => {
+  const { adapterById } = await import("../app/llm/adapters.server");
+  const or = adapterById("openrouter-api")!;
+  const info = await or.info();
+  // OpenRouter has its own adapter class; teaching OpenAICompatAdapter about tools
+  // did nothing for it, and this is the guard against that regressing back
+  assert.equal(info.tools, true, "openrouter must advertise tool support");
+  // `web` is a different capability: the provider searching for us, and billing for it
+  assert.notEqual(info.tools, info.web, "tools and provider-side web are not the same thing");
+});
