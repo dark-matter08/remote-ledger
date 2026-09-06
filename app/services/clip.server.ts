@@ -59,7 +59,10 @@ async function readPosting(jd: string, fallbackCompany: string, fallbackRole: st
       `"high" means a strong stack match AND clearly eligible from ${loc}.`,
   });
 
-  const j = tryParseJson(r.text) || {};
+  const j = tryParseJson(r.text);
+  // A judgement nobody made is not a judgement of zero. Say so rather than filing
+  // the posting as a bad match the runner never actually assessed.
+  if (!j || typeof j !== "object") return null;
   const category = String(j.category || "").toLowerCase();
   return {
     company: String(j.company || "").trim() || fallbackCompany,
@@ -118,7 +121,10 @@ export async function enrichClip(o: {
 
     L("step", "Reading the posting: who is hiring, for what, and how well it fits you…");
     const read = await readPosting(text, o.company, o.role);
-    if (!read) return;
+    if (!read) {
+      L("error", "the runner did not answer with anything readable — the posting is saved in full, but you will have to score it yourself.");
+      return;
+    }
 
     // Keyed by the id it already has, so correcting the company or the role renames
     // the row instead of minting a second one beside it.

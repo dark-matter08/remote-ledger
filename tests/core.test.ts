@@ -1272,6 +1272,31 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("runner: JSON survives a model that answers and then explains itself", async () => {
+  const { tryParseJson } = await import("../app/llm/runner.server");
+
+  // the shape that used to return null: correct JSON, then a sentence about it.
+  // Trailing prose was only trimmed when the text did NOT start with a brace.
+  const withTail = `{ "company": "Fueled", "fit_score": 4 }\n\nThis is a poor match: the role is content design, not engineering.`;
+  assert.deepEqual(tryParseJson(withTail), { company: "Fueled", fit_score: 4 });
+
+  // and the explanation is allowed to contain braces of its own
+  assert.deepEqual(
+    tryParseJson(`{"a":1}\n\nNote: the shape is {a, b} in later versions.`),
+    { a: 1 }
+  );
+  // a brace inside a string must not close the object early
+  assert.deepEqual(tryParseJson(`{"note":"use } carefully","b":2} trailing`), { note: "use } carefully", b: 2 });
+
+  // the cases that already worked, still working
+  assert.deepEqual(tryParseJson('{"a":1}'), { a: 1 });
+  assert.deepEqual(tryParseJson('Here you go:\n```json\n{"a":1}\n```'), { a: 1 });
+  assert.deepEqual(tryParseJson('Sure — {"a":1} is the answer'), { a: 1 });
+  assert.deepEqual(tryParseJson('[{"a":1},{"a":2}] done'), [{ a: 1 }, { a: 2 }]);
+  assert.equal(tryParseJson("no json here at all"), null);
+  assert.equal(tryParseJson(""), null);
+});
+
 test("community: only boards the shipped list lacks are ever offered", async () => {
   const { addCompany, removeCompany, listCompanies } = await import("../app/services/ats.server");
   const { pendingBoardSuggestions } = await import("../app/services/contribute.server");

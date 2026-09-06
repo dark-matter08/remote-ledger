@@ -178,23 +178,63 @@ export async function runLLM(req: RunRequest): Promise<RunResult> {
   }
 }
 
+/**
+ * The first complete JSON value in a string, found by balancing brackets.
+ *
+ * Counting to the LAST closing brace is not the same thing: a model that answers and
+ * then explains itself often puts braces in the explanation, and the extra text is
+ * what breaks the parse in the first place. Quotes are tracked so a `}` inside a
+ * string cannot close the object early.
+ */
+function firstJsonValue(t: string): string | null {
+  const a = t.indexOf("[");
+  const o = t.indexOf("{");
+  const start = a === -1 ? o : o === -1 ? a : Math.min(a, o);
+  if (start === -1) return null;
+  const open = t[start];
+  const close = open === "{" ? "}" : "]";
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < t.length; i++) {
+    const c = t[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === open) depth++;
+    else if (c === close && --depth === 0) return t.slice(start, i + 1);
+  }
+  return null;
+}
+
+/**
+ * Pull the JSON out of whatever a model actually said.
+ *
+ * The hard case is not prose before the object — it is prose AFTER it. Asked for
+ * JSON only, a good model frequently answers correctly and then adds a sentence
+ * explaining its reasoning, and this used to return null for exactly that: the
+ * surrounding text was only trimmed when the answer did NOT begin with a brace, so
+ * the one shape that needed trimming was the one shape that never got it.
+ */
 export function tryParseJson(text: string): any {
   let t = (text || "").trim();
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) t = fence[1].trim();
-  if (!t.startsWith("[") && !t.startsWith("{")) {
-    const a = t.indexOf("["),
-      o = t.indexOf("{");
-    const start = a === -1 ? o : o === -1 ? a : Math.min(a, o);
-    if (start > 0) t = t.slice(start);
-    const end = Math.max(t.lastIndexOf("]"), t.lastIndexOf("}"));
-    if (end !== -1) t = t.slice(0, end + 1);
-  }
   try {
     return JSON.parse(t);
-  } catch {
-    return null;
+  } catch {}
+  const slice = firstJsonValue(t);
+  if (slice) {
+    try {
+      return JSON.parse(slice);
+    } catch {}
   }
+  return null;
 }
 
 // --- usage reporting -------------------------------------------------------

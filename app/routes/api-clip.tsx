@@ -77,6 +77,12 @@ export async function action({ request }: Route.ActionArgs) {
   if (jd) setJd(id, jd);
   ensureApplication(id);
   void enrichClip({ id, url, jd, jdHtml, company, role });
+
+  // The bookmarklet submits a form into a new tab, so a browser lands here asking for
+  // a page. Send it to the job it just saved; the extension, which asks for JSON,
+  // still gets JSON.
+  if ((request.headers.get("accept") || "").includes("text/html"))
+    return new Response(null, { status: 303, headers: { ...CORS, location: `/jobs/${encodeURIComponent(id)}` } });
   return Response.json({ ok: true, id }, { headers: CORS });
 }
 
