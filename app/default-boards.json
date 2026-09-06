@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Remotiko",
+    "url": "https://remotiko.com/",
+    "note": "remote roles open to Africa + worldwide"
+  },
+  {
+    "name": "Dynamite Jobs",
+    "url": "https://dynamitejobs.com/",
+    "note": "remote job board"
+  },
+  {
+    "name": "Dice",
+    "url": "https://www.dice.com/jobs",
+    "note": "robots.txt: /jobs and /job-detail are allowed; /jobs?q= and /jobs/?q= search URLs and /apply-redirect* are disallowed. Browse the /jobs listing and follow /job-detail links. Do not construct search-query URLs."
+  }
+]

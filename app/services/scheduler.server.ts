@@ -4,6 +4,7 @@
 import { getSetting } from "../sqlite.server";
 import { getMeta, trashStaleJobs } from "../db.server";
 import { runCrawl } from "./crawl.server";
+import { runDueCommunityShare } from "./contribute.server";
 import { runDueSources } from "./kb.server";
 import { runDueEmailSync } from "./email.server";
 
@@ -26,6 +27,8 @@ async function tick() {
     } catch (e) { console.error("[scheduler] stale sweep error:", e); }
     try { runDueSources(); } catch (e) { console.error("[scheduler] kb rescan error:", e); }
     try { runDueEmailSync(); } catch (e) { console.error("[scheduler] email sync error:", e); }
+    // opt-in, once a day, and a no-op for anyone who has not switched it on
+    try { await runDueCommunityShare(); } catch (e) { console.error("[scheduler] community share error:", e); }
     if (getSetting("scheduler_enabled") === "false") return;
     const hours = Number(getSetting("scheduler_interval_hours") || "4") || 4;
     const last = getMeta("last_crawl");

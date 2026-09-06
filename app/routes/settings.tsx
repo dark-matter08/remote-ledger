@@ -5,6 +5,7 @@ import { Form, redirect, useNavigation } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from "../services/contribute.server";
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
 import { getSetting, setSetting } from "../sqlite.server";
 import { listRunners } from "../llm/runner.server";
@@ -63,6 +64,12 @@ export async function loader() {
   );
   return {
     companies: listCompanies(),
+    community: {
+      on: getSetting("community_share") === "true",
+      lastSubmit: getSetting("community_last_submit"),
+      upstream: upstreamRepo()?.slug || null,
+      pending: pendingBoardSuggestions(),
+    },
     runners,
     modelOptions,
     keys: KEY_FIELDS.map((k) => ({ ...k, set: hasSecret(k.name) })),
@@ -176,6 +183,16 @@ export async function action({ request }: Route.ActionArgs) {
     setCompanyActive(Number(form.get("id")), String(form.get("active")) === "1");
     return { ok: true, msg: "Updated." };
   }
+  if (intent === "community-toggle") {
+    setSetting("community_share", form.get("community_share") ? "true" : "false");
+    return { ok: true, msg: form.get("community_share") ? "Daily sharing on. Boards only, and only ones you keep." : "Daily sharing off." };
+  }
+  if (intent === "community-submit") {
+    const urls = form.getAll("board").map(String);
+    if (!urls.length) return { ok: false, msg: "Pick at least one board to offer." };
+    const r = await submitBoardSuggestions(urls);
+    return { ok: r.ok, msg: r.prUrl ? `${r.message} — ${r.prUrl}` : r.message };
+  }
   if (intent === "company-bootstrap") {
     const r = bootstrapCompaniesFromJobs();
     return { ok: true, msg: `Scanned ${r.scanned} job(s), found ${r.boards} company board(s), added ${r.added} new.` };
@@ -188,7 +205,7 @@ const TABS = ["Runners", "Keys", "OpenRouter", "Scheduler", "Companies", "Profil
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -483,6 +500,68 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {tab === "Companies" && (
+        <div className="panel">
+          <h3>
+            Give a board back{" "}
+            {community.pending.length ? <span className="badge warn">{community.pending.length} to offer</span> : <span className="badge off">nothing new</span>}
+          </h3>
+          <p className="hint">
+            The list every install ships with is short because one person wrote it. If you are using a
+            board that is not in it, you can offer it back{community.upstream ? <> to <strong>{community.upstream}</strong></> : null} as a
+            pull request, opened from your own GitHub login for the maintainer to read and merge.
+          </p>
+
+          {community.pending.length === 0 ? (
+            <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+              Every board you track is already in the shipped list. Add one it does not have and it turns up here.
+            </p>
+          ) : (
+            <Form method="post">
+              <input type="hidden" name="intent" value="community-submit" />
+              {/* the whole payload, per board, before any of it is published */}
+              <table className="ledger-table">
+                <thead><tr><th></th><th>Board</th><th>What would be sent</th><th>Roles found</th></tr></thead>
+                <tbody>
+                  {community.pending.map((b: any) => (
+                    <tr key={b.url}>
+                      <td><input type="checkbox" name="board" value={b.url} defaultChecked={b.jobsFound > 0} /></td>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{b.name}</div>
+                        <div className="hint" style={{ margin: "3px 0 0", textTransform: "none", letterSpacing: 0 }}>{b.url}</div>
+                      </td>
+                      <td style={{ fontFamily: "var(--mono)", fontSize: 11, maxWidth: 420 }}>
+                        {b.note ? b.note : <span style={{ color: "var(--ink-faint)" }}>no note</span>}
+                      </td>
+                      <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{b.jobsFound}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "10px 0 12px" }}>
+                Exactly the four columns above leave this machine &mdash; name, address, note and count. Your
+                jobs, r&eacute;sum&eacute;, profile and keys are never read. The note is text you wrote for
+                yourself, so read it back before you send it: the pull request is public.
+              </p>
+              <button className="btn" disabled={saving}>{saving ? "Opening a pull request\u2026" : "Offer the ticked boards"}</button>
+            </Form>
+          )}
+
+          <Form method="post" style={{ borderTop: "1.5px solid var(--rule-faint)", marginTop: 18, paddingTop: 16 }}>
+            <input type="hidden" name="intent" value="community-toggle" />
+            <div className="checkrow">
+              <label><input type="checkbox" name="community_share" defaultChecked={community.on} /> Offer new boards automatically, once a day</label>
+            </div>
+            <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "10px 0 12px" }}>
+              Off by default. With it on, a board you keep and have not yet offered goes up as a pull request
+              once a day &mdash; same four fields, and only one open request at a time.
+              {community.lastSubmit ? <> Last offered {community.lastSubmit.slice(0, 10)}.</> : null}
+            </p>
+            <button className="ghost-btn" disabled={saving}>Save sharing setting</button>
+          </Form>
         </div>
       )}
 

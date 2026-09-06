@@ -1272,6 +1272,37 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("community: only boards the shipped list lacks are ever offered", async () => {
+  const { addCompany, removeCompany, listCompanies } = await import("../app/services/ats.server");
+  const { pendingBoardSuggestions } = await import("../app/services/contribute.server");
+  const { DEFAULT_BOARDS } = await import("../app/default-boards");
+
+  const shipped = DEFAULT_BOARDS[0];
+  // the same board with a trailing slash dropped is still that board
+  const dupe = addCompany({ name: shipped.name, careersUrl: shipped.url.replace(/\/+$/, ""), kind: "board" });
+  const novel = addCompany({ name: "Wellfound", careersUrl: "https://wellfound.com/jobs", kind: "board", note: "startup roles" });
+  assert.ok(dupe.id && novel.id);
+
+  try {
+    const urls = pendingBoardSuggestions().map((b) => b.url);
+    assert.ok(urls.includes("https://wellfound.com/jobs"), "a board the defaults lack is offered");
+    assert.ok(
+      !urls.some((u) => u.includes("remotiko")),
+      "a shipped board is not re-offered just because the url is punctuated differently"
+    );
+
+    const w = pendingBoardSuggestions().find((b) => b.name === "Wellfound")!;
+    // the payload is exactly these four fields — nothing here reaches for a job or a profile
+    assert.deepEqual(Object.keys(w).sort(), ["jobsFound", "name", "note", "url"]);
+    assert.equal(w.note, "startup roles");
+    assert.equal(typeof w.jobsFound, "number");
+  } finally {
+    for (const c of listCompanies() as any[])
+      if (c.name === "Wellfound" || (c.kind === "board" && c.careers_url === shipped.url.replace(/\/+$/, "")))
+        removeCompany(c.id);
+  }
+});
+
 test("github: a repo reference is recognised, a file path never is", async () => {
   const { parseRepoRef, looksLikeRepo } = await import("../app/services/github.server");
 

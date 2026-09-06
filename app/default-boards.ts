@@ -7,31 +7,19 @@
 //
 // `note` is not decoration — the careers crawl passes it to the agent verbatim as
 // that board's rules (see crawl.server.ts), which is how Dice's robots.txt gets
-// respected. Pure data, no imports, so the bootstrap in sqlite.server.ts can read it
-// without a cycle.
+// respected.
+//
+// The list itself lives in default-boards.json rather than in this file. Anyone
+// running the Ledger can offer a board back (see services/contribute.server.ts), and
+// a pull request that appends to a JSON array is three lines of data to read — where
+// one that rewrites TypeScript would mean generating source on a stranger's machine
+// and trusting it to still compile.
+import boards from "./default-boards.json";
+
 export interface DefaultBoard {
   name: string;
   url: string;
   note: string;
 }
 
-export const DEFAULT_BOARDS: DefaultBoard[] = [
-  {
-    name: "Remotiko",
-    url: "https://remotiko.com/",
-    note: "remote roles open to Africa + worldwide",
-  },
-  {
-    name: "Dynamite Jobs",
-    url: "https://dynamitejobs.com/",
-    note: "remote job board",
-  },
-  {
-    name: "Dice",
-    url: "https://www.dice.com/jobs",
-    note:
-      "robots.txt: /jobs and /job-detail are allowed; /jobs?q= and /jobs/?q= search URLs " +
-      "and /apply-redirect* are disallowed. Browse the /jobs listing and follow /job-detail " +
-      "links. Do not construct search-query URLs.",
-  },
-];
+export const DEFAULT_BOARDS: DefaultBoard[] = boards;
