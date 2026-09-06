@@ -47,7 +47,7 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TYPE_LABEL: Record<string, string> = { find: "Find new jobs", careers: "Company career pages", update: "Update descriptions", full: "Full refresh", scan: "Folder scan", email: "Email sync", match: "Match analysis", tailor: "Résumé tailor", cover: "Cover letter", prep: "Interview prep", answers: "Draft answers" };
+const TYPE_LABEL: Record<string, string> = { find: "Find new jobs", feeds: "Free job boards", careers: "Company career pages", update: "Update descriptions", full: "Full refresh", scan: "Folder scan", email: "Email sync", match: "Match analysis", tailor: "Résumé tailor", cover: "Cover letter", prep: "Interview prep", answers: "Draft answers" };
 
 export default function Crawl({ loaderData, actionData }: Route.ComponentProps) {
   const { runs, active, selected, logs, hasRunner } = loaderData;
@@ -81,9 +81,9 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
 
       <div className="panel">
         <h3>Run a crawl {active && <span className="badge warn">running #{active.id}</span>}</h3>
-        <p className="hint">Find pulls fresh roles from the web. Company career pages reads your tracked companies\u2019 own ATS feeds directly, which is exact and costs almost nothing. Update re-scrapes descriptions for jobs already on file. Full does both.</p>
+        <p className="hint">Find researches the open web, so it needs a runner that can actually browse \u2014 it stops rather than guess. Free job boards reads RemoteOK, Remotive, Himalayas and Jobicy straight from their public feeds, and Company career pages reads your tracked companies\u2019 own ATS feeds: both are exact, cost nothing to search, and work on any runner. Update re-scrapes descriptions for jobs already on file. Full does find and update.</p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          {(["find", "careers", "update", "full"] as CrawlType[]).map((t) => (
+          {(["find", "feeds", "careers", "update", "full"] as CrawlType[]).map((t) => (
             <Form method="post" key={t}>
               <input type="hidden" name="intent" value="start" />
               <input type="hidden" name="type" value={t} />
@@ -134,13 +134,25 @@ export default function Crawl({ loaderData, actionData }: Route.ComponentProps) 
         <h3>Crawl history</h3>
         {runs.length === 0 ? <p className="hint">No crawls yet.</p> : (
           <table className="ledger-table">
-            <thead><tr><th>#</th><th>When</th><th>Type</th><th>Status</th><th>New</th><th>Upd</th><th>Scraped</th><th>By</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>When</th><th>Type</th><th>Runner / model</th><th>Status</th><th>New</th><th>Upd</th><th>Scraped</th><th>By</th><th></th></tr></thead>
             <tbody>
               {runs.map((r: any) => (
                 <tr key={r.id} style={selected?.id === r.id ? { background: "var(--card)" } : undefined}>
                   <td>{r.id}</td>
                   <td>{r.started_at.slice(5, 16).replace("T", " ")}</td>
                   <td>{TYPE_LABEL[r.type] || r.type}</td>
+                  <td style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+                    {r.runner ? (
+                      <>
+                        {r.runner}
+                        {r.model ? (
+                          <div style={{ color: "var(--ink-faint)", marginTop: 2 }}>{r.model}</div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span style={{ color: "var(--ink-faint)" }}>—</span>
+                    )}
+                  </td>
                   <td><span className={`badge ${r.status === "done" ? "ok" : r.status === "error" ? "on" : "warn"}`}>{r.status}</span></td>
                   <td>{r.inserted}</td>
                   <td>{r.updated}</td>

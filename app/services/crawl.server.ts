@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runLLM, defaultRunnerId, runnerCanSearchWeb, tryParseJson, logExternalCall } from "../llm/runner.server";
-import { streamClaude } from "../llm/adapters.server";
+import { streamClaude, adapterById } from "../llm/adapters.server";
 import { getSetting } from "../sqlite.server";
 import {
   upsertJobs,
@@ -31,7 +31,7 @@ import {
 import { fetchAllFeeds } from "./feeds.server";
 import { webSearchAdvice } from "../llm/openrouter.server";
 
-export type CrawlType = "find" | "update" | "full" | "careers";
+export type CrawlType = "find" | "update" | "full" | "careers" | "feeds";
 
 export interface CrawlResult {
   ok: boolean;
@@ -479,6 +479,23 @@ async function runCareersCrawl(
   return { received, inserted: res.inserted, updated: res.updated, errors: errors + res.errors.length };
 }
 
+/**
+ * Put the runner and model on the run itself. Without it "found nothing" and "found
+ * nine things that were not real" are the same row in the history, and the one
+ * question worth asking of a bad run — what answered? — needs a join against
+ * llm_calls on a time window to answer.
+ */
+async function recordRunner(runId: number): Promise<void> {
+  try {
+    const runner = await defaultRunnerId();
+    if (!runner) return;
+    const model = getSetting(`model_${runner}`) || (await adapterById(runner)?.info())?.defaultModel || null;
+    updateCrawlRun(runId, { runner, model });
+  } catch {
+    // a run is not worth failing over its own bookkeeping
+  }
+}
+
 async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
@@ -488,8 +505,9 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const totals = { received: 0, inserted: 0, updated: 0, scraped: 0, errors: 0 };
   try {
     L("note", `Crawl started · type=${type}`);
+    await recordRunner(runId);
 
-    if (type === "find" || type === "full") {
+    if (type === "find" || type === "full" || type === "feeds") {
       const loc = getSetting("profile_location") || "remote";
       const stack = getSetting("profile_stack") || "software";
       const mode = (getSetting("crawl_mode") || "time") as "time" | "count";
@@ -497,19 +515,12 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       // verified-open roles collected this run, keyed by company--role (dedup across rounds)
       const collected = new Map<string, { job: any; jd: string; jdHtml: string }>();
       const keyOf = (j: any) => jobId(j.company, j.role);
+      // `full` carries on to the update pass when research is impossible, and must
+      // not then report "nothing verified" as if that were a second, separate failure
+      let skippedResearch = false;
 
-      // A runner with no web access cannot research anything. Asked to anyway it
-      // does not fail — it answers with roles that were never posted, and the whole
-      // run is spent watching verification throw them away. Read the feeds instead.
-      const canBrowse = await runnerCanSearchWeb();
-      if (!canBrowse) {
-        const runner = (await defaultRunnerId()) || "(none)";
-        // Say it plainly. Someone reading a run that found nothing needs to know this
-        // is a capability the runner does not have, not a crawl that went wrong.
-        L("note", `${runner} cannot reach the live web, so the research agent was not invoked. A chat model with no search tool does not refuse the job — it answers with roles that were never posted, and link verification then throws away every one.`);
-        if (runner === "openrouter-api") for (const line of webSearchAdvice()) L("note", line);
-        else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
-        L("reasoning", "Reading free public job feeds instead — keyless, exact, and nothing in them is imagined.");
+      if (type === "feeds") {
+        L("reasoning", "Reading the free public job boards — keyless, exact, and nothing in them is imagined. No agent is asked to find anything.");
         const fed = await findViaFeeds(loc, stack, ac.signal, L);
         totals.received += fed.received;
         totals.errors += fed.errors;
@@ -520,6 +531,24 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           totals.errors += dropped.length;
           for (const a of alive) collected.set(keyOf(a.job), a);
         }
+      } else if (!(await runnerCanSearchWeb())) {
+        // Find means research, and research means the live web. A model without it
+        // does not refuse the job — it answers with roles that were never posted,
+        // pointed at whatever careers page it can remember, and they survive link
+        // verification because a careers page is always live. Refusing is the only
+        // honest answer available here.
+        const runner = (await defaultRunnerId()) || "(none)";
+        L("error", `${runner} cannot reach the live web, so there is nothing here to research. Stopping rather than inventing roles that were never posted.`);
+        if (runner === "openrouter-api") for (const line of webSearchAdvice()) L("note", line);
+        else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
+        L("note", 'Free job boards and Company career pages both find real postings without a browsing model — either will work right now.');
+        if (type === "find") {
+          setMeta("last_crawl_status", "error");
+          updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "runner cannot reach the web", ...totals });
+          return { ok: false, runId, ...totals, message: "runner cannot reach the web" };
+        }
+        L("note", "Carrying on with the update pass.");
+        skippedResearch = true;
       } else if (mode === "count") {
         // GOAL MODE: keep searching (no time limit) until we have N verified roles.
         const target = Math.max(1, Math.min(25, Number(getSetting("crawl_target_count") || "5") || 5));
@@ -567,14 +596,14 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       // Persist whatever we verified (both modes). Trust nothing the agent claimed —
       // only these survived re-opening + following to a live final page.
       const aliveJobs = Array.from(collected.values()).map((a) => a.job);
-      if (!aliveJobs.length) {
+      if (!aliveJobs.length && !skippedResearch) {
         L("error", "No verified-open roles to save this run.");
         setMeta("last_crawl_status", "error");
-        if (type === "find") {
+        if (type !== "full") {
           updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "no verified jobs", ...totals });
           return { ok: false, runId, ...totals, message: "no verified jobs" };
         }
-      } else {
+      } else if (aliveJobs.length) {
         const res = upsertJobs(aliveJobs, now);
         totals.inserted = res.inserted;
         totals.updated = res.updated;
