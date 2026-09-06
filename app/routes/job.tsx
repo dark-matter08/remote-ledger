@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { redirect } from "react-router";
 import { Form, Link, useNavigation, useFetcher } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
@@ -15,6 +16,7 @@ import {
   setMeta,
   jobApplyActivity,
   answerPooledQuestion,
+  trashJob,
 } from "../db.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
@@ -25,7 +27,7 @@ import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
-import { RefreshCw, Check, X, Circle, Sparkles } from "lucide-react";
+import { RefreshCw, Check, X, Circle, Sparkles, Trash2 } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
 import { renderResumePdf } from "../resume/pdf.server";
@@ -108,6 +110,11 @@ export async function action({ request, params }: Route.ActionArgs) {
       return r.saved
         ? { ok: true, msg: `Fetched ${r.text.length} chars from the posting${r.html ? " (rich)" : ""}.` }
         : { error: `Couldn't read the posting: ${r.error || "no text found"}. Paste it manually.` };
+    }
+    if (intent === "trash") {
+      // deletes the row AND remembers it, so the next crawl cannot bring it back
+      trashJob(job.id, { reason: "not-interested", scope: "job" });
+      return redirect("/");
     }
     if (intent === "stage") {
       setStage(job.id, String(form.get("stage")) as Stage, {
@@ -219,7 +226,16 @@ export async function action({ request, params }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Overview", "Tailor", "Cover", "Apply", "Prep", "Application", "History"] as const;
+const TABS = ["Overview", "Guided Application", "Prep", "Application", "History"] as const;
+
+// The application, in the order it actually happens. Each step is a panel that
+// already existed as its own tab; what was missing was the sequence between them.
+const STEPS = [
+  { n: 1, title: "Analyze & match", hint: "What this posting wants, and where you already meet it." },
+  { n: 2, title: "Tailor", hint: "Pick the evidence, then build the résumé from it." },
+  { n: 3, title: "Cover letter", hint: "Optional — skip it and come back if the posting wants one." },
+  { n: 4, title: "Apply", hint: "Draft the answers, fill the form, mark it applied." },
+] as const;
 type Tab = (typeof TABS)[number];
 
 // A question the prefill could not answer truthfully. Answering it here writes to the
@@ -277,12 +293,30 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
   const { job, events, versions, profiles, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
   const [tab, setTab] = useState<Tab>("Overview");
+  const [step, setStep] = useState(1);
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const running = nav.formData?.get("intent")?.toString(); // which action is in flight
   const resumeVersions = versions.filter((v) => v.kind === "resume");
   const coverVersions = versions.filter((v) => v.kind === "cover-letter");
   const catCls = job.category === "high" ? "sh-high" : job.category === "medium" ? "sh-medium" : "sh-stretch";
+
+  // Progress is read from the work itself — a match that exists, a résumé that was
+  // built — so it cannot drift from reality or need repairing when it does.
+  const done: Record<number, boolean> = {
+    1: !!storedMatch,
+    2: resumeVersions.length > 0,
+    3: coverVersions.length > 0,
+    4: job.stage !== "saved",
+  };
+  const skipped = [1, 2, 3].filter((n) => !done[n]);
+  const stepTitle = (n: number) => STEPS.find((x) => x.n === n)!.title;
+
+  // Land on the first thing not done, so reopening a job resumes rather than restarts.
+  useEffect(() => {
+    if (tab === "Guided Application") setStep([1, 2, 3, 4].find((n) => !done[n]) ?? 4);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   return (
     <Shell>
@@ -299,6 +333,12 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <input type="hidden" name="stage" value="applied" />
             <button className="ghost-btn" disabled={job.stage !== "saved"}>Mark applied</button>
           </Form>
+          <Form method="post" style={{ display: "inline" }} onSubmit={(e) => { if (!confirm(`Trash ${job.company} — ${job.role}? It is deleted and blocked, so a crawl cannot re-add it.`)) e.preventDefault(); }}>
+            <input type="hidden" name="intent" value="trash" />
+            <button className="ghost-btn" disabled={busy} style={{ color: "var(--vermillion)" }}>
+              <Trash2 size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />Trash
+            </button>
+          </Form>
         </div>
       </div>
       <hr className="rule double" />
@@ -312,6 +352,29 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{t}</button>
         ))}
       </div>
+
+      {tab === "Guided Application" && (
+        <div className="panel" style={{ paddingBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch" }}>
+            {STEPS.map((st) => (
+              <button
+                key={st.n}
+                type="button"
+                onClick={() => setStep(st.n)}
+                className={`tab ${step === st.n ? "on" : ""}`}
+                style={{ flex: "1 1 160px", textAlign: "left", padding: "10px 12px" }}
+                title={st.hint}
+              >
+                <span style={{ opacity: 0.6 }}>{done[st.n] ? "✓" : st.n}</span>{" "}
+                {st.title}
+              </button>
+            ))}
+          </div>
+          <p className="hint" style={{ margin: "12px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+            {STEPS.find((x) => x.n === step)!.hint} Steps are not locked &mdash; skip what this posting does not need.
+          </p>
+        </div>
+      )}
 
       {tab === "Overview" && (
         <>
@@ -339,11 +402,14 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               </Form>
             </details>
           </div>
-          <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
         </>
       )}
 
-      {tab === "Tailor" && (
+      {tab === "Guided Application" && step === 1 && (
+        <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
+      )}
+
+      {tab === "Guided Application" && step === 2 && (
         <>
         <KbBuilder
           sources={kbSources}
@@ -401,7 +467,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </>
       )}
 
-      {tab === "Cover" && (
+      {tab === "Guided Application" && step === 3 && (
         <div className="panel">
           <h3>Cover letter</h3>
           <Form method="post"><input type="hidden" name="intent" value="cover" /><button className="btn" disabled={busy}>{running === "cover" ? "Writing…" : "Generate cover letter"}</button></Form>
@@ -417,7 +483,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </div>
       )}
 
-      {tab === "Apply" && (
+      {tab === "Guided Application" && step === 4 && (
         <div className="panel">
           <h3>Auto-apply assist</h3>
           <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
@@ -542,6 +608,33 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             </>
           ) : (
             <p className="hint" style={{ marginTop: 10 }}>No drafted answers yet.</p>
+          )}
+        </div>
+      )}
+
+      {tab === "Guided Application" && (
+        <div className="panel" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="ghost-btn" disabled={step === 1} onClick={() => setStep((n) => Math.max(1, n - 1))}>◂ Back</button>
+          <button className="btn" disabled={step === 4} onClick={() => setStep((n) => Math.min(4, n + 1))}>
+            Next: {stepTitle(Math.min(4, step + 1))} ▸
+          </button>
+          {step === 4 && (
+            <Form
+              method="post"
+              style={{ marginLeft: "auto" }}
+              onSubmit={(e) => {
+                // free movement, but not silent movement: say what was skipped once,
+                // at the only point where it stops being reversible
+                if (skipped.length && !confirm(`You have not done: ${skipped.map(stepTitle).join(", ")}.\n\nMark this applied anyway?`))
+                  e.preventDefault();
+              }}
+            >
+              <input type="hidden" name="intent" value="stage" />
+              <input type="hidden" name="stage" value="applied" />
+              <button className="btn" disabled={busy || job.stage !== "saved"}>
+                {job.stage === "saved" ? "Mark as applied" : `Already ${stageLabels[job.stage]}`}
+              </button>
+            </Form>
           )}
         </div>
       )}
