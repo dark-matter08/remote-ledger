@@ -18,7 +18,7 @@ import {
   answerPooledQuestion,
   trashJob,
 } from "../db.server";
-import { gapsForJob, fillGaps } from "../services/gaps.server";
+import { gapsForJob, coveredGaps, fillGaps } from "../services/gaps.server";
 import { STAGES, STAGE_LABEL, type Stage } from "../stages";
 import { listProfiles, getProfile, getDefaultProfile } from "../resume/profiles.server";
 import { kbBuildSources, kbAllSkills, rankKbForJob, buildResumeFromKb, type BuildInclude } from "../resume/build.server";
@@ -66,6 +66,10 @@ export async function loader({ params }: Route.LoaderArgs) {
     })(),
     storedMatch: getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!) : null,
     gaps: gapsForJob(
+      job.id,
+      getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!).missing || [] : []
+    ),
+    gapsCovered: coveredGaps(
       job.id,
       getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!).missing || [] : []
     ),
@@ -337,7 +341,7 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
 }
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, gaps, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
+  const { job, events, versions, profiles, gaps, gapsCovered, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
   const [tab, setTab] = useState<Tab>("Overview");
   const [step, setStep] = useState(1);
@@ -504,6 +508,20 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               <button className="btn" disabled={busy}>
                 {running === "kb-gap" ? "Writing to your knowledge base…" : "Add these to my knowledge base"}
               </button>
+              {gapsCovered.length > 0 && (
+                <details style={{ marginTop: 14 }}>
+                  <summary className="jd-edit-toggle">
+                    {gapsCovered.length} more the posting asked for, already covered
+                  </summary>
+                  <ul className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, marginTop: 8 }}>
+                    {gapsCovered.map((c: any) => (
+                      <li key={c.skill}>
+                        {c.skill} &mdash; matched by your <strong>{c.byTag}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </Form>
           </div>
         )}

@@ -1491,6 +1491,29 @@ test("runner: JSON survives a model that answers and then explains itself", asyn
   assert.deepEqual(tryParseJson('[{"a":1},{"a":2}] done'), [{ a: 1 }, { a: 2 }]);
   assert.equal(tryParseJson("no json here at all"), null);
   assert.equal(tryParseJson(""), null);
+
+  // Every JSON call in the app goes through here, and it silently discarded good
+  // answers until this session. It is worth being paranoid about.
+  assert.deepEqual(tryParseJson('  \n\t {"a":1}  \n '), { a: 1 }, "surrounding whitespace");
+  assert.deepEqual(tryParseJson('```\n{"a":1}\n```'), { a: 1 }, "unlabelled fence");
+  assert.deepEqual(tryParseJson('```json\n{"a":1}\n```\nAnd here is why.'), { a: 1 }, "fence then prose");
+  assert.deepEqual(tryParseJson('{"a":{"b":{"c":[1,2,{"d":3}]}}} trailing'), { a: { b: { c: [1, 2, { d: 3 }] } } }, "deep nesting");
+  assert.deepEqual(tryParseJson('{"s":"he said \\"}\\" to me"} after'), { s: 'he said "}" to me' }, "escaped quote before a brace in a string");
+  assert.deepEqual(tryParseJson('{"s":"c:\\\\path\\\\"} after'), { s: "c:\\path\\" }, "a string ending in an escaped backslash");
+  assert.deepEqual(tryParseJson('{"a":1}\n{"b":2}'), { a: 1 }, "two objects: the first one wins");
+  assert.deepEqual(tryParseJson('Note: [1,2] then {"a":1}'), [1, 2], "the first value, array or object");
+  assert.deepEqual(tryParseJson('{"unicode":"café ✓ 日本語"} done'), { unicode: "café ✓ 日本語" }, "non-ascii survives");
+  assert.deepEqual(tryParseJson('{"empty":{},"arr":[]} tail'), { empty: {}, arr: [] }, "empty containers");
+  assert.deepEqual(tryParseJson('{"n":-1.5e3,"t":true,"z":null} tail'), { n: -1500, t: true, z: null }, "numbers, booleans, null");
+
+  // malformed input must be null, never a throw — callers treat null as "no answer"
+  assert.equal(tryParseJson('{"a":1'), null, "unclosed object");
+  assert.equal(tryParseJson("{'a':1}"), null, "single quotes are not JSON");
+  assert.equal(tryParseJson('{"a":1,}'), null, "trailing comma");
+  assert.equal(tryParseJson("{"), null, "a lone brace");
+  assert.equal(tryParseJson("prose { not json } prose"), null, "brace-shaped prose");
+  assert.equal(tryParseJson(null as any), null, "null input");
+  assert.equal(tryParseJson(undefined as any), null, "undefined input");
 });
 
 test("community: only boards the shipped list lacks are ever offered", async () => {

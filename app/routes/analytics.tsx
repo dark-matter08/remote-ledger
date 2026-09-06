@@ -1,7 +1,7 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/analytics";
 import { Shell } from "../components/Shell";
-import { funnel, reminders, sourceStats } from "../db.server";
+import { funnel, reminders, sourceStats, channelStats} from "../db.server";
 import { STAGE_LABEL } from "../stages";
 
 export function meta(_: Route.MetaArgs) {
@@ -9,11 +9,12 @@ export function meta(_: Route.MetaArgs) {
 }
 
 export async function loader() {
-  return { funnel: funnel(), reminders: reminders(), sources: sourceStats() };
+  return {
+    channels: channelStats(), funnel: funnel(), reminders: reminders(), sources: sourceStats() };
 }
 
 export default function Analytics({ loaderData }: Route.ComponentProps) {
-  const { funnel: f, reminders: rem, sources } = loaderData;
+  const { funnel: f, reminders: rem, sources, channels } = loaderData;
   const stages = ["saved", "applied", "screening", "interview", "offer", "rejected", "withdrawn"] as const;
   const maxStage = Math.max(1, ...stages.map((s) => f.counts[s]));
 
@@ -47,8 +48,33 @@ export default function Analytics({ loaderData }: Route.ComponentProps) {
       </div>
 
       <div className="panel">
-        <h3>By source</h3>
-        <p className="hint">Where roles come from, and how many you've applied to / reached interview.</p>
+        <h3>By channel</h3>
+        <p className="hint">
+          How a role reached you, rather than who was hiring. Counted across every job, closed ones
+          included &mdash; an application to a posting that has since closed is the most informative row there is.
+        </p>
+        <table className="ledger-table">
+          <thead><tr><th>Channel</th><th>Found</th><th>Applied</th><th>Applied %</th><th>Interview+</th><th>Offer</th></tr></thead>
+          <tbody>
+            {channels.map((c: any) => (
+              <tr key={c.channel}>
+                <td>{c.channel}</td>
+                <td>{c.found}</td>
+                <td>{c.applied}</td>
+                <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink-faint)" }}>
+                  {c.found ? `${Math.round((c.applied / c.found) * 100)}%` : "—"}
+                </td>
+                <td>{c.interview}</td>
+                <td>{c.offer}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="panel">
+        <h3>By posting</h3>
+        <p className="hint">The raw source line on each posting. Useful for spotting one company or board carrying the ledger.</p>
         <table className="ledger-table">
           <thead><tr><th>Source</th><th>On file</th><th>Applied</th><th>Interview+</th></tr></thead>
           <tbody>

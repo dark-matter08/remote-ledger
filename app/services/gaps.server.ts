@@ -125,6 +125,35 @@ export function gapsForJob(jobId: string, missing: string[]): Gap[] {
   return out;
 }
 
+/**
+ * What the gap list decided NOT to show you, and which tag decided it.
+ *
+ * The containment rule is the newest and least battle-tested thing here: if a gap you
+ * expected stops appearing, this is the only way to see that "Headless CMS" swallowed
+ * it rather than the analysis never raising it.
+ */
+export function coveredGaps(jobId: string, missing: string[]): { skill: string; byTag: string }[] {
+  const db = getDb();
+  const have: string[] = [];
+  for (const i of db.prepare("SELECT tags FROM kb_items").all() as any[]) {
+    try {
+      for (const t of JSON.parse(i.tags || "[]")) have.push(String(t));
+    } catch {}
+  }
+  const waved = new Set(dismissedGaps(jobId).map(norm));
+  const out: { skill: string; byTag: string }[] = [];
+  const seen = new Set<string>();
+  for (const raw of missing || []) {
+    const skill = String(raw || "").trim();
+    if (!skill || waved.has(norm(skill)) || seen.has(norm(skill))) continue;
+    seen.add(norm(skill));
+    const gapWords = new Set(words(skill));
+    const tag = have.find((t) => covers(t, gapWords, skill));
+    if (tag) out.push({ skill, byTag: tag });
+  }
+  return out;
+}
+
 export interface FillResult {
   filled: { skill: string; entry: string }[];
   dismissed: string[];

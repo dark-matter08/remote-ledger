@@ -4,6 +4,7 @@
 import { getSetting } from "../sqlite.server";
 import { getMeta, trashStaleJobs } from "../db.server";
 import { runCrawl } from "./crawl.server";
+import { runDueBackup } from "./backup.server";
 import { runDueCommunityShare } from "./contribute.server";
 import { runDueSources } from "./kb.server";
 import { runDueEmailSync } from "./email.server";
@@ -25,6 +26,7 @@ async function tick() {
         if (r.trashed) console.log(`[scheduler] trashed ${r.trashed} stale job(s) (untouched ${days}+ days)`);
       }
     } catch (e) { console.error("[scheduler] stale sweep error:", e); }
+    try { runDueBackup(); } catch (e) { console.error("[scheduler] backup error:", e); }
     try { runDueSources(); } catch (e) { console.error("[scheduler] kb rescan error:", e); }
     try { runDueEmailSync(); } catch (e) { console.error("[scheduler] email sync error:", e); }
     // opt-in, once a day, and a no-op for anyone who has not switched it on
