@@ -82,7 +82,24 @@ async function readPosting(jd: string, fallbackCompany: string, fallbackRole: st
  * failure here leaves a saved job that is merely unenriched, which is what the
  * clipper produced on its best day before.
  */
-export async function enrichClip(o: {
+// Clips arrive as fast as someone can click, and each one can launch a browser and
+// make two model calls. Run them one behind the other: nothing here is waiting on a
+// response, and ten at once is ten Chromiums.
+let queue: Promise<void> = Promise.resolve();
+
+export function enrichClip(o: {
+  id: string;
+  url: string;
+  jd: string;
+  jdHtml: string;
+  company: string;
+  role: string;
+}): Promise<void> {
+  queue = queue.then(() => runEnrich(o)).catch(() => {});
+  return queue;
+}
+
+async function runEnrich(o: {
   id: string;
   url: string;
   jd: string;

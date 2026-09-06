@@ -13,5 +13,10 @@
     "name": "Dice",
     "url": "https://www.dice.com/jobs",
     "note": "robots.txt: /jobs and /job-detail are allowed; /jobs?q= and /jobs/?q= search URLs and /apply-redirect* are disallowed. Browse the /jobs listing and follow /job-detail links. Do not construct search-query URLs."
+  },
+  {
+    "name": "We Work Remotely",
+    "url": "https://weworkremotely.com/",
+    "note": "one of the oldest remote-only boards; robots.txt allows /remote-jobs and the category listings"
   }
 ]

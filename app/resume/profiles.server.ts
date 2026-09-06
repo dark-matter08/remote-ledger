@@ -76,6 +76,8 @@ export function saveProfile(opts: {
   raw_text?: string;
   source_file?: string;
   makeDefault?: boolean;
+  /** set when the guided flow assembles a profile for one posting */
+  builtForJobId?: string | null;
 }): string {
   const db = getDb();
   const now = new Date().toISOString();
@@ -83,13 +85,13 @@ export function saveProfile(opts: {
   const exists = db.prepare("SELECT 1 FROM resume_profiles WHERE id=?").get(id);
   if (exists) {
     db.prepare(
-      "UPDATE resume_profiles SET name=?, data_json=?, raw_text=COALESCE(?,raw_text), source_file=COALESCE(?,source_file), updated_at=? WHERE id=?"
-    ).run(opts.name, JSON.stringify(opts.data), opts.raw_text ?? null, opts.source_file ?? null, now, id);
+      "UPDATE resume_profiles SET name=?, data_json=?, raw_text=COALESCE(?,raw_text), source_file=COALESCE(?,source_file), built_for_job_id=COALESCE(?,built_for_job_id), updated_at=? WHERE id=?"
+    ).run(opts.name, JSON.stringify(opts.data), opts.raw_text ?? null, opts.source_file ?? null, opts.builtForJobId ?? null, now, id);
   } else {
     const count = (db.prepare("SELECT COUNT(*) n FROM resume_profiles").get() as any).n;
     db.prepare(
-      "INSERT INTO resume_profiles (id,name,is_default,data_json,raw_text,source_file,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)"
-    ).run(id, opts.name, count === 0 || opts.makeDefault ? 1 : 0, JSON.stringify(opts.data), opts.raw_text ?? null, opts.source_file ?? null, now, now);
+      "INSERT INTO resume_profiles (id,name,is_default,data_json,raw_text,source_file,built_for_job_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)"
+    ).run(id, opts.name, count === 0 || opts.makeDefault ? 1 : 0, JSON.stringify(opts.data), opts.raw_text ?? null, opts.source_file ?? null, opts.builtForJobId ?? null, now, now);
   }
   if (opts.makeDefault) setDefaultProfile(id);
   return id;

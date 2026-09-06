@@ -79,6 +79,9 @@ export function getDb(): Db {
   }
   // which process owns an in-flight run (see reconcileOrphans)
   try { ensureColumn(db, "crawl_runs", "owner_pid", "INTEGER"); } catch {}
+  // which posting a résumé profile was assembled for, so progress on the guided flow
+  // is a fact rather than a match on a name the user is free to change
+  try { ensureColumn(db, "resume_profiles", "built_for_job_id", "TEXT"); } catch {}
   // Which runner served a run. "It found nothing" and "it found nine things that
   // were not real" are the same row in the history until you can see what answered.
   try {

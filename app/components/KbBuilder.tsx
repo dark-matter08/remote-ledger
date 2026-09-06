@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Form, Link } from "react-router";
 import { ChevronDown } from "lucide-react";
 import { Select } from "./Select";
@@ -50,6 +50,7 @@ export function KbBuilder({
   busy,
   jobTitle,
   suggestedIds,
+  match,
 }: {
   sources: KbSourceView[];
   skills: string[];
@@ -59,9 +60,28 @@ export function KbBuilder({
   jobTitle?: string;
   /** pre-ticked because they scored as relevant to that role */
   suggestedIds?: number[];
+  /** step 1's answer: what this posting asked for and what it found on you */
+  match?: { matched?: string[]; missing?: string[]; atsKeywords?: string[] } | null;
 }) {
   const [picked, setPicked] = useState<Set<number>>(new Set(suggestedIds || []));
-  const [pickedSkills, setPickedSkills] = useState<Set<string>>(new Set());
+
+  // Step 1 works out which of your skills this posting actually asked for; leaving
+  // ninety chips unticked for you to find them again by eye is throwing that away.
+  // A skill is pre-ticked when the analysis matched it, or when it is a keyword the
+  // ATS will scan for and you have it.
+  const norm = (v: string) => v.trim().toLowerCase();
+  const wanted = useMemo(() => {
+    const m = new Set((match?.matched || []).map(norm));
+    const ats = new Set((match?.atsKeywords || []).map(norm));
+    const why = new Map<string, string>();
+    for (const k of skills) {
+      if (m.has(norm(k))) why.set(k, "matched");
+      else if (ats.has(norm(k))) why.set(k, "ats");
+    }
+    return why;
+  }, [match, skills]);
+
+  const [pickedSkills, setPickedSkills] = useState<Set<string>>(new Set(wanted.keys()));
   const [mode, setMode] = useState<"new" | "merge">("new");
   const [include, setInclude] = useState<"base-plus" | "kb-only">("base-plus");
 
@@ -135,10 +155,22 @@ export function KbBuilder({
 
           {skills.length > 0 && (
             <div className="field" style={{ marginTop: 16 }}>
-              <label>Skills</label>
+              <label>
+                Skills{" "}
+                {wanted.size > 0 && (
+                  <span style={{ textTransform: "none", letterSpacing: 0, color: "var(--ink-faint)" }}>
+                    — {wanted.size} pre-ticked from the match analysis
+                  </span>
+                )}
+              </label>
               <div className="kb-tags">
                 {skills.map((k) => (
-                  <label key={k} className="kb-tag" style={{ cursor: "pointer", opacity: pickedSkills.has(k) ? 1 : 0.55 }}>
+                  <label
+                    key={k}
+                    className="kb-tag"
+                    style={{ cursor: "pointer", opacity: pickedSkills.has(k) ? 1 : 0.55 }}
+                    title={wanted.get(k) === "matched" ? "The analysis matched this against the posting" : wanted.get(k) === "ats" ? "A keyword this posting's ATS will scan for" : undefined}
+                  >
                     <input
                       type="checkbox"
                       name="skill"
@@ -148,6 +180,9 @@ export function KbBuilder({
                       style={{ marginRight: 6 }}
                     />
                     {k}
+                    {/* say why it is ticked, so ticking is a decision and not a guess */}
+                    {wanted.get(k) === "matched" && <span className="badge ok" style={{ marginLeft: 6, fontSize: 9 }}>match</span>}
+                    {wanted.get(k) === "ats" && <span className="badge warn" style={{ marginLeft: 6, fontSize: 9 }}>ats</span>}
                   </label>
                 ))}
               </div>

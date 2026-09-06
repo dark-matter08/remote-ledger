@@ -117,7 +117,15 @@ export function updateLogTail(lines = 14): string[] {
  * written. `to` must match the commit the caller was actually offered, so a stray
  * request cannot roll the machine onto whatever happens to be on origin right now.
  */
+// The child pulls, reinstalls and rebuilds. Two of them racing would have two
+// git operations and two builds writing the same tree. Cleared by the restart the
+// update itself causes; the timeout is for the case where it never gets that far.
+let applying = 0;
+const APPLY_LOCK_MS = 10 * 60_000;
+
 export async function applyUpdate(to: string): Promise<{ ok: boolean; message: string }> {
+  if (applying && Date.now() - applying < APPLY_LOCK_MS)
+    return { ok: false, message: "an update is already running — watch logs/update.log" };
   const state = await checkForUpdate(true);
   if (state.error) return { ok: false, message: state.error };
   if (!state.behind) return { ok: false, message: "already up to date" };
@@ -133,6 +141,7 @@ export async function applyUpdate(to: string): Promise<{ ok: boolean; message: s
     stdio: ["ignore", out, out],
   });
   child.unref();
+  applying = Date.now();
   lastFetch = 0; // the next check refetches rather than trusting a stale origin
   return { ok: true, message: `updating to ${state.latest} — the app restarts in a moment` };
 }
