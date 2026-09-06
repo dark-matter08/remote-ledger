@@ -780,6 +780,13 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
   border-bottom: 1px solid var(--rule-faint);
 }
 .fsel-menu li:last-child { border-bottom: 0; }
+/* A trigger sized to its column cannot also be sized to its longest option. Where
+   the options are what you are reading — picking a job out of a list of them — the
+   menu grows to fit and opens leftward, into space the table already has. */
+.fsel.fsel-wide .fsel-menu { left: auto; right: 0; width: max-content; min-width: 100%; max-width: 640px; }
+/* A job title can outrun any cap, so the longest ones wrap rather than being cut
+   off mid-word. Truncating the option you are trying to read defeats the menu. */
+.fsel.fsel-wide .fsel-menu li { white-space: normal; line-height: 1.45; align-items: flex-start; }
 .fsel-menu li:hover { background: var(--ink); color: var(--paper); }
 .fsel-menu li[aria-selected="true"] { font-weight: 600; }
 .fsel-menu li.disabled { color: var(--rule-faint); cursor: not-allowed; }

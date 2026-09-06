@@ -16,6 +16,7 @@ export function Select({
   onChange,
   options,
   placeholder = "Select…",
+  className = "",
 }: {
   name: string;
   defaultValue?: string;
@@ -23,6 +24,8 @@ export function Select({
   onChange?: (value: string) => void;
   options: Opt[];
   placeholder?: string;
+  /** "fsel-wide" lets the open menu grow past the trigger, leftward. */
+  className?: string;
 }) {
   const [internal, setInternal] = useState(defaultValue ?? options[0]?.value ?? "");
   const value = controlled !== undefined ? controlled : internal;
@@ -47,7 +50,7 @@ export function Select({
 
   const cur = options.find((o) => o.value === value);
   return (
-    <div className="fsel" data-open={open ? "" : undefined} ref={ref}>
+    <div className={`fsel ${className}`.trim()} data-open={open ? "" : undefined} ref={ref}>
       <input type="hidden" name={name} value={value} />
       <button
         type="button"

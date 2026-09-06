@@ -478,6 +478,14 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
             <Form method="post">
               <input type="hidden" name="intent" value="kb-gap" />
               <table className="ledger-table">
+                {/* auto layout sized this column from whatever the analysis happened to
+                    write: 600px of empty box on one posting, 200px and a truncated job
+                    title on the next. The picker is the point, so it gets a fixed width
+                    and the skill text takes the rest. */}
+                <colgroup>
+                  <col />
+                  <col style={{ width: 420 }} />
+                </colgroup>
                 <thead><tr><th>Skill</th><th>Where did you do this?</th></tr></thead>
                 <tbody>
                   {gaps.map((g: any) => (
@@ -488,6 +496,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                       </td>
                       <td>
                         <Select
+                          className="fsel-wide"
                           name={`gap:${g.skill}`}
                           defaultValue=""
                           options={[
