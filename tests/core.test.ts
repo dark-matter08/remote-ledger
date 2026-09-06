@@ -1862,3 +1862,14 @@ test("ollama runner: available means the daemon answers, not that a key is absen
     resetOllamaProbe();
   }
 });
+
+test("web tools: a search page is not a posting", async () => {
+  const { urlKey } = await import("../app/job-identity");
+  // the exact pages a 7B model fetched and then reported as jobs
+  assert.equal(urlKey("https://www.ziprecruiter.com/Jobs/Remote-Typescript"), null, "an aggregator search page has no posting id");
+  assert.equal(urlKey("https://www.indeed.com/q-typescript-l-remote-jobs.html"), null);
+  assert.equal(urlKey("https://acme.com/careers"), null);
+  // a real posting carries the board's own id
+  assert.ok(urlKey("https://jobs.ashbyhq.com/reedsy/835c9c7b-8b0a-499c-95c6-251c9aea3246"));
+  assert.ok(urlKey("https://job-boards.greenhouse.io/xapo61/jobs/7673273003"));
+});
