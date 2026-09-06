@@ -57,8 +57,9 @@ export function Sidebar() {
   const [pinned, setPinned] = useState(false);
   const [theme, setTheme] = useState<"paper" | "night">("paper");
   const [pending, setPending] = useState(0);
-  const [update, setUpdate] = useState<{ behind: number; latest: string; subject: string } | null>(null);
+  const [update, setUpdate] = useState<{ behind: number; latest: string; current: string; subject: string } | null>(null);
   const [updating, setUpdating] = useState(false);
+  const [problem, setProblem] = useState("");
 
   useEffect(() => {
     setPinned(localStorage.getItem("ledger-sidebar") === "pinned");
@@ -92,19 +93,35 @@ export function Sidebar() {
   }, []);
 
   // The server goes down partway through its own answer, so there is nothing to
-  // await. Wait for it to answer again, then reload onto the new build.
+  // await — but it is also UP for nearly all of the update, so "does it respond"
+  // proves nothing either. The commit it reports is the only thing that moves only
+  // once the new code is actually the code being served.
   async function takeUpdate() {
     if (!update || updating) return;
     setUpdating(true);
+    setProblem("");
+    const from = update.current;
     const body = new FormData();
     body.set("to", update.latest);
     const r = await fetch("/api/update", { method: "POST", body }).catch(() => null);
-    if (!r?.ok) { setUpdating(false); return; }
+    const said = await r?.json().catch(() => null);
+    if (!r?.ok) {
+      setUpdating(false);
+      setProblem(said?.message || "the update was refused");
+      return;
+    }
+
     const started = Date.now();
     const poll = setInterval(async () => {
-      if (Date.now() - started > 5 * 60_000) { clearInterval(poll); setUpdating(false); return; }
-      const alive = await fetch("/api/update", { cache: "no-store" }).then((x) => x.ok).catch(() => false);
-      if (alive) { clearInterval(poll); location.reload(); }
+      // a refused connection here is the restart itself; keep waiting
+      const d = await fetch("/api/update?log=1", { cache: "no-store" }).then((x) => x.json()).catch(() => null);
+      if (d?.current && d.current !== from) { clearInterval(poll); location.reload(); return; }
+      if (Date.now() - started > 6 * 60_000) {
+        clearInterval(poll);
+        setUpdating(false);
+        // the child is detached, so this file is its only account of itself
+        setProblem((d?.log || []).slice(-3).join(" · ") || "the update did not finish — see logs/update.log");
+      }
     }, 3000);
   }
 
@@ -149,20 +166,22 @@ export function Sidebar() {
       </nav>
 
       <div className="sb-bottom">
-        {update && (
+        {(update || problem) && (
           <button
             className="sb-item"
             onClick={takeUpdate}
             disabled={updating}
-            style={{ color: "var(--vermillion)" }}
+            style={{ color: problem ? "var(--ochre)" : "var(--vermillion)" }}
             title={
-              updating
-                ? "Updating — the app restarts in a moment"
-                : `${update.behind} update(s) waiting: ${update.subject}. Click to take them and restart.`
+              problem
+                ? `${problem} — click to try again`
+                : updating
+                  ? "Updating — this takes a minute; the page reloads itself when the new build is serving"
+                  : `${update!.behind} update(s) waiting: ${update!.subject}. Click to take them and restart.`
             }
           >
             <span className="sb-ico"><ArrowUpCircle size={18} strokeWidth={1.7} /></span>
-            <span className="sb-label">{updating ? "Updating…" : "Update available"}</span>
+            <span className="sb-label">{updating ? "Updating…" : problem ? "Update failed" : "Update available"}</span>
             {!updating && <span className="sb-badge" />}
           </button>
         )}

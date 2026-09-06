@@ -8,7 +8,7 @@
 // applying an update runs exactly that command — so what the UI offers and what the
 // script does cannot drift apart.
 import { spawn, spawnSync } from "node:child_process";
-import { openSync, mkdirSync } from "node:fs";
+import { openSync, mkdirSync, statSync, readSync, closeSync } from "node:fs";
 import { resolve } from "node:path";
 
 export interface UpdateState {
@@ -73,6 +73,28 @@ export async function checkForUpdate(force = false): Promise<UpdateState> {
   };
   memo = { at: Date.now(), state };
   return state;
+}
+
+/**
+ * The tail of the last update attempt.
+ *
+ * When one fails there is nothing on screen to say why — the child is detached, so
+ * its only account of itself is this file. Read from the end: it is appended to
+ * across every update this install has ever run.
+ */
+export function updateLogTail(lines = 14): string[] {
+  try {
+    const path = resolve(process.cwd(), "logs", "update.log");
+    const size = statSync(path).size;
+    const len = Math.min(size, 8192);
+    const fd = openSync(path, "r");
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    closeSync(fd);
+    return buf.toString("utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-lines);
+  } catch {
+    return [];
+  }
 }
 
 /**
