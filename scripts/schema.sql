@@ -202,6 +202,8 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   errors     INTEGER NOT NULL DEFAULT 0,
   trigger    TEXT,                              -- manual | scheduler | cli
   note       TEXT,
+  runner     TEXT,                              -- which runner served the run
+  model      TEXT,                              -- and on what model
   owner_pid  INTEGER                            -- pid that owns an in-flight run
 );
 CREATE TABLE IF NOT EXISTS crawl_logs (

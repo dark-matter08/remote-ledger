@@ -235,6 +235,23 @@ const ATS_HOST = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|breezy\.h
 
 const hostOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 
+// A company's careers INDEX is not an application either — it is the aggregator
+// problem wearing the employer's own domain. It matters because a model with no web
+// access, asked to find roles, answers with companies it remembers and a guessed
+// careers URL for each: plaid.com/careers, render.com/careers, vercel.com/careers.
+// Those pages are always live, so liveness alone waves every one of them through.
+// A real posting has a slug; an index is the bare word.
+const INDEX_WORDS = /^(careers?|jobs?|join|join-us|work-with-us|working-here|opportunities|open-roles|open-positions|positions|vacancies|hiring|life|company|about|en|us)$/i;
+
+export function isCareersIndex(u: string): boolean {
+  let path: string;
+  try { path = new URL(u).pathname; } catch { return false; }
+  const parts = path.split("/").filter(Boolean).filter((p) => !/^index\.html?$/i.test(p));
+  // the root of a careers site, or one level of nesting under it (/company/careers)
+  if (!parts.length || parts.length > 2) return false;
+  return parts.every((p) => INDEX_WORDS.test(p)) && /careers?|jobs?|join|hiring|positions|roles|vacancies|opportunities/i.test(parts[parts.length - 1]);
+}
+
 // Runs in the browser: pick the best outbound "Apply" link on an aggregator page.
 const FIND_APPLY = () => {
   const here = location.hostname.replace(/^www\./, "");
@@ -329,6 +346,8 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
     if (DEAD.test(clean.slice(0, 6000))) return { ok: false, status, finalUrl, reason: "posting closed / no longer open", hops, jdText: "", jdHtml: "" };
     if (AGGREGATOR.test(hostOf(finalUrl)))
       return { ok: false, status, finalUrl, reason: `could not resolve a final application link off ${hostOf(finalUrl)}`, hops, jdText: "", jdHtml: "" };
+    if (isCareersIndex(finalUrl))
+      return { ok: false, status, finalUrl, reason: "that is a careers index, not a posting", hops, jdText: "", jdHtml: "" };
     if (clean.length < 220) return { ok: false, status, finalUrl, reason: `page too thin (${clean.length} chars) — likely dead/redirect`, hops, jdText: "", jdHtml: "" };
 
     return { ok: true, status, finalUrl, reason: "", hops, jdText: jdText.replace(/\s+\n/g, "\n").trim().slice(0, 16000), jdHtml: sanitizeJdHtml(jdHtml) };

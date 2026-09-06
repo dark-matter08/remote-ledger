@@ -79,6 +79,13 @@ export function getDb(): Db {
   }
   // which process owns an in-flight run (see reconcileOrphans)
   try { ensureColumn(db, "crawl_runs", "owner_pid", "INTEGER"); } catch {}
+  // Which runner served a run. "It found nothing" and "it found nine things that
+  // were not real" are the same row in the history until you can see what answered.
+  try {
+    ensureColumn(db, "crawl_runs", "runner", "TEXT");
+    ensureColumn(db, "crawl_runs", "model", "TEXT");
+    backfillCrawlRunners(db);
+  } catch {}
   try { ensureColumn(db, "apply_sessions", "owner_pid", "INTEGER"); } catch {}
   seedDefaultBoards(db);
   reconcileOrphans(db);
@@ -118,6 +125,25 @@ function seedDefaultBoards(db: Db) {
   db.prepare(
     "INSERT INTO settings (key,value) VALUES ('seeded_boards',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
   ).run(JSON.stringify([...done]));
+}
+
+// Older runs never recorded a runner, but llm_calls did — and a call inside a run's
+// own window belongs to it. Cheaper than leaving the whole history blank, and it
+// only ever fills a column that is still null.
+function backfillCrawlRunners(db: Db) {
+  db.exec(`
+    UPDATE crawl_runs SET
+      runner = COALESCE(runner, (
+        SELECT c.runner FROM llm_calls c
+        WHERE c.ts >= crawl_runs.started_at
+          AND c.ts <= COALESCE(crawl_runs.ended_at, crawl_runs.started_at)
+        ORDER BY c.ts LIMIT 1)),
+      model = COALESCE(model, (
+        SELECT c.model FROM llm_calls c
+        WHERE c.ts >= crawl_runs.started_at
+          AND c.ts <= COALESCE(crawl_runs.ended_at, crawl_runs.started_at)
+        ORDER BY c.ts LIMIT 1))
+    WHERE runner IS NULL AND ended_at IS NOT NULL`);
 }
 
 // A PID we recorded may belong to a process that has since exited. EPERM means it

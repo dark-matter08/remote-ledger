@@ -1272,6 +1272,35 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("verify: a careers index is not a posting, whoever produced it", async () => {
+  const { isCareersIndex } = await import("../app/services/scrape.server");
+
+  // exactly what a model with no web access answers with: companies it remembers,
+  // and a guessed careers URL for each. Every one of these was saved as a real job.
+  for (const u of [
+    "https://plaid.com/careers/",
+    "https://mercury.com/jobs",
+    "https://render.com/careers",
+    "https://vercel.com/careers",
+    "https://www.prisma.io/company/careers",
+    "https://www.databricks.com/company/careers",
+    "https://planetscale.com/careers",
+  ])
+    assert.equal(isCareersIndex(u), true, `${u} is an index, not an application`);
+
+  // a real posting has a slug, and an ATS link is never an index
+  for (const u of [
+    "https://vercel.com/careers/senior-engineer-4821",
+    "https://mercury.com/jobs/software-engineer-backend",
+    "https://boards.greenhouse.io/plaid/jobs/5312345",
+    "https://jobs.lever.co/oowlish/abc-def",
+    "https://jobs.ashbyhq.com/railway/aaa",
+    "https://example.com/",
+    "not a url",
+  ])
+    assert.equal(isCareersIndex(u), false, `${u} must still be allowed through`);
+});
+
 test("openrouter: the advice names the cheapest model that can actually search", async () => {
   const { writeFileSync } = await import("node:fs");
   const { dirname, resolve: r } = await import("node:path");

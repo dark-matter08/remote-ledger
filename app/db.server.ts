@@ -716,6 +716,7 @@ export interface CrawlRun {
   id: number; type: string; started_at: string; ended_at: string | null; status: string;
   received: number; inserted: number; updated: number; scraped: number; errors: number;
   trigger: string | null; note: string | null;
+  runner: string | null; model: string | null;
 }
 
 export function createCrawlRun(type: string, trigger = "manual"): number {
