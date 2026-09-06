@@ -532,11 +532,20 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       // verified-open roles collected this run, keyed by company--role (dedup across rounds)
       const collected = new Map<string, { job: any; jd: string; jdHtml: string }>();
       const keyOf = (j: any) => jobId(j.company, j.role);
-      // `full` carries on to the update pass when research is impossible, and must
-      // not then report "nothing verified" as if that were a second, separate failure
-      let skippedResearch = false;
 
-      if (type === "feeds") {
+      // A runner that cannot browse is not a reason to stop. It is a reason to take
+      // the postings from somewhere the app fetches itself — which is the better
+      // source anyway: the boards are exact, and nothing in them is imagined. The old
+      // behaviour refused the run and told you to go and pick another mode by hand,
+      // which is a worse version of doing it for you.
+      const canSearch = await runnerCanSearchWeb();
+      if (type === "feeds" || !canSearch) {
+        if (!canSearch && type !== "feeds") {
+          const runner = (await defaultRunnerId()) || "(none)";
+          L("note", `${runner} cannot reach the live web, so there is nothing to research — reading the free job boards instead, where every posting is real.`);
+          if (runner === "openrouter-api") for (const line of await webSearchAdvice()) L("note", line);
+          else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
+        }
         L("reasoning", "Reading the free public job boards — keyless, exact, and nothing in them is imagined. No agent is asked to find anything.");
         const fed = await findViaFeeds(loc, stack, ac.signal, L);
         totals.received += fed.received;
@@ -548,24 +557,6 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           totals.errors += dropped.length;
           for (const a of alive) collected.set(keyOf(a.job), a);
         }
-      } else if (!(await runnerCanSearchWeb())) {
-        // Find means research, and research means the live web. A model without it
-        // does not refuse the job — it answers with roles that were never posted,
-        // pointed at whatever careers page it can remember, and they survive link
-        // verification because a careers page is always live. Refusing is the only
-        // honest answer available here.
-        const runner = (await defaultRunnerId()) || "(none)";
-        L("error", `${runner} cannot reach the live web, so there is nothing here to research. Stopping rather than inventing roles that were never posted.`);
-        if (runner === "openrouter-api") for (const line of await webSearchAdvice()) L("note", line);
-        else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
-        L("note", 'Free job boards and Company career pages both find real postings without a browsing model — either will work right now.');
-        if (type === "find") {
-          setMeta("last_crawl_status", "error");
-          updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "runner cannot reach the web", ...totals });
-          return { ok: false, runId, ...totals, message: "runner cannot reach the web" };
-        }
-        L("note", "Carrying on with the update pass.");
-        skippedResearch = true;
       } else if (mode === "count") {
         // GOAL MODE: keep searching (no time limit) until we have N verified roles.
         const target = Math.max(1, Math.min(25, Number(getSetting("crawl_target_count") || "5") || 5));
@@ -613,7 +604,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       // Persist whatever we verified (both modes). Trust nothing the agent claimed —
       // only these survived re-opening + following to a live final page.
       const aliveJobs = Array.from(collected.values()).map((a) => a.job);
-      if (!aliveJobs.length && !skippedResearch) {
+      if (!aliveJobs.length) {
         L("error", "No verified-open roles to save this run.");
         setMeta("last_crawl_status", "error");
         if (type !== "full") {
