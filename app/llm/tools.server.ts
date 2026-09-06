@@ -68,7 +68,16 @@ export class FetchLedger {
 function normalise(u: string): string {
   try {
     const url = new URL(String(u).trim());
-    return `${url.protocol}//${url.hostname.toLowerCase().replace(/^www\./, "")}${url.pathname.replace(/\/+$/, "")}${url.search}`;
+    // Decode the path. A model echoes back the readable form of a URL it was shown —
+    // ".../Scale Army Careers/..." for a link we fetched as ".../Scale%20Army%20Careers/..."
+    // — and comparing the two raw would drop a posting it genuinely opened.
+    let path = url.pathname;
+    try {
+      path = decodeURIComponent(path);
+    } catch {
+      // a stray % that is not an escape; the raw path is still comparable
+    }
+    return `${url.protocol}//${url.hostname.toLowerCase().replace(/^www\./, "")}${path.replace(/\/+$/, "")}${url.search}`;
   } catch {
     return String(u).trim();
   }

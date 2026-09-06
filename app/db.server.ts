@@ -484,6 +484,21 @@ function blockIndex() {
   };
 }
 
+/**
+ * A model-authored field, as text.
+ *
+ * The crawl feeds model output straight in here, and a model asked for a "stack"
+ * string will sometimes answer with ["TypeScript", "JavaScript"] instead. Calling
+ * .trim() on that threw, and the whole posting — correctly found, fetched and
+ * verified — was rejected on the last step for a formatting preference.
+ */
+function text(v: unknown): string {
+  if (typeof v === "string") return v.trim();
+  if (Array.isArray(v)) return v.map(text).filter(Boolean).join(", ");
+  if (v == null || typeof v === "object") return "";
+  return String(v).trim();
+}
+
 export function upsertJobs(
   jobs: any[],
   now = new Date().toISOString()
@@ -508,10 +523,10 @@ export function upsertJobs(
   transaction(() => {
     for (const raw of jobs) {
       try {
-        const company = (raw.company || "").trim();
-        const role = (raw.role || "").trim();
-        const category = (raw.category || "").trim().toLowerCase();
-        const apply_url = (raw.apply_url || raw.url || "").trim();
+        const company = text(raw.company);
+        const role = text(raw.role);
+        const category = text(raw.category).toLowerCase();
+        const apply_url = text(raw.apply_url) || text(raw.url);
         if (!company || !role) throw new Error("missing company/role");
         if (!VALID_CATEGORY.has(category)) throw new Error(`bad category "${category}"`);
         if (!/^https?:\/\//.test(apply_url)) throw new Error("apply_url must be http(s)");
@@ -553,13 +568,13 @@ export function upsertJobs(
           role,
           category,
           fit_score: fit,
-          stack: (raw.stack || "").trim() || null,
-          eligibility: (raw.eligibility || "").trim() || null,
-          seniority: (raw.seniority || "").trim() || null,
+          stack: text(raw.stack) || null,
+          eligibility: text(raw.eligibility) || null,
+          seniority: text(raw.seniority) || null,
           apply_url,
           url_key,
-          source: (raw.source || "").trim() || null,
-          closes_at: (raw.closes_at || "").trim() || null,
+          source: text(raw.source) || null,
+          closes_at: text(raw.closes_at) || null,
           now,
         };
         if (hit) {

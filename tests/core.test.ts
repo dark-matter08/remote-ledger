@@ -1873,3 +1873,88 @@ test("web tools: a search page is not a posting", async () => {
   assert.ok(urlKey("https://jobs.ashbyhq.com/reedsy/835c9c7b-8b0a-499c-95c6-251c9aea3246"));
   assert.ok(urlKey("https://job-boards.greenhouse.io/xapo61/jobs/7673273003"));
 });
+
+test("web tools: only a page we actually fetched can back a posting", async () => {
+  const { FetchLedger } = await import("../app/llm/tools.server");
+  const led = new FetchLedger();
+  led.record("https://jobs.lever.co/acme/abc-123", "…job text…");
+
+  assert.equal(led.has("https://jobs.lever.co/acme/abc-123"), true);
+  // the model rarely echoes a url byte-for-byte: trailing slash, www, casing
+  assert.equal(led.has("https://www.jobs.lever.co/acme/abc-123/"), true, "cosmetic differences still match");
+  assert.equal(led.has("https://JOBS.LEVER.CO/acme/abc-123"), true);
+  // but a different posting, or one it never opened, does not count
+  assert.equal(led.has("https://jobs.lever.co/acme/def-456"), false, "a neighbouring posting is not this one");
+  assert.equal(led.has("https://jobs.lever.co/other/abc-123"), false);
+  assert.equal(led.has("not a url"), false);
+  assert.equal(led.size, 1);
+});
+
+test("crawl research: a whole stack string is not a search query", async () => {
+  const { shortStack } = await import("../app/services/crawl.server");
+  // exactly what the 7B model was handed, and searched for all at once — matching CV
+  // databases and personal portfolios instead of a single posting
+  assert.equal(
+    shortStack("JavaScript, TypeScript, NodeJS, Express, NestJS, ReactJS, NextJS, React Native, Mobile"),
+    "JavaScript TypeScript"
+  );
+  assert.equal(shortStack("Go and Rust"), "Go Rust");
+  assert.equal(shortStack("python/django"), "python django");
+  assert.equal(shortStack("  "), "engineer", "an empty profile still yields a searchable word");
+  assert.ok(shortStack("a, b, c, d, e").split(" ").length <= 2, "never more than a couple of terms");
+});
+
+test("web tools: a percent-encoded path still matches the page we fetched", async () => {
+  const { FetchLedger } = await import("../app/llm/tools.server");
+  const led = new FetchLedger();
+  // the real url from an Ashby board, as fetched
+  led.record("https://jobs.ashbyhq.com/Scale%20Army%20Careers/889e3259-d95a-437c-8bc3-ebf689ecf3a3", "…");
+  assert.equal(
+    led.has("https://jobs.ashbyhq.com/Scale Army Careers/889e3259-d95a-437c-8bc3-ebf689ecf3a3"),
+    true,
+    "a model echoing the readable form has still opened that page"
+  );
+  assert.equal(led.has("https://jobs.ashbyhq.com/Scale%20Army%20Careers/889e3259-d95a-437c-8bc3-ebf689ecf3a3"), true);
+  assert.equal(led.has("https://jobs.ashbyhq.com/Other%20Company/889e3259-d95a-437c-8bc3-ebf689ecf3a3"), false);
+});
+
+test("crawl research: one posting is still a list", async () => {
+  const { asJobList } = await import("../app/services/crawl.server");
+  // exactly what qwen2.5:7b returned after correctly reading a real Ashby posting —
+  // a single object, which a strict array check silently discarded
+  const one = { company: "Whiskey Library", role: "Senior Frontend Developer", apply_url: "https://x/y" };
+  assert.deepEqual(asJobList(one), [one]);
+  assert.deepEqual(asJobList([one]), [one]);
+  assert.deepEqual(asJobList({ jobs: [one] }), [one]);
+  assert.deepEqual(asJobList({ results: [one] }), [one]);
+  // and nothing usable stays nothing, rather than becoming a bogus one-item list
+  assert.deepEqual(asJobList(null), []);
+  assert.deepEqual(asJobList("no"), []);
+  assert.deepEqual(asJobList({ note: "I could not find any" }), []);
+});
+
+test("upsertJobs: a model that answers with a list does not lose the job", async () => {
+  const { upsertJobs } = await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const url = "https://job-boards.greenhouse.io/databento/jobs/8076835";
+
+  // exactly the payload the local model produced: stack as an array, not a string.
+  // Before, this threw inside upsertJobs and the posting was rejected on the last
+  // step — after being searched for, fetched, verified live and confirmed real.
+  const r = upsertJobs([
+    {
+      company: "Databento",
+      role: "Software Engineer (TypeScript/JavaScript)",
+      category: "high",
+      fit_score: 80,
+      stack: ["TypeScript", "JavaScript", "React"],
+      eligibility: ["Remote", "US"],
+      apply_url: url,
+    },
+  ]);
+  assert.equal(r.errors.length, 0, JSON.stringify(r.errors));
+  assert.equal(r.inserted, 1);
+  const row = getDb().prepare("SELECT stack, eligibility FROM jobs WHERE apply_url=?").get(url) as any;
+  assert.equal(row.stack, "TypeScript, JavaScript, React", "a list is joined, not dropped");
+  assert.equal(row.eligibility, "Remote, US");
+});

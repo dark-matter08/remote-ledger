@@ -29,6 +29,18 @@ export async function defaultRunnerId(): Promise<string | null> {
  * answers, fluently, with postings that were never there. Callers that need real
  * pages check this first and pick another route.
  */
+/**
+ * Can we hand this runner functions and run them here? Different question from
+ * runnerCanSearchWeb, which asks whether the provider browses for itself. A runner
+ * that answers no to that and yes to this can still work from live pages — we do the
+ * fetching, which is the arrangement that keeps the result checkable.
+ */
+export async function runnerCanUseTools(runnerId?: string): Promise<boolean> {
+  const id = runnerId || (await defaultRunnerId());
+  if (!id) return false;
+  return !!(await adapterById(id)?.info())?.tools;
+}
+
 export async function runnerCanSearchWeb(runnerId?: string): Promise<boolean> {
   const id = runnerId || (await defaultRunnerId());
   if (!id) return false;

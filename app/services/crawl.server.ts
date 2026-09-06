@@ -5,7 +5,7 @@
 // Works best with a CLI runner that has web access (e.g. Claude Code).
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runLLM, defaultRunnerId, runnerCanSearchWeb, tryParseJson, logExternalCall } from "../llm/runner.server";
+import { defaultRunnerId, logExternalCall, runLLM, runLLMWithTools, runnerCanSearchWeb, runnerCanUseTools, tryParseJson } from "../llm/runner.server";
 import { streamClaude, adapterById } from "../llm/adapters.server";
 import { getSetting } from "../sqlite.server";
 import {
@@ -20,6 +20,8 @@ import {
   activeCrawl,
   blocklistPrompt,
 } from "../db.server";
+import { WEB_TOOLS, executeTool, FetchLedger } from "../llm/tools.server";
+import { searchAvailable } from "./search.server";
 import { scrapeJds, verifyJobs, sanitizeJdHtml } from "./scrape.server";
 import {
   activeCompanies,
@@ -513,6 +515,125 @@ async function recordRunner(runId: number): Promise<void> {
   }
 }
 
+// Where real postings actually live. A general web search for a job title returns
+// aggregators, CV databases and blog posts; scoping to the boards that host postings
+// is the difference between reading a job and reading an article about jobs.
+const ATS_SITES = [
+  "jobs.ashbyhq.com",
+  "job-boards.greenhouse.io",
+  "jobs.lever.co",
+  "apply.workable.com",
+  "jobs.workable.com",
+  "boards.greenhouse.io",
+];
+
+/** A model handed a whole stack string searches for all of it at once and finds nothing. */
+export function shortStack(stack: string): string {
+  return stack
+    .split(/[,/|]|\band\b/i)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ") || "engineer";
+}
+
+/**
+ * Whatever the model returned, as a list of postings.
+ *
+ * Asked for an array it will hand back a single object when it found one role, or
+ * wrap the array in {jobs: …} — and a 7B model does this often. Insisting on a bare
+ * array threw away a posting it had genuinely opened and described correctly, which
+ * looked exactly like the model failing when it was the parser being strict.
+ */
+export function asJobList(raw: any): any[] {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+  for (const k of ["jobs", "roles", "results", "postings", "items", "data"]) {
+    if (Array.isArray(raw[k])) return raw[k];
+  }
+  // one posting, returned unwrapped
+  if (raw.apply_url || raw.company || raw.role) return [raw];
+  return [];
+}
+
+/**
+ * Research with tools, for a runner that cannot browse but can call functions.
+ *
+ * The model never touches the network. It asks for a search or a page, we perform it,
+ * and it reasons over text we hold — so unlike a plain chat completion asked to
+ * "search the job boards", every claim it makes can be checked against something that
+ * was actually downloaded.
+ *
+ * And it is checked. A posting is kept only if its apply_url is one the tools really
+ * fetched this run. That is the whole reason this is allowed to feed the crawl: a
+ * model that names a role it never opened gets dropped, not saved.
+ */
+async function researchWithTools(
+  loc: string,
+  stack: string,
+  want: number,
+  signal: AbortSignal,
+  L: (kind: string, text: string) => void
+): Promise<{ jobs: any[]; fetched: number; unbacked: number }> {
+  const ledger = new FetchLedger();
+  const SHAPE = `Return ONLY a JSON array: [{"company","role","category":"high|medium|stretch","fit_score":0-100,"stack","eligibility","seniority","apply_url","source"}]`;
+
+  L("reasoning", "The runner cannot browse, so it is being given search and fetch as tools — the app does the retrieving and it only ever reads pages we downloaded.");
+
+  const res = await runLLMWithTools(
+    {
+      purpose: "job-research",
+      system:
+        "You find real, currently-open job postings. You cannot browse: call search_web to find pages and " +
+        "fetch_url to read them. Never describe a posting you have not fetched. A search or listing page is " +
+        "not a posting — follow through to the employer's own posting URL and fetch that.\n\n" +
+        "How to search well:\n" +
+        "- Postings live on applicant tracking systems. Scope your searches to them with site: — " +
+        ATS_SITES.map((d) => `site:${d}`).join(", ") + ".\n" +
+        "- Keep queries SHORT: a site: operator plus three or four words. Long queries match nothing.\n" +
+        "- One idea per search. Run several narrow searches rather than one that lists every technology.\n" +
+        "- A result whose URL has no job id is a listing page. Skip it rather than reading it.",
+      prompt:
+        `Find up to ${want} currently-open REMOTE software roles someone based in ${loc} could take, matching: ${stack}.\n\n` +
+        `Start with searches shaped like:\n` +
+        ATS_SITES.slice(0, 3).map((d) => `  site:${d} ${shortStack(stack)} remote`).join("\n") +
+        `\n\nThen open each candidate posting and confirm from the page itself that it is real and still open. ` +
+        `apply_url must be the exact URL you fetched.\n\n${SHAPE}`,
+      json: true,
+      maxTokens: 2500,
+    },
+    {
+      tools: WEB_TOOLS,
+      maxSteps: 8,
+      execute: (c) => executeTool(c, { ledger, maxFetches: 12, onLog: L }),
+      onLog: L,
+    }
+  );
+
+  const list = asJobList(res.json ?? tryParseJson(res.text));
+  const jobs: any[] = [];
+  let unbacked = 0;
+  for (const j of list) {
+    const url = String(j?.apply_url || "").trim();
+    if (url && ledger.has(url)) jobs.push({ ...j, apply_url: url, source: j.source || "web search" });
+    else unbacked++;
+  }
+
+  L(
+    "result",
+    `Read ${ledger.size} page(s) over ${res.steps} turn(s). ${jobs.length} role(s) backed by a page we fetched` +
+      (unbacked ? `, ${unbacked} dropped for naming a page it never opened.` : ".")
+  );
+  // Nothing kept and nothing dropped means it never produced a usable list at all,
+  // which is a different failure from inventing one — and invisible without this.
+  if (!jobs.length && !unbacked) {
+    L("note", `It read pages but returned no list. Its answer began: ${String(res.text || "(empty)").replace(/\s+/g, " ").slice(0, 240)}`);
+    if (ledger.size) L("note", `Pages it opened: ${ledger.urls().slice(0, 4).join(", ")}`);
+  }
+  return { jobs, fetched: ledger.size, unbacked };
+}
+
+
 async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
@@ -557,6 +678,23 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           totals.errors += dropped.length;
           for (const a of alive) collected.set(keyOf(a.job), a);
         }
+          // The boards are the reliable base. If the runner can also use tools and a
+          // search backend is configured, top up with roles the boards do not carry.
+          if (type !== "feeds" && !canSearch && (await runnerCanUseTools()) && (await searchAvailable()).ok) {
+            try {
+              const want = Math.max(1, Math.min(10, Number(getSetting("crawl_target_count") || "5") || 5));
+              const r = await researchWithTools(loc, stack, want, ac.signal, L);
+              if (r.jobs.length) {
+                const v = await verifyJobs(r.jobs, { limit: 20, signal: ac.signal, onLog: (line) => L("step", line) });
+                L("result", `Verified ${v.alive.length} live · dropped ${v.dropped.length}.`);
+                totals.errors += v.dropped.length;
+                for (const a of v.alive) collected.set(keyOf(a.job), a);
+              }
+            } catch (e: any) {
+              // research is a bonus pass; the boards already ran and must still be saved
+              L("error", `Tool-assisted research failed: ${String(e?.message || e).slice(0, 200)}`);
+            }
+          }
       } else if (mode === "count") {
         // GOAL MODE: keep searching (no time limit) until we have N verified roles.
         const target = Math.max(1, Math.min(25, Number(getSetting("crawl_target_count") || "5") || 5));
