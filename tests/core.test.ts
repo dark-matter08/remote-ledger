@@ -1272,6 +1272,29 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("github: a repo reference is recognised, a file path never is", async () => {
+  const { parseRepoRef, looksLikeRepo } = await import("../app/services/github.server");
+
+  for (const [input, slug] of [
+    ["https://github.com/dark-matter08/vertex-reader", "dark-matter08/vertex-reader"],
+    ["http://www.github.com/a/b/", "a/b"],
+    ["git@github.com:a/b.git", "a/b"],
+    ["dark-matter08/vertex-reader", "dark-matter08/vertex-reader"],
+    // a link to a branch is still a link to the repo
+    ["https://github.com/a/b/tree/main/src", "a/b"],
+  ] as const)
+    assert.equal(parseRepoRef(input)?.slug, slug, input);
+
+  // the trap: /Users/me/Projects/app reads as owner "Users", repo "me" if you let it
+  for (const input of ["/Users/me/Projects/app", "~/Projects/app", "./app", "a/b/c", "nope", ""])
+    assert.equal(parseRepoRef(input), null, `${input} must not parse as a repo`);
+
+  assert.equal(looksLikeRepo("owner/repo"), true);
+  assert.equal(looksLikeRepo("https://github.com/a/b"), true);
+  assert.equal(looksLikeRepo("/Users/me/Projects/app"), false, "a folder still goes down the folder path");
+  assert.equal(looksLikeRepo("~/Projects/app"), false);
+});
+
 test("ats: a board's own description is kept, as text and as markup", async () => {
   const real = globalThis.fetch;
   globalThis.fetch = (async () => ({

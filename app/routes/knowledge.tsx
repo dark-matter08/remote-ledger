@@ -197,13 +197,13 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
       <div className="panel kb">
         <h3>Scan a project folder {kb.scanning ? <span className="badge off">scanning…</span> : null}</h3>
         <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-          The runner reads README/manifests/source <strong>on this machine</strong> (skips node_modules, .git, build output) — nothing is uploaded, so it's safe for big folders. Added folders stay and can be re-scanned manually or on a schedule.
+          The runner reads README/manifests/source <strong>on this machine</strong> (skips node_modules, .git, build output) — nothing is uploaded, so it's safe for big folders. A <strong>GitHub repo</strong> works too: paste its URL or <code>owner/repo</code> and it is fetched with the <code>gh</code> login you already have, private ones included, then read the same way and thrown away. Sources stay and can be re-scanned manually or on a schedule.
         </p>
         <Form method="post">
           <input type="hidden" name="intent" value="kb-add-source" />
           <div className="field">
-            <label>Folder</label>
-            <DirPicker name="path" placeholder="/Users/you/Projects/my-app  — or click Browse" />
+            <label>Folder or GitHub repo</label>
+            <DirPicker name="path" placeholder="/Users/you/Projects/my-app  ·  or  owner/repo  ·  or click Browse" />
           </div>
           <div className="row2">
             <div className="field">
@@ -211,6 +211,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
               <div className="radiocol">
                 <label><input type="radio" name="kind" value="project" checked={scanKind === "project"} onChange={() => setScanKind("project")} /> A single project I'm working on</label>
                 <label><input type="radio" name="kind" value="company" checked={scanKind === "company"} onChange={() => setScanKind("company")} /> A company folder with several projects</label>
+                <span className="hint" style={{ margin: "2px 0 0", textTransform: "none", letterSpacing: 0 }}>A GitHub repo is detected from what you paste — this choice is ignored for one.</span>
               </div>
             </div>
             <div className="field">

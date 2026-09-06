@@ -5,10 +5,11 @@
 //      project, drafts factual résumé bullets, and poses clarifying questions.
 // Everything lands in a separate KB (kb_items/kb_questions/kb_suggestions). Drafted
 // bullets are PROPOSALS — you approve them before they touch a résumé profile.
+import { parseRepoRef, looksLikeRepo, ghIdentity, repoMeta, cloneRepo, contribution, repoContext } from "./github.server";
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, basename, extname, relative } from "node:path";
-import { getDb } from "../sqlite.server";
-import { runLLM, tryParseJson } from "../llm/runner.server";
+import { getDb, getSetting } from "../sqlite.server";
+import { runLLM, tryParseJson, defaultRunnerId } from "../llm/runner.server";
 import { HUMAN_STYLE, stripAiTells } from "../llm/style";
 import { getDefaultProfile, saveProfile } from "../resume/profiles.server";
 import { createCrawlRun, crawlLog, updateCrawlRun } from "../db.server";
@@ -275,12 +276,39 @@ export function kbContext(limit = 12): string {
 }
 const normalizeKind = (k?: string) => (["project", "experience", "skill", "fact"].includes(String(k)) ? String(k) : "project");
 
+/**
+ * Capture what someone typed about their own work.
+ *
+ * Recorded as a run like every other piece of AI work in the app. It is one call and
+ * it is over in seconds, which is exactly why it used to happen silently — but "the
+ * agent read this and drafted that" is the same claim a crawl makes, and it deserves
+ * the same receipt.
+ */
 export async function addManualNote(text: string): Promise<number> {
-  const a = await analyze("note", "Recent work", text);
-  const id = insertItem({ kind: a.kind, title: a.title, summary: a.summary, tags: a.tags, source: "manual" });
-  addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b })));
-  addQuestions(id, a.questions);
-  return id;
+  const runId = createCrawlRun("note", "kb");
+  const L = (kind: string, t: string) => crawlLog(runId, kind, t);
+  const runner = (await defaultRunnerId()) || null;
+  updateCrawlRun(runId, {
+    note: text.replace(/\s+/g, " ").slice(0, 90),
+    runner,
+    model: runner ? getSetting(`model_${runner}`) : null,
+  });
+  L("note", `Knowledge capture started · ${text.length} characters in your own words`);
+  L("reasoning", "Nothing is fetched for this one. The analyzer sees only what you typed, so every bullet it drafts has to come out of that.");
+
+  try {
+    const a = await analyze("note", "Recent work", text);
+    const id = insertItem({ kind: a.kind, title: a.title, summary: a.summary, tags: a.tags, source: "manual" });
+    addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b })));
+    addQuestions(id, a.questions);
+    L("result", `"${a.title}" · ${a.tags.length} skill(s) · ${a.bullets.length} bullet(s) drafted, ${a.questions.length} question(s) to answer`);
+    updateCrawlRun(runId, { status: "done", ended_at: NOW(), received: 1, scraped: 1, inserted: 1 });
+    return id;
+  } catch (e: any) {
+    L("error", String(e?.message || e).slice(0, 300));
+    updateCrawlRun(runId, { status: "error", ended_at: NOW() });
+    throw e;
+  }
 }
 
 // Re-draft a few fresh bullets for an item after its questions get answered.
@@ -432,8 +460,28 @@ export function listSources(): KbSource[] {
 // Register a folder and run its first scan. kind: 'project' (whole folder = one project)
 // or 'company' (each sub-project scanned separately). note = free-text context.
 export function addSource(o: { path: string; label?: string; kind?: string; note?: string; intervalHours?: number; depth?: string; linkRef?: string; role?: string; startDate?: string; endDate?: string; location?: string }): { id: number; error?: string } {
-  const path = expandPath(o.path || "");
-  if (!path || !existsSync(path)) return { id: 0, error: "Folder not found on this machine." };
+  const raw = (o.path || "").trim();
+
+  // A GitHub reference is a source like any other — it just lives somewhere the
+  // filesystem cannot reach, and gh has the credentials to go and get it.
+  const ref = looksLikeRepo(raw) ? parseRepoRef(raw) : null;
+  if (ref) {
+    const t2 = (v?: string) => (v && v.trim() ? v.trim().slice(0, 120) : null);
+    const id = Number(getDb().prepare(
+      "INSERT INTO kb_sources (path,label,kind,note,interval_hours,depth,link_item_id,role,start_date,end_date,location,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    ).run(
+      ref.slug, o.label?.trim() || ref.repo, "repo", o.note?.trim() || null,
+      Math.max(0, Math.floor(o.intervalHours || 0)),
+      ["quick", "standard", "deep"].includes(String(o.depth)) ? String(o.depth) : "standard",
+      o.linkRef ? resolveLinkRef(o.linkRef) : null,
+      t2(o.role), t2(o.startDate), t2(o.endDate), t2(o.location), NOW()
+    ).lastInsertRowid);
+    startSourceScan(id);
+    return { id };
+  }
+
+  const path = expandPath(raw);
+  if (!path || !existsSync(path)) return { id: 0, error: "Folder not found on this machine. A GitHub repo works too — paste its URL or owner/repo." };
   try { if (!statSync(path).isDirectory()) return { id: 0, error: "That path is not a folder." }; } catch { return { id: 0, error: "Cannot read that path." }; }
   const kind = o.kind === "company" ? "company" : "project";
   const depth = ["quick", "standard", "deep"].includes(String(o.depth)) ? String(o.depth) : "standard";
@@ -555,15 +603,26 @@ export function purgeSource(pathOrId: string | number): { items: number; bullets
   return { items: items.length, bullets, sources: Number(srcRes.changes || 0), titles };
 }
 
+// A repo scan works out of a temp clone, and the run that owns it can end at any of
+// several points. Registering the teardown here means it happens once, whatever
+// route out the scan takes.
+const repoCleanups = new Map<number, () => void>();
+
 function startSourceScan(sourceId: number): number {
   const src = getDb().prepare("SELECT * FROM kb_sources WHERE id=?").get(sourceId) as KbSource | undefined;
   if (!src) return 0;
   // record as a crawl run so it streams in the Crawl Shell; note holds the path
   const runId = createCrawlRun("scan", "kb");
   updateCrawlRun(runId, { note: src.label ? `${src.label} · ${src.path}` : src.path });
-  void runSourceScan(runId, src).catch((e: any) => {
-    try { crawlLog(runId, "error", String(e?.message || e).slice(0, 300)); updateCrawlRun(runId, { status: "error", ended_at: NOW() }); } catch {}
-  });
+  void runSourceScan(runId, src)
+    .catch((e: any) => {
+      try { crawlLog(runId, "error", String(e?.message || e).slice(0, 300)); updateCrawlRun(runId, { status: "error", ended_at: NOW() }); } catch {}
+    })
+    .finally(() => {
+      const done = repoCleanups.get(runId);
+      repoCleanups.delete(runId);
+      done?.();
+    });
   return runId;
 }
 
@@ -571,13 +630,42 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
   const db = getDb();
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const depth = (["quick", "standard", "deep"].includes(String(src.depth)) ? src.depth : "standard") as ScanDepth;
-  L("note", `Folder scan started · ${src.kind === "company" ? "company folder" : "single project"} · ${depth} depth · ${src.path}`);
+  const isRepo = src.kind === "repo";
+  L("note", `${isRepo ? "Repository" : "Folder"} scan started · ${isRepo ? "github" : src.kind === "company" ? "company folder" : "single project"} · ${depth} depth · ${src.path}`);
   if (depth === "deep") L("reasoning", "Deep scan: reading source files to determine the project's actual purpose.");
   if (src.note) L("reasoning", `Context you gave: ${src.note}`);
 
-  const dirs = src.kind === "company" ? candidateProjects(src.path) : [src.path];
+  // A GitHub source has to be fetched before it can be read. Each step says what it
+  // is doing with your gh credentials, because the ways this fails — no gh, logged
+  // out, token missing `repo`, repo gone — each need something different from you.
+  let repoCtx = "";
+  let dirs: string[];
+  if (isRepo) {
+    const fail = (why: string) => {
+      L("error", why);
+      updateCrawlRun(runId, { status: "error", ended_at: NOW(), note: `${src.path} — ${why}`.slice(0, 200) });
+    };
+    const ref = parseRepoRef(src.path);
+    if (!ref) return fail(`"${src.path}" is not a GitHub repository.`);
+
+    const who = ghIdentity(L);
+    if (!who.ok) return fail(who.reason || "gh is unavailable");
+
+    const meta = repoMeta(ref, L);
+    if (!meta) return fail(`could not read ${ref.slug} with your gh credentials`);
+
+    const cloned = cloneRepo(ref, L);
+    if (!cloned) return fail(`could not clone ${ref.slug}`);
+    repoCleanups.set(runId, cloned.cleanup);
+
+    repoCtx = repoContext(meta, contribution(cloned.dir, who, L));
+    L("reasoning", repoCtx.slice(0, 400));
+    dirs = [cloned.dir];
+  } else {
+    dirs = src.kind === "company" ? candidateProjects(src.path) : [src.path];
+  }
   if (!dirs.length) {
-    L("error", "No projects with a README or manifest found here.");
+    L("error", "Nothing with a README or manifest to read here.");
     updateCrawlRun(runId, { status: "done", ended_at: NOW(), note: src.path });
     db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
     return;
@@ -587,7 +675,7 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
   const priorCtx = (db.prepare(
     "SELECT context FROM kb_items WHERE source_path=? AND trim(coalesce(context,'')) <> '' ORDER BY id DESC LIMIT 1"
   ).get(src.path) as { context?: string } | undefined)?.context;
-  const noteCtx = [src.note, priorCtx, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
+  const noteCtx = [repoCtx, src.note, priorCtx, src.kind === "company" && src.label ? `This is part of ${src.label}.` : ""].filter(Boolean).join(" ");
 
   // COMPANY folder → ONE experience entry synthesized across all sub-projects (not N).
   if (src.kind === "company") {
@@ -636,7 +724,7 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
       const tags = [...a.tags]; if (src.kind === "company" && src.label) tags.push(src.label);
       if (linkId) {
         // link mode: enrich the existing KB item instead of creating a new one
-        const ok = mergeIntoItem(linkId, a, dir);
+        const ok = mergeIntoItem(linkId, a, isRepo ? src.path : dir);
         if (ok) {
           updated++; found++;
           const li = db.prepare("SELECT title FROM kb_items WHERE id=?").get(linkId) as { title?: string } | undefined;
@@ -645,7 +733,7 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
         }
         else L("error", `linked item #${linkId} no longer exists — skipped`);
       } else {
-        const { id, isNew } = upsertScanItem({ title: a.title || g.name, summary: a.summary, tags, sourcePath: dir });
+        const { id, isNew } = upsertScanItem({ title: a.title || g.name, summary: a.summary, tags, sourcePath: isRepo ? src.path : dir });
         // a company folder holds N projects, so no single title can name the folder
         if (dirs.length === 1) nameSourceFromScan(runId, src, a.title || g.name);
         if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b }))); addQuestions(id, a.questions); added++; }
