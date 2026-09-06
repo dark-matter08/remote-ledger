@@ -125,11 +125,83 @@ async function fetchFallback(url: string): Promise<Scraped> {
   }
 }
 
+/**
+ * A page that embeds a Greenhouse job, read from Greenhouse instead.
+ *
+ * Plenty of employers host the posting on their own careers page and let a script
+ * paint the real content in afterwards. Waiting for that is a race nobody wins
+ * reliably: jamasoftware.com/company/careers/posting/8164690 renders 2.8k of chrome
+ * and navigation, and the posting itself — 5.2k, the part with the job in it —
+ * arrives later, or not at all under a headless browser.
+ *
+ * The embed names its own board (`job_board/js?for=jamasoftware`) and the URL names
+ * the job (`gh_jid=8164690`), which is everything needed to ask Greenhouse directly
+ * through the same public API the careers crawl already reads. Exact, complete, and
+ * with no timing in it at all.
+ */
+async function greenhouseEmbed(url: string): Promise<Scraped | null> {
+  // /<board>/jobs/<id> on greenhouse itself, or ?gh_jid= on somebody else's page
+  const direct = /(?:job-)?boards\.greenhouse\.io\/([A-Za-z0-9_-]+)\/jobs\/(\d+)/i.exec(url);
+  let board = direct?.[1] || "";
+  const id = direct?.[2] || /[?&]gh_jid=(\d+)/i.exec(url)?.[1] || "";
+  if (!id) return null;
+
+  if (!board) {
+    try {
+      const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(20000) });
+      if (!r.ok) return null;
+      board = /job_board\/js\?for=([A-Za-z0-9_-]+)/i.exec(await r.text())?.[1] || "";
+    } catch {
+      return null;
+    }
+  }
+  if (!board) return null;
+
+  try {
+    const api = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board)}/jobs/${encodeURIComponent(id)}?content=true`;
+    const r = await fetch(api, { headers: { "user-agent": UA, accept: "application/json" }, signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    // greenhouse escapes the body; unescaping gives back the markup, and stripping
+    // that gives the text
+    const markup = String(j?.content || "")
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+    const text = clean(markup.replace(/<[^>]+>/g, " "));
+    if (text.length < 200) return null;
+    const where = j?.location?.name ? ` · ${j.location.name}` : "";
+    return { title: `${String(j?.title || "").trim()}${where}`, text, html: sanitizeJdHtml(markup), ok: true };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wait for the page to stop changing, rather than for a number somebody guessed.
+ *
+ * A flat timeout is wrong in both directions: too long for a server-rendered page,
+ * and too short for one that fetches its content after load — which is the case that
+ * silently files half a posting.
+ */
+async function waitForContent(page: any, budgetMs: number): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  let last = -1;
+  let stable = 0;
+  while (Date.now() < deadline) {
+    const n: number = await page.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
+    // two identical samples on something substantial: it has finished arriving
+    if (n > 400 && n === last && ++stable >= 2) return;
+    if (n !== last) stable = 0;
+    last = n;
+    await page.waitForTimeout(400);
+  }
+}
+
 async function scrapeWithBrowser(browser: any, url: string): Promise<Scraped> {
   const page = await browser.newPage({ userAgent: UA });
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(renderWaitFor(url)); // let SPA job portals (Lever/Ashby/Greenhouse/Workday) render
+    await waitForContent(page, renderWaitFor(url) * 3); // SPA portals paint after load
     const data = await page.evaluate(PICK_JD);
     const text = clean((data.meta ? data.meta + "\n\n" : "") + data.text);
     return { title: data.title, text, html: sanitizeJdHtml(data.html), ok: text.length > 60 };
@@ -140,6 +212,9 @@ async function scrapeWithBrowser(browser: any, url: string): Promise<Scraped> {
 
 export async function scrapeJobPage(url: string): Promise<Scraped> {
   if (!/^https?:\/\//.test(url)) return { title: "", text: "", html: "", ok: false, error: "bad url" };
+  // exact beats rendered, and costs one request
+  const gh = await greenhouseEmbed(url);
+  if (gh) return gh;
   let browser: any;
   try {
     const { chromium } = await import("playwright");
@@ -301,7 +376,7 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
       try {
         const resp = await page.goto(cur, { waitUntil: "domcontentloaded", timeout: 30000 });
         status = resp ? resp.status() : 0;
-        await page.waitForTimeout(renderWaitFor(cur));
+        await waitForContent(page, renderWaitFor(cur) * 3);
         finalUrl = page.url();
         const cap = await page.evaluate(PICK_JD);
         bodyText = cap.bodyText || "";
@@ -348,6 +423,16 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
       return { ok: false, status, finalUrl, reason: `could not resolve a final application link off ${hostOf(finalUrl)}`, hops, jdText: "", jdHtml: "" };
     if (isCareersIndex(finalUrl))
       return { ok: false, status, finalUrl, reason: "that is a careers index, not a posting", hops, jdText: "", jdHtml: "" };
+    // Same trick as the fetch path: an employer page that paints a Greenhouse job in
+    // afterwards leaves us holding its chrome. Verification is the one place that
+    // captures the JD for a crawl, so it should not settle for the shell either.
+    if (clean.length < 1200 || /[?&]gh_jid=\d/i.test(finalUrl)) {
+      const gh = await greenhouseEmbed(finalUrl);
+      if (gh && gh.text.length > jdText.length) {
+        onLog?.(`  ↪ read ${hostOf(finalUrl)} from greenhouse directly (${gh.text.length} chars)`);
+        return { ok: true, status: status || 200, finalUrl, reason: "", hops, jdText: gh.text, jdHtml: gh.html };
+      }
+    }
     if (clean.length < 220) return { ok: false, status, finalUrl, reason: `page too thin (${clean.length} chars) — likely dead/redirect`, hops, jdText: "", jdHtml: "" };
 
     return { ok: true, status, finalUrl, reason: "", hops, jdText: jdText.replace(/\s+\n/g, "\n").trim().slice(0, 16000), jdHtml: sanitizeJdHtml(jdHtml) };

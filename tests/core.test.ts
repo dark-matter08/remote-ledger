@@ -1272,6 +1272,51 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("scrape: a page that embeds a Greenhouse job is read from Greenhouse", async () => {
+  const real = globalThis.fetch;
+  const seen: string[] = [];
+  globalThis.fetch = (async (u: any) => {
+    const url = String(u);
+    seen.push(url);
+    // the employer's own careers page: chrome, plus the embed naming its board
+    if (url.includes("jamasoftware.com"))
+      return {
+        ok: true,
+        text: async () =>
+          `<html><body><div id="grnhse_app"></div>` +
+          `<script src="https://boards.greenhouse.io/embed/job_board/js?for=jamasoftware"></script>` +
+          `</body></html>`,
+      };
+    if (url.includes("boards-api.greenhouse.io"))
+      return {
+        ok: true,
+        json: async () => ({
+          title: "Developer Support Engineer",
+          location: { name: "Remote - EMEA" },
+          content: "&lt;p&gt;" + "Jama Software is focused on innovation success. ".repeat(12) + "&lt;/p&gt;",
+        }),
+      };
+    throw new Error("unexpected fetch: " + url);
+  }) as any;
+
+  try {
+    const { scrapeJobPage } = await import("../app/services/scrape.server");
+    const r = await scrapeJobPage("https://www.jamasoftware.com/company/careers/posting/8164690?gh_jid=8164690");
+
+    assert.equal(r.ok, true);
+    assert.match(r.title, /Developer Support Engineer/, "the real title, not the page's");
+    assert.match(r.title, /Remote - EMEA/, "with where it can be worked from");
+    assert.match(r.text, /innovation success/, "and the posting body the embed would have painted in later");
+    assert.ok(!/grnhse_app/.test(r.text), "not the shell that was there while it loaded");
+
+    // the board came from the page, the job id from the url, and no browser was needed
+    const api = seen.find((u) => u.includes("boards-api.greenhouse.io"));
+    assert.ok(api?.includes("/boards/jamasoftware/jobs/8164690"), `asked greenhouse directly: ${api}`);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
 test("kb: the résumé is mirrored in, and re-importing refreshes rather than duplicates", async () => {
   const { saveProfile, getDefaultProfile } = await import("../app/resume/profiles.server");
   const { importResumeToKb, kbItems } = await import("../app/services/kb.server");
@@ -1301,6 +1346,39 @@ test("kb: the résumé is mirrored in, and re-importing refreshes rather than du
   assert.equal(again.added, 0, "nothing new the second time");
   assert.equal(kbItems().filter((i: any) => i.title === "Camsol Technologies").length, 1);
   assert.ok(again.updated >= 2, "existing rows are refreshed instead");
+});
+
+test("kb: an entry already scanned from its folder is adopted, not duplicated", async () => {
+  const { saveProfile } = await import("../app/resume/profiles.server");
+  const { importResumeToKb, kbItems, addSource } = await import("../app/services/kb.server");
+  const { emptyResume } = await import("../app/resume/types");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  // stand in for a folder scan that already wrote this project up properly
+  db.prepare(
+    "INSERT INTO kb_items (kind,title,summary,tags,source,source_path,created_at,updated_at) VALUES ('project','Ntopor App','A long summary the scan worked out from the code.','[\"Go\"]','scan','/tmp/ntopor',datetime('now'),datetime('now'))"
+  ).run();
+  const scanned = kbItems().find((i: any) => i.title === "Ntopor App")!;
+  db.prepare("INSERT INTO kb_suggestions (item_id,section,bullet,created_at) VALUES (?,'project','A bullet the scan drafted.',datetime('now'))").run(scanned.id);
+
+  const base = emptyResume();
+  base.contact.name = "Test Person";
+  base.projects = [{ name: "Ntopor App", role: "Lead", start: "", end: "", url: "", bullets: ["Short."] }];
+  saveProfile({ name: "kb-adopt-test", data: base, raw_text: "", makeDefault: true });
+
+  importResumeToKb();
+
+  const rows = kbItems().filter((i: any) => i.title === "Ntopor App");
+  assert.equal(rows.length, 1, "the résumé does not add a second copy beside the scanned one");
+  assert.equal(rows[0].id, scanned.id, "it is the same row — the bullets stay attached to it");
+  assert.match(rows[0].source_path, /^resume:project:/, "and the import can find it again next time");
+  assert.match(rows[0].summary, /worked out from the code/, "the scan's summary beats the résumé's one-liner");
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) c FROM kb_suggestions WHERE item_id=?").get(scanned.id) as any).c,
+    1,
+    "nothing already drafted was stranded"
+  );
 });
 
 test("runner: JSON survives a model that answers and then explains itself", async () => {

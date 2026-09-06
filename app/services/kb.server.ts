@@ -334,20 +334,35 @@ export function importResumeToKb(): { added: number; updated: number } {
     legacyPath?: string;
     role?: string | null; start?: string | null; end?: string | null; location?: string | null;
   }) => {
-    // Adopt the row written under the old key rather than leaving it beside the new
-    // one. It may carry a note, a context, or tags somebody added by hand, and none
-    // of that is recoverable from the résumé.
-    if (o.legacyPath && !db.prepare("SELECT 1 FROM kb_items WHERE source_path=?").get(o.path)) {
-      const stale = db.prepare("SELECT id FROM kb_items WHERE source_path=?").get(o.legacyPath) as any;
-      if (stale) db.prepare("UPDATE kb_items SET source_path=? WHERE id=?").run(o.path, stale.id);
+    // Adopt an existing row rather than adding a second one beside it.
+    //
+    // The same job or project is usually already here — scanned from its folder,
+    // written up by hand, or imported under an older key. Creating a fresh row for
+    // it produces two of everything, and the one with the bullets on it is not the
+    // one the résumé now points at.
+    //
+    // "Unclaimed" is the safeguard: a row already keyed to a different resume: path
+    // belongs to a different entry, and two stints at one employer share a title.
+    if (!db.prepare("SELECT 1 FROM kb_items WHERE source_path=?").get(o.path)) {
+      const adopt = db
+        .prepare(
+          `SELECT id FROM kb_items
+             WHERE lower(title)=lower(?) AND kind=?
+               AND (source_path IS NULL OR source_path NOT LIKE 'resume:%' OR source_path=?)
+             ORDER BY id LIMIT 1`
+        )
+        .get(o.title, o.kind, o.legacyPath ?? "") as any;
+      if (adopt) db.prepare("UPDATE kb_items SET source_path=? WHERE id=?").run(o.path, adopt.id);
     }
     const ex = db.prepare("SELECT id, summary FROM kb_items WHERE source_path=?").get(o.path) as any;
     if (ex) {
       // Only the résumé's own fields are refreshed. Anything learned since — the
       // context, the tags a note added — belongs to the item, not to the import.
       const tags = Array.from(new Set([...safeTags((db.prepare("SELECT tags FROM kb_items WHERE id=?").get(ex.id) as any)?.tags), ...o.tags]));
+      // the résumé's own wording only fills a gap; a scan or a note usually says more
+      const summary = (ex.summary || "").length >= (o.summary || "").length ? ex.summary : o.summary;
       db.prepare("UPDATE kb_items SET title=?, summary=?, tags=?, role=?, start_date=?, end_date=?, location=?, updated_at=? WHERE id=?")
-        .run(o.title.slice(0, 200), (o.summary || ex.summary || "").slice(0, 4000), JSON.stringify(tags.slice(0, 30)),
+        .run(o.title.slice(0, 200), (summary || "").slice(0, 4000), JSON.stringify(tags.slice(0, 30)),
              o.role ?? null, o.start ?? null, o.end ?? null, o.location ?? null, NOW(), ex.id);
       updated++;
       return ex.id as number;
@@ -386,6 +401,7 @@ export function importResumeToKb(): { added: number; updated: number } {
     if (!name) continue;
     upsert({
       path: `resume:project:${name.toLowerCase()}`,
+      legacyPath: `resume:project:${name.toLowerCase()}`,
       kind: "project",
       title: name,
       summary: (pr.bullets || []).join(" ").slice(0, 4000),
