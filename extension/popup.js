@@ -6,13 +6,32 @@ chrome.storage.sync.get(["appUrl"], (r) => {
 });
 
 function collect() {
-  const sel = String(window.getSelection() || "");
-  let jd = sel;
-  if (!jd) {
-    const m = document.querySelector("main,article,[role=main]");
-    jd = (m ? m.innerText : document.body.innerText).slice(0, 8000);
+  const sel = window.getSelection();
+  const selected = String(sel || "");
+  let jd = "";
+  let jdHtml = "";
+
+  // A deliberate selection is the most precise thing on the page, but any stray
+  // double-click also counts as one — and used to become the whole description.
+  if (selected.trim().length > 200 && sel.rangeCount) {
+    const box = document.createElement("div");
+    box.appendChild(sel.getRangeAt(0).cloneContents());
+    jd = selected;
+    jdHtml = box.innerHTML;
+  } else {
+    const m = document.querySelector("main,article,[role=main]") || document.body;
+    jd = m.innerText || "";
+    jdHtml = m.innerHTML || "";
   }
-  return { url: location.href, title: document.title, jd };
+
+  // The markup goes too: it is what lets the ledger render the posting as the
+  // posting rather than as one long paragraph. The server sanitises it on arrival.
+  return {
+    url: location.href,
+    title: document.title,
+    jd: jd.slice(0, 16000),
+    jdHtml: jdHtml.slice(0, 60000),
+  };
 }
 
 document.getElementById("clip").addEventListener("click", async () => {
@@ -29,7 +48,7 @@ document.getElementById("clip").addEventListener("click", async () => {
       body,
     });
     const d = await res.json();
-    status.textContent = d.ok ? "Saved ✓ — open the Ledger to tailor." : "Failed: " + (d.error || "?");
+    status.textContent = d.ok ? "Saved ✓ — reading the posting now; open the Ledger in a moment." : "Failed: " + (d.error || "?");
   } catch (e) {
     status.textContent = "Failed: " + e.message;
   }

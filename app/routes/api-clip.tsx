@@ -3,6 +3,7 @@
 // site can save the current page as a job.
 import type { Route } from "./+types/api-clip";
 import { upsertJobs, setJd, ensureApplication, jobId } from "../db.server";
+import { enrichClip } from "../services/clip.server";
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -15,18 +16,20 @@ export async function action({ request }: Route.ActionArgs) {
   let url = "",
     title = "",
     jd = "",
+    jdHtml = "",
     company = "",
     role = "";
   try {
     const ct = request.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
       const b = await request.json();
-      ({ url = "", title = "", jd = "", company = "", role = "" } = b);
+      ({ url = "", title = "", jd = "", jdHtml = "", company = "", role = "" } = b);
     } else {
       const f = await request.formData();
       url = String(f.get("url") || "");
       title = String(f.get("title") || "");
       jd = String(f.get("jd") || "");
+      jdHtml = String(f.get("jdHtml") || "");
       company = String(f.get("company") || "");
       role = String(f.get("role") || "");
     }
@@ -52,6 +55,11 @@ export async function action({ request }: Route.ActionArgs) {
     }
   }
 
+  // Saved first and read second. The popup is waiting on this response, and the
+  // reading takes an LLM call and possibly a page fetch — so the row lands now, and
+  // enrichClip fills it in as its own Crawl Shell run. Nothing here is left as a
+  // placeholder pretending to be data: the fields it cannot know stay empty until
+  // something has actually read the posting.
   const id = jobId(company, role);
   upsertJobs([
     {
@@ -60,14 +68,15 @@ export async function action({ request }: Route.ActionArgs) {
       role,
       category: "medium",
       fit_score: 0,
-      stack: "clipped — run match in the job page",
-      eligibility: "",
+      stack: null,
+      eligibility: null,
       apply_url: url,
       source: "clipped",
     },
   ]);
   if (jd) setJd(id, jd);
   ensureApplication(id);
+  void enrichClip({ id, url, jd, jdHtml, company, role });
   return Response.json({ ok: true, id }, { headers: CORS });
 }
 
