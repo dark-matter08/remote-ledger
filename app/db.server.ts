@@ -487,7 +487,7 @@ function blockIndex() {
 export function upsertJobs(
   jobs: any[],
   now = new Date().toISOString()
-): { inserted: number; updated: number; blocked: number; errors: { job: string; error: string }[] } {
+): { inserted: number; updated: number; blocked: number; folded: number; errors: { job: string; error: string }[] } {
   const db = getDb();
   const isBlocked = blockIndex();
   const existing = db.prepare("SELECT id FROM jobs WHERE id=?");
@@ -502,7 +502,8 @@ export function upsertJobs(
       active=1, last_seen=@now, updated_at=@now WHERE id=@id`);
   let inserted = 0,
     updated = 0,
-    blocked = 0;
+    blocked = 0,
+    folded = 0;
   const errors: { job: string; error: string }[] = [];
   transaction(() => {
     for (const raw of jobs) {
@@ -520,11 +521,25 @@ export function upsertJobs(
         // application against it. Prefer the board's id for the posting.
         const url_key = urlKey(apply_url);
         const slugId = raw.id || jobId(company, role);
-        const hit = (existing.get(slugId) || (url_key ? byUrlKey.get(url_key) : null)) as
-          | { id: string }
-          | undefined
-          | null;
-        const id = hit ? String(hit.id) : slugId;
+        const byUrl = (url_key ? byUrlKey.get(url_key) : null) as { id: string } | undefined | null;
+        const bySlug = existing.get(slugId) as { id: string } | undefined | null;
+
+        // The posting id beats the slug: the slug is built from a title the crawl
+        // model rewords, the url carries the board's own id for the job.
+        let hit = byUrl || bySlug;
+        let id = hit ? String(hit.id) : slugId;
+
+        // Both matched, and they are different rows — a twin left over from before
+        // this identity existed. Matching the slug first is how it stayed alive: the
+        // reworded title lands on it every crawl, so it is refreshed forever while the
+        // row holding the application sits beside it. Fold them the moment we see it.
+        if (byUrl && bySlug && String(byUrl.id) !== String(bySlug.id)) {
+          const [keep, drop] = betterJob(String(byUrl.id), String(bySlug.id));
+          foldInto(keep, drop);
+          folded++;
+          hit = { id: keep };
+          id = keep;
+        }
 
         // you threw this out before; a crawl finding it again does not undo that.
         // Checked against the resolved id, so a reworded title cannot walk past it.
@@ -559,7 +574,7 @@ export function upsertJobs(
       }
     }
   });
-  return { inserted, updated, blocked, errors };
+  return { inserted, updated, blocked, folded, errors };
 }
 
 export function deactivateMissing(now: string): number {
@@ -777,6 +792,86 @@ const JOB_CHILD_TABLES = [
   "apply_session_jobs", "apply_logs", "apply_questions", "email_messages",
 ];
 
+/** How much work is invested in a job row — used to decide which twin survives. */
+function jobWeight(id: string): { stage: number; resumes: number; events: number; firstSeen: string } {
+  const db = getDb();
+  const app = db.prepare("SELECT stage FROM applications WHERE job_id=?").get(id) as { stage: string } | undefined;
+  const n = (t: string) => (db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE job_id=?`).get(id) as { c: number }).c;
+  const row = db.prepare("SELECT first_seen FROM jobs WHERE id=?").get(id) as { first_seen: string } | undefined;
+  return {
+    stage: stageRank(app?.stage),
+    resumes: n("resume_versions"),
+    events: n("application_events"),
+    firstSeen: String(row?.first_seen || ""),
+  };
+}
+
+/** Of two rows for one posting, the one that has actually been worked on. */
+function betterJob(a: string, b: string): [keep: string, drop: string] {
+  const wa = jobWeight(a);
+  const wb = jobWeight(b);
+  const aWins =
+    wa.stage !== wb.stage
+      ? wa.stage > wb.stage
+      : wa.resumes !== wb.resumes
+        ? wa.resumes > wb.resumes
+        : wa.events !== wb.events
+          ? wa.events > wb.events
+          : wa.firstSeen <= wb.firstSeen;
+  return aWins ? [a, b] : [b, a];
+}
+
+/**
+ * Move everything hanging off `drop` onto `keep`, then delete `drop`.
+ *
+ * Caller owns the transaction — this runs inside the crawl's upsert as well as the
+ * repair script, and node:sqlite has no nested transactions.
+ */
+function foldInto(keep: string, drop: string): number {
+  const db = getDb();
+  let moved = 0;
+  for (const t of JOB_CHILD_TABLES) {
+    try {
+      const r = db.prepare(`UPDATE OR IGNORE ${t} SET job_id=? WHERE job_id=?`).run(keep, drop);
+      moved += Number(r.changes || 0);
+    } catch {
+      // a table that does not exist on this DB has nothing to move
+    }
+  }
+
+  // applications is one row per job, so it merges rather than moves
+  const win = db.prepare("SELECT * FROM applications WHERE job_id=?").get(keep) as any;
+  const lose = db.prepare("SELECT * FROM applications WHERE job_id=?").get(drop) as any;
+  if (lose && !win) {
+    db.prepare("UPDATE applications SET job_id=? WHERE job_id=?").run(keep, drop);
+    moved++;
+  } else if (lose && win) {
+    const stage = stageRank(lose.stage) > stageRank(win.stage) ? lose.stage : win.stage;
+    const applied = [win.applied_at, lose.applied_at].filter(Boolean).sort()[0] ?? null;
+    db.prepare(
+      `UPDATE applications SET stage=?, sub_stage=COALESCE(sub_stage,?), applied_at=?,
+         resume_version_id=COALESCE(resume_version_id,?), next_action=COALESCE(next_action,?),
+         next_action_at=COALESCE(next_action_at,?), updated_at=? WHERE job_id=?`
+    ).run(
+      stage, lose.sub_stage ?? null, applied, lose.resume_version_id ?? null,
+      lose.next_action ?? null, lose.next_action_at ?? null, new Date().toISOString(), keep
+    );
+    db.prepare("DELETE FROM applications WHERE job_id=?").run(drop);
+  }
+
+  // keep the earliest discovery and the latest sighting, so the ledger date and the
+  // stale-trash timer read the whole history rather than half of it
+  db.prepare(
+    `UPDATE jobs SET
+       first_seen = MIN(first_seen, (SELECT first_seen FROM jobs WHERE id=?)),
+       last_seen  = MAX(last_seen,  (SELECT last_seen  FROM jobs WHERE id=?)),
+       active     = MAX(active,     (SELECT active     FROM jobs WHERE id=?))
+     WHERE id=?`
+  ).run(drop, drop, drop, keep);
+  db.prepare("DELETE FROM jobs WHERE id=?").run(drop);
+  return moved;
+}
+
 export interface DupGroup {
   key: string;
   keep: string;
@@ -844,49 +939,7 @@ export function mergeDuplicateJobs(opts: { apply?: boolean } = {}): {
   transaction(() => {
     for (const g of groups) {
       for (const loser of g.drop) {
-        for (const t of JOB_CHILD_TABLES) {
-          try {
-            const r = db.prepare(`UPDATE OR IGNORE ${t} SET job_id=? WHERE job_id=?`).run(g.keep, loser);
-            moved += Number(r.changes || 0);
-          } catch {
-            // a table that does not exist on this DB has nothing to move
-          }
-        }
-
-        // applications is one row per job, so it merges rather than moves
-        const win = db.prepare("SELECT * FROM applications WHERE job_id=?").get(g.keep) as any;
-        const lose = db.prepare("SELECT * FROM applications WHERE job_id=?").get(loser) as any;
-        if (lose && !win) {
-          db.prepare("UPDATE applications SET job_id=? WHERE job_id=?").run(g.keep, loser);
-          moved++;
-        } else if (lose && win) {
-          const stage = stageRank(lose.stage) > stageRank(win.stage) ? lose.stage : win.stage;
-          // earliest application date is the true one — the later row is the duplicate
-          const applied =
-            [win.applied_at, lose.applied_at].filter(Boolean).sort()[0] ?? null;
-          db.prepare(
-            `UPDATE applications SET stage=?, sub_stage=COALESCE(sub_stage,?), applied_at=?,
-               resume_version_id=COALESCE(resume_version_id,?), next_action=COALESCE(next_action,?),
-               next_action_at=COALESCE(next_action_at,?), updated_at=? WHERE job_id=?`
-          ).run(
-            stage, lose.sub_stage ?? null, applied, lose.resume_version_id ?? null,
-            lose.next_action ?? null, lose.next_action_at ?? null,
-            new Date().toISOString(), g.keep
-          );
-          db.prepare("DELETE FROM applications WHERE job_id=?").run(loser);
-        }
-
-        // keep the earliest discovery and the latest sighting, so the ledger dates
-        // and the stale-trash timer both read from the whole history, not half of it
-        db.prepare(
-          `UPDATE jobs SET
-             first_seen = MIN(first_seen, (SELECT first_seen FROM jobs WHERE id=?)),
-             last_seen  = MAX(last_seen,  (SELECT last_seen  FROM jobs WHERE id=?)),
-             active     = MAX(active,     (SELECT active     FROM jobs WHERE id=?))
-           WHERE id=?`
-        ).run(loser, loser, loser, g.keep);
-
-        db.prepare("DELETE FROM jobs WHERE id=?").run(loser);
+        moved += foldInto(g.keep, loser);
         removed++;
       }
     }

@@ -1230,3 +1230,51 @@ test("dedupe: legacy duplicates fold onto the row that was worked on", async () 
   assert.equal(kept.first_seen, "2026-01-01T00:00:00Z", "keeps the earliest discovery, not the duplicate's");
   assert.equal(findDuplicateJobs().length, 0);
 });
+
+test("upsertJobs: a crawl folds a twin it finds, instead of feeding it", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { upsertJobs, setStage, getJob, jobId } = await import("../app/db.server");
+  const { urlKey } = await import("../app/job-identity");
+  const db = getDb();
+  const url = "https://consensys.example/open-roles/8138475?gh_jid=8138475";
+  const key = urlKey(url)!;
+  const now = new Date().toISOString();
+
+  // the state the ledger was actually in: one posting, two rows. The application is
+  // on the row whose title the board no longer uses.
+  const ins = db.prepare(
+    `INSERT INTO jobs (id,company,role,category,fit_score,apply_url,url_key,active,first_seen,last_seen,updated_at)
+     VALUES (?,?,?,'medium',70,?,?,1,?,?,?)`
+  );
+  const worked = "twinco-metamask--senior-engineer-social-ai-metamask";
+  const twin = jobId("Twinco", "Senior Engineer: Social & AI (MetaMask)");
+  ins.run(worked, "Twinco (MetaMask)", "Senior Engineer: Social & AI — MetaMask", url, key, "2026-09-01T00:00:00Z", now, now);
+  ins.run(twin, "Twinco", "Senior Engineer: Social & AI (MetaMask)", url, key, "2026-09-05T00:00:00Z", now, now);
+  setStage(worked, "applied");
+  setStage(twin, "saved");
+
+  // the next crawl writes the title the twin's slug was built from — which is exactly
+  // why the twin used to survive: it matched by slug before the url was ever consulted
+  const res = upsertJobs([
+    {
+      company: "Twinco",
+      role: "Senior Engineer: Social & AI (MetaMask)",
+      category: "medium",
+      fit_score: 74,
+      apply_url: url,
+    },
+  ]);
+
+  assert.equal(res.inserted, 0, "no third row");
+  assert.equal(res.folded, 1, "the twin was folded, not refreshed");
+  const rows = db.prepare("SELECT id FROM jobs WHERE url_key=?").all(key) as { id: string }[];
+  assert.equal(rows.length, 1, "one posting, one row");
+  assert.equal(rows[0].id, worked, "the row carrying the application is the survivor");
+  assert.equal(getJob(worked)!.stage, "applied", "and it is still applied");
+  assert.equal(getJob(twin), null, "the twin is gone");
+  assert.equal(
+    getJob(worked)!.first_seen,
+    "2026-09-01T00:00:00Z",
+    "keeps the earliest discovery"
+  );
+});
