@@ -18,6 +18,7 @@ import {
   Sun,
   PanelLeftOpen,
   PanelLeftClose,
+  ArrowUpCircle,
   type LucideIcon,
 } from "lucide-react";
 
@@ -56,6 +57,8 @@ export function Sidebar() {
   const [pinned, setPinned] = useState(false);
   const [theme, setTheme] = useState<"paper" | "night">("paper");
   const [pending, setPending] = useState(0);
+  const [update, setUpdate] = useState<{ behind: number; latest: string; subject: string } | null>(null);
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     setPinned(localStorage.getItem("ledger-sidebar") === "pinned");
@@ -73,6 +76,37 @@ export function Sidebar() {
     const t = setInterval(tick, 12000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  // A release is not urgent, and the check reaches the network — twice an hour is
+  // plenty to notice one within a working day.
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      fetch("/api/update")
+        .then((r) => r.json())
+        .then((d) => { if (alive) setUpdate(d?.behind > 0 ? d : null); })
+        .catch(() => {});
+    tick();
+    const t = setInterval(tick, 30 * 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // The server goes down partway through its own answer, so there is nothing to
+  // await. Wait for it to answer again, then reload onto the new build.
+  async function takeUpdate() {
+    if (!update || updating) return;
+    setUpdating(true);
+    const body = new FormData();
+    body.set("to", update.latest);
+    const r = await fetch("/api/update", { method: "POST", body }).catch(() => null);
+    if (!r?.ok) { setUpdating(false); return; }
+    const started = Date.now();
+    const poll = setInterval(async () => {
+      if (Date.now() - started > 5 * 60_000) { clearInterval(poll); setUpdating(false); return; }
+      const alive = await fetch("/api/update", { cache: "no-store" }).then((x) => x.ok).catch(() => false);
+      if (alive) { clearInterval(poll); location.reload(); }
+    }, 3000);
+  }
 
   function togglePin() {
     const next = !pinned;
@@ -115,6 +149,23 @@ export function Sidebar() {
       </nav>
 
       <div className="sb-bottom">
+        {update && (
+          <button
+            className="sb-item"
+            onClick={takeUpdate}
+            disabled={updating}
+            style={{ color: "var(--vermillion)" }}
+            title={
+              updating
+                ? "Updating — the app restarts in a moment"
+                : `${update.behind} update(s) waiting: ${update.subject}. Click to take them and restart.`
+            }
+          >
+            <span className="sb-ico"><ArrowUpCircle size={18} strokeWidth={1.7} /></span>
+            <span className="sb-label">{updating ? "Updating…" : "Update available"}</span>
+            {!updating && <span className="sb-badge" />}
+          </button>
+        )}
         <button className="sb-item" onClick={toggleTheme} title="Toggle day / night">
           <span className="sb-ico">{theme === "night" ? <Sun size={18} strokeWidth={1.7} /> : <Moon size={18} strokeWidth={1.7} />}</span>
           <span className="sb-label">{theme === "night" ? "Day Press" : "Night Press"}</span>
