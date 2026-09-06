@@ -168,7 +168,19 @@ function discardLocalChanges() {
  */
 function pullWithRetry() {
   const branch = capture("git", ["rev-parse", "--abbrev-ref", "HEAD"])?.trim() || "main";
-  const first = spawnSync("git", ["pull", "--ff-only", "origin", branch], { encoding: "utf8", cwd: PROJECT });
+
+  // Fetch, then merge the remote-tracking ref rather than pulling.
+  //
+  // `git pull` merges whatever is in .git/FETCH_HEAD, and the running app checks for
+  // updates by fetching too — so a check landing mid-pull rewrites that file under
+  // us and the merge dies with "Cannot fast-forward to multiple branches". origin/
+  // <branch> is a real ref, updated atomically, and reading it cannot be raced.
+  const fetched = spawnSync("git", ["fetch", "origin", branch], { encoding: "utf8", cwd: PROJECT });
+  if (fetched.status !== 0) {
+    say(String(fetched.stderr || "").trim());
+    return false;
+  }
+  const first = spawnSync("git", ["merge", "--ff-only", `origin/${branch}`], { encoding: "utf8", cwd: PROJECT });
   const output = `${first.stdout || ""}${first.stderr || ""}`;
   say(output.trim());
   if (first.status === 0) return true;
@@ -191,7 +203,7 @@ function pullWithRetry() {
     renameSync(from, to);
     say(`  ${f} -> ${to}`);
   }
-  return run("git", ["pull", "--ff-only", "origin", branch]);
+  return run("git", ["merge", "--ff-only", `origin/${branch}`]);
 }
 
 const lockPrint = () =>

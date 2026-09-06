@@ -114,7 +114,7 @@ export function Sidebar() {
     const started = Date.now();
     const poll = setInterval(async () => {
       // a refused connection here is the restart itself; keep waiting
-      const d = await fetch("/api/update?log=1", { cache: "no-store" }).then((x) => x.json()).catch(() => null);
+      const d = await fetch("/api/update?local=1", { cache: "no-store" }).then((x) => x.json()).catch(() => null);
       if (d?.current && d.current !== from) { clearInterval(poll); location.reload(); return; }
       if (Date.now() - started > 6 * 60_000) {
         clearInterval(poll);

@@ -36,6 +36,17 @@ function git(args: string[], timeoutMs = 20_000): string | null {
 
 const short = (sha: string | null) => (sha || "").slice(0, 7);
 
+/**
+ * Which commit is this process running, right now.
+ *
+ * No network, and deliberately not part of checkForUpdate: something watching an
+ * update land only needs to know when this changes, and a fetch from here would be
+ * a fetch racing the pull it is waiting on.
+ */
+export function currentCommit(): string {
+  return short(git(["rev-parse", "HEAD"], 5_000));
+}
+
 export async function checkForUpdate(force = false): Promise<UpdateState> {
   if (!force && memo && Date.now() - memo.at < TTL_MS) return memo.state;
 
