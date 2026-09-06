@@ -33,8 +33,10 @@ mkdirSync(LOGS, { recursive: true });
 
 const say = (m = "") => console.log(m);
 const step = (m) => say(`\n▸ ${m}`);
-const ok = (m) => say(`  ✓ ${m}`);
-const warn = (m) => say(`  ! ${m}`);
+// These get returned, not just printed — `return ok(...)` is the shape every check
+// below uses, so console.log's undefined would read as failure on the way out.
+const ok = (m) => { say(`  ✓ ${m}`); return true; };
+const warn = (m) => { say(`  ! ${m}`); return false; };
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: "inherit", cwd: PROJECT, ...opts });
@@ -113,8 +115,10 @@ function ensureDropport() {
  * nothing for this script to arrange beyond running it once.
  */
 function setupDropport() {
-  if (!ensureCaddy()) return null;
-  if (!ensureDropport()) return null;
+  if (!ensureCaddy() || !ensureDropport()) {
+    warn("skipping the https address — the app still runs, just with a port in the URL.");
+    return null;
+  }
 
   step(`Pointing https://${DOMAIN} at the app`);
   if (!run("dropport", ["add", DOMAIN, String(PORT)])) {
@@ -214,9 +218,14 @@ async function start() {
   // `enable` builds, installs the login agent and starts it. With the proxy up, the
   // extra hosts line serve.mjs would add is a second password prompt for a name
   // nothing asks for.
-  if (!serve("enable", address ? { LEDGER_SKIP_HOSTS: "1" } : {})) {
-    warn("could not install the background service — falling back to a plain start");
-    serve("start");
+  let up = serve("enable", address ? { LEDGER_SKIP_HOSTS: "1" } : {});
+  if (!up) {
+    warn("could not install the background service — trying a plain start instead");
+    up = serve("start");
+  }
+  if (!up) {
+    warn("the app did not come up. `npm run ledger logs` will say why.");
+    process.exit(1);
   }
 
   say("");
@@ -259,6 +268,24 @@ async function restart() {
   ok(`up to date${head ? ` — now on ${head}` : ""}`);
 }
 
+/** Everything `start` decides from, without doing any of it. */
+function doctor() {
+  const dep = existsSync(resolve(PROJECT, "node_modules", ".bin"));
+  const rows = [
+    ["node", process.version],
+    ["package manager", packageManager()],
+    ["dependencies", dep ? "installed" : "missing — start will install them"],
+    ["caddy", have("caddy") ? (capture("caddy", ["version"]) || "").split("\n")[0].trim() || "present" : "missing — start will try to install it"],
+    ["dropport", have("dropport") ? "present" : "missing — start will install it"],
+    ["git", have("git") ? (capture("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || "").trim() : "missing — restart cannot update"],
+  ];
+  say("What `npm run ledger start` finds on this machine:\n");
+  for (const [k, v] of rows) say(`  ${k.padEnd(17)}${v}`);
+  say(`\n  it would serve       https://${DOMAIN}  ->  127.0.0.1:${PORT}`);
+  say("");
+  serve("status");
+}
+
 const HELP = `
 The Remote Ledger
 
@@ -267,6 +294,7 @@ The Remote Ledger
   npm run ledger stop      stop it (it still returns when you log in)
   npm run ledger status    is it running, and where
   npm run ledger logs      watch what it is doing
+  npm run ledger doctor    what start will find, without changing anything
 
 Address: ${DOMAIN} (set LEDGER_DOMAIN to change it, PORT for the port).
 `;
@@ -289,6 +317,9 @@ switch (ACTION) {
     break;
   case "logs":
     serve("logs");
+    break;
+  case "doctor":
+    doctor();
     break;
   default:
     say(HELP);

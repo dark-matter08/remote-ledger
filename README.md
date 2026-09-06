@@ -43,6 +43,7 @@ takes it. From a terminal it is:
 ```bash
 npm run ledger restart   # discard local edits, pull, rebuild, restart
 npm run ledger status    # is it running, and where
+npm run ledger doctor    # what start will find, without changing anything
 npm run ledger stop
 ```
 
