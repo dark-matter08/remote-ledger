@@ -119,6 +119,17 @@ export async function loader({ request }: Route.LoaderArgs) {
     companyCount: companies.filter((c) => c.active && c.kind !== "board").length,
     feedNames: FEEDS.map((f) => f.name),
     jobCount: Number((db.prepare("SELECT COUNT(*) n FROM jobs").get() as any).n),
+    // Step 6 reports these back. Read live rather than echoing DEFAULTS: a returning
+    // user has changed some of them, and a summary that quietly describes the shipped
+    // values instead of theirs is worse than no summary.
+    chosen: {
+      schedulerOn: getSetting("scheduler_enabled") !== "false",
+      interval: getSetting("scheduler_interval_hours") || "4",
+      budget: getSetting("budget_monthly_usd") || "0",
+      scrapeJds: getSetting("scrape_jds") !== "false",
+      scrapeLimit: getSetting("scrape_limit") || "12",
+      staleDays: getSetting("stale_trash_days") ?? "14",
+    },
     tested: {
       runner: getSetting("setup_runner_tested"),
       feeds: getSetting("setup_feeds_tested"),
@@ -132,7 +143,14 @@ export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
 
-  if (intent === "recheck") return { ok: true }; // the loader re-runs; that is the check
+  if (intent === "recheck") {
+    // The loader re-runs either way, but a button that visibly does nothing when the
+    // answer is "still nothing" reads as broken rather than as an answer.
+    const found = (await listRunners()).filter((r) => r.available && r.kind === "cli");
+    return found.length
+      ? { ok: true, msg: `Found ${found.map((r) => r.label.replace(" (CLI)", "")).join(", ")}.` }
+      : { error: "Still nothing on this machine's PATH. If you just installed one, the Ledger needs `npm run ledger restart` to see it." };
+  }
 
   if (intent === "set-key") {
     const name = String(form.get("name") || "");
@@ -331,7 +349,7 @@ export default function Setup({ loaderData, actionData }: Route.ComponentProps) 
         {step === 3 && <TargetStep d={d} busy={busy} />}
         {step === 4 && <SourcesStep d={d} busy={busy} />}
         {step === 5 && <FirstJobsStep d={d} busy={busy} />}
-        {step === 6 && <ReadyStep d={d} busy={busy} />}
+        {step === 6 && <ReadyStep d={d} />}
       </div>
 
       <div className="setup-nav">
@@ -676,10 +694,14 @@ function FirstJobsStep({ d, busy }: { d: any; busy: boolean }) {
       {!run && (
         <Form method="post">
           <input type="hidden" name="intent" value="start-crawl" />
-          <button className="btn" disabled={busy || d.crawling}>
+          <button className="btn" disabled={busy || d.crawling || !webRunner}>
             <Play size={13} /> {d.crawling ? "A crawl is already running…" : "Find jobs now"}
           </button>
-          <span className="hint" style={{ marginLeft: 12 }}>Runs here, live. Leaving this page does not stop it.</span>
+          <span className="hint" style={{ marginLeft: 12 }}>
+            {webRunner
+              ? "Runs here, live. Leaving this page does not stop it."
+              : "Needs a runner from step 1 — even reading the free boards uses one to score what it finds."}
+          </span>
         </Form>
       )}
 
@@ -719,7 +741,7 @@ function FirstJobsStep({ d, busy }: { d: any; busy: boolean }) {
 
 // ---- step 6 ---------------------------------------------------------------
 
-function ReadyStep({ d, busy }: { d: any; busy: boolean }) {
+function ReadyStep({ d }: { d: any }) {
   return (
     <>
       <p className="setup-prose">
@@ -732,11 +754,31 @@ function ReadyStep({ d, busy }: { d: any; busy: boolean }) {
         <h4>Chosen for you</h4>
         <table className="ledger-table">
           <tbody>
-            <tr><td>Crawl on a schedule</td><td className="num">every 4 hours, while the app is open</td><td className="job-fine">Settings → Scheduler</td></tr>
-            <tr><td>Monthly spend cap</td><td className="num">none</td><td className="job-fine">Settings → Runners</td></tr>
-            <tr><td>Full descriptions fetched</td><td className="num">up to 12 per crawl</td><td className="job-fine">Settings → Scheduler</td></tr>
-            <tr><td>Untouched jobs deleted after</td><td className="num">14 days</td><td className="job-fine">Settings → Scheduler</td></tr>
-            <tr><td>Backups</td><td className="num">every 6 hours, last 10 kept</td><td className="job-fine">data/backups</td></tr>
+            <tr>
+              <td>Crawl on a schedule</td>
+              <td className="num">{d.chosen.schedulerOn ? `every ${d.chosen.interval} hours, while the app is open` : "off"}</td>
+              <td className="job-fine">Settings → Scheduler</td>
+            </tr>
+            <tr>
+              <td>Monthly spend cap</td>
+              <td className="num">{Number(d.chosen.budget) > 0 ? `$${d.chosen.budget}` : "none"}</td>
+              <td className="job-fine">Settings → Runners</td>
+            </tr>
+            <tr>
+              <td>Full descriptions fetched</td>
+              <td className="num">{d.chosen.scrapeJds ? `up to ${d.chosen.scrapeLimit} per crawl` : "off"}</td>
+              <td className="job-fine">Settings → Scheduler</td>
+            </tr>
+            <tr>
+              <td>Untouched jobs deleted after</td>
+              <td className="num">{Number(d.chosen.staleDays) > 0 ? `${d.chosen.staleDays} days` : "never"}</td>
+              <td className="job-fine">Settings → Scheduler</td>
+            </tr>
+            <tr>
+              <td>Backups</td>
+              <td className="num">every 6 hours, last 10 kept</td>
+              <td className="job-fine">Settings → Danger zone</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -768,15 +810,13 @@ function ReadyStep({ d, busy }: { d: any; busy: boolean }) {
         </ul>
       </div>
 
-      <Form method="post" className="setup-finish">
-        <input type="hidden" name="intent" value="complete" />
-        <p className="setup-prose" style={{ margin: "0 0 12px" }}>
-          {d.jobCount > 0
-            ? `You have ${d.jobCount} job(s) waiting.`
-            : "Your board is empty — a crawl or the clipper will fill it."}
-        </p>
-        <button className="btn" disabled={busy}>Enter the Ledger <ArrowRight size={13} /></button>
-      </Form>
+      {/* no button here: the one in the footer below is the same action, and two of
+          them side by side reads as two different endings */}
+      <p className="setup-prose setup-finish">
+        {d.jobCount > 0
+          ? <>There {d.jobCount === 1 ? "is" : "are"} <strong>{d.jobCount}</strong> job{d.jobCount === 1 ? "" : "s"} waiting on your board.</>
+          : <>Your board is empty. A crawl or the clipper fills it, and neither is in a hurry.</>}
+      </p>
     </>
   );
 }
