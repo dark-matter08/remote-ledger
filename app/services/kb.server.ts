@@ -596,15 +596,79 @@ function upsertScanItem(o: { title: string; summary: string; tags: string[]; sou
 
 // upsert the SINGLE experience item for a company folder (keyed by its root path) so
 // re-scans refresh the one entry + its metadata instead of creating N project items.
-function upsertExperienceItem(o: { company: string; summary: string; tags: string[]; sourcePath: string; role?: string | null; start?: string | null; end?: string | null; location?: string | null }): { id: number; isNew: boolean } {
+export function upsertExperienceItemForTest(o: Parameters<typeof upsertExperienceItem>[0]) { return upsertExperienceItem(o); }
+
+function upsertExperienceItem(o: {
+  company: string; summary: string; tags: string[]; sourcePath: string;
+  role?: string | null; start?: string | null; end?: string | null; location?: string | null;
+  /** An entry the user pointed this folder at explicitly. */
+  linkId?: number | null;
+  onLog?: (kind: string, text: string) => void;
+}): { id: number; isNew: boolean } {
   const db = getDb();
-  const ex = db.prepare("SELECT id FROM kb_items WHERE source='scan' AND source_path=? AND kind='experience'").get(o.sourcePath) as any;
-  if (ex) {
-    db.prepare("UPDATE kb_items SET title=?, summary=?, tags=?, role=?, start_date=?, end_date=?, location=?, updated_at=? WHERE id=?")
-      .run(o.company.slice(0, 200), o.summary.slice(0, 4000), JSON.stringify(o.tags.slice(0, 30)), o.role ?? null, o.start ?? null, o.end ?? null, o.location ?? null, NOW(), ex.id);
-    return { id: ex.id, isNew: false };
+  const L = o.onLog ?? (() => {});
+
+  // What this should enrich, most deliberate first: the entry it was linked to, then
+  // the one this folder wrote last time, then an entry for the same employer that
+  // nothing else has claimed. Without that last step a folder scan files a second
+  // "NeoWorlder LLC" beside the one already on the résumé.
+  let target = o.linkId ? (db.prepare("SELECT * FROM kb_items WHERE id=?").get(o.linkId) as any) : null;
+  if (o.linkId && !target) L("error", `the entry this folder was linked to (#${o.linkId}) no longer exists — adding a new one`);
+
+  if (!target)
+    target = db.prepare("SELECT * FROM kb_items WHERE source='scan' AND source_path=? AND kind='experience'").get(o.sourcePath) as any;
+
+  if (!target) {
+    const same = db.prepare("SELECT * FROM kb_items WHERE kind='experience' AND lower(title)=lower(?) ORDER BY id").all(o.company) as any[];
+    if (same.length === 1) {
+      target = same[0];
+      L("note", `"${o.company}" is already in your knowledge base — enriching that entry instead of adding a second.`);
+    } else if (same.length > 1) {
+      // two stints at one employer: guessing which one this folder is would be worse
+      L("note", `${same.length} entries already exist for "${o.company}". Adding a new one — use "Link to existing" on the folder to enrich a particular stint instead.`);
+    }
   }
-  return { id: insertItem({ kind: "experience", title: o.company, summary: o.summary, tags: o.tags, source: "scan", source_path: o.sourcePath, role: o.role ?? null, start_date: o.start ?? null, end_date: o.end ?? null, location: o.location ?? null }), isNew: true };
+
+  if (target) {
+    // A résumé is the record of when you were there; a folder is not. Keep what the
+    // entry already says and name the disagreement rather than quietly rewriting it.
+    const settle = (field: string, existing: any, given: any) => {
+      const e = existing ? String(existing).trim() : "";
+      const g = given ? String(given).trim() : "";
+      if (e && g && e.toLowerCase() !== g.toLowerCase())
+        L("note", `${field}: this folder says "${g}", the entry says "${e}" — keeping the entry's. Change the résumé if the folder is right.`);
+      return e || g || null;
+    };
+    const tags = Array.from(new Set([...safeTags(target.tags), ...o.tags]));
+    const summary = (o.summary || "").length > (target.summary || "").length ? o.summary : target.summary;
+    db.prepare(
+      "UPDATE kb_items SET title=?, summary=?, tags=?, role=?, start_date=?, end_date=?, location=?, source=?, source_path=?, updated_at=? WHERE id=?"
+    ).run(
+      o.company.slice(0, 200),
+      (summary || "").slice(0, 4000),
+      JSON.stringify(tags.slice(0, 30)),
+      settle("role", target.role, o.role),
+      settle("start", target.start_date, o.start),
+      settle("end", target.end_date, o.end),
+      settle("location", target.location, o.location),
+      String(target.source).includes("scan") ? target.source : `${target.source}+scan`,
+      // a résumé-keyed row keeps its key, or the next résumé import cannot find it
+      // and makes the duplicate all over again
+      target.source_path && String(target.source_path).startsWith("resume:") ? target.source_path : o.sourcePath,
+      NOW(),
+      target.id
+    );
+    return { id: target.id, isNew: false };
+  }
+
+  return {
+    id: insertItem({
+      kind: "experience", title: o.company, summary: o.summary, tags: o.tags, source: "scan",
+      source_path: o.sourcePath, role: o.role ?? null, start_date: o.start ?? null,
+      end_date: o.end ?? null, location: o.location ?? null,
+    }),
+    isNew: true,
+  };
 }
 
 // ---------- sources: persistent, re-scannable folders ----------
@@ -858,7 +922,12 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
     L("step", `Synthesizing ONE experience entry for ${company} from ${parts.length} project(s)…`);
     try {
       const a = await analyzeCompany(company, src.role, parts.join("\n\n"), noteCtx || undefined, depth === "deep");
-      const { id, isNew } = upsertExperienceItem({ company, summary: a.summary, tags: a.tags, sourcePath: src.path, role: src.role, start: src.start_date, end: src.end_date, location: src.location });
+      const { id, isNew } = upsertExperienceItem({
+        company, summary: a.summary, tags: a.tags, sourcePath: src.path,
+        role: src.role, start: src.start_date, end: src.end_date, location: src.location,
+        linkId: src.link_item_id ? Number(src.link_item_id) : null,
+        onLog: L,
+      });
       if (isNew) { addSuggestions(id, a.bullets.map((b) => ({ section: "experience", bullet: b }))); addQuestions(id, a.questions); }
       else {
         const have = new Set((db.prepare("SELECT bullet FROM kb_suggestions WHERE item_id=?").all(id) as any[]).map((r) => r.bullet));

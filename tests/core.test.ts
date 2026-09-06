@@ -1348,6 +1348,57 @@ test("kb: the résumé is mirrored in, and re-importing refreshes rather than du
   assert.ok(again.updated >= 2, "existing rows are refreshed instead");
 });
 
+test("kb: a company folder enriches the job already on the résumé", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+  const now = "2026-09-06T00:00:00.000Z";
+
+  const one = (title: string, path: string, start: string) =>
+    Number(
+      db.prepare(
+        "INSERT INTO kb_items (kind,title,summary,tags,source,source_path,role,start_date,end_date,created_at,updated_at) VALUES ('experience',?,'',?,'resume',?,?,?,'Present',?,?)"
+      ).run(title, "[]", path, "Software Engineer", start, now, now).lastInsertRowid
+    );
+
+  // the job as the résumé has it — August, not July
+  const fromResume = one("Acme Widgets", "resume:experience:acme widgets|aug 2025|present", "Aug 2025");
+  const logs: string[] = [];
+  const { upsertExperienceItemForTest } = await import("../app/services/kb.server");
+
+  const r = upsertExperienceItemForTest({
+    company: "Acme Widgets",
+    summary: "A much longer summary synthesised from twenty-three project folders.",
+    tags: ["Go", "Keycloak"],
+    sourcePath: "/Users/me/Projects/Acme",
+    role: "Software Engineer",
+    start: "July 2025",
+    end: "Present",
+    location: "Remote, US",
+    onLog: (_k, t) => logs.push(t),
+  });
+
+  assert.equal(r.isNew, false, "it enriches the entry instead of adding a second Acme Widgets");
+  assert.equal(r.id, fromResume);
+  assert.equal((db.prepare("SELECT COUNT(*) c FROM kb_items WHERE title='Acme Widgets'").get() as any).c, 1);
+
+  const row = db.prepare("SELECT * FROM kb_items WHERE id=?").get(fromResume) as any;
+  assert.equal(row.start_date, "Aug 2025", "the résumé's dates stand; a folder is not a record of when you were there");
+  assert.match(logs.join(" "), /start: this folder says "July 2025", the entry says "Aug 2025"/, "and the disagreement is said out loud");
+  assert.match(row.source_path, /^resume:/, "the résumé key survives, so the next import does not re-duplicate it");
+  assert.match(row.summary, /twenty-three project folders/, "the scan's fuller summary wins");
+  assert.ok(row.tags.includes("Keycloak"), "and its tags are added");
+
+  // two stints: guessing which one a folder belongs to would be worse than asking
+  one("Beta Corp", "resume:experience:beta corp|jan 2020|jan 2021", "Jan 2020");
+  one("Beta Corp", "resume:experience:beta corp|jan 2022|jan 2023", "Jan 2022");
+  const amb: string[] = [];
+  const r2 = upsertExperienceItemForTest({
+    company: "Beta Corp", summary: "x", tags: [], sourcePath: "/Users/me/Projects/Beta", onLog: (_k, t) => amb.push(t),
+  });
+  assert.equal(r2.isNew, true, "with two stints it does not pick one at random");
+  assert.match(amb.join(" "), /2 entries already exist.*Link to existing/s, "it says how to resolve it");
+});
+
 test("kb: an entry already scanned from its folder is adopted, not duplicated", async () => {
   const { saveProfile } = await import("../app/resume/profiles.server");
   const { importResumeToKb, kbItems, addSource } = await import("../app/services/kb.server");
@@ -1372,7 +1423,7 @@ test("kb: an entry already scanned from its folder is adopted, not duplicated", 
   const rows = kbItems().filter((i: any) => i.title === "Ntopor App");
   assert.equal(rows.length, 1, "the résumé does not add a second copy beside the scanned one");
   assert.equal(rows[0].id, scanned.id, "it is the same row — the bullets stay attached to it");
-  assert.match(rows[0].source_path, /^resume:project:/, "and the import can find it again next time");
+  assert.match(String(rows[0].source_path), /^resume:project:/, "and the import can find it again next time");
   assert.match(rows[0].summary, /worked out from the code/, "the scan's summary beats the résumé's one-liner");
   assert.equal(
     (db.prepare("SELECT COUNT(*) c FROM kb_suggestions WHERE item_id=?").get(scanned.id) as any).c,

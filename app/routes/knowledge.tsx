@@ -248,7 +248,16 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
               </div>
             ) : (
               <div className="field">
-                <label>Your role / title there</label>
+                <label>Link to existing job (optional)</label>
+                <Select name="linkRef" defaultValue="0" options={[
+                  { value: "0", label: "— Match by company name —" },
+                  ...kb.linkable.map((it: any) => ({ value: it.value, label: it.label })),
+                ]} />
+                <p className="hint" style={{ marginTop: 6 }}>
+                  Point this folder at the job it belongs to. Left alone it matches on the company name,
+                  which is enough unless you worked there twice &mdash; then say which stint.
+                </p>
+                <label style={{ marginTop: 14 }}>Your role / title there</label>
                 <input type="text" name="role" placeholder="e.g. Senior Backend Engineer" />
                 <p className="hint" style={{ marginTop: 6 }}>A company folder becomes <strong>one</strong> résumé experience entry — not one entry per sub-project.</p>
               </div>
