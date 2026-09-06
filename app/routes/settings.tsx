@@ -9,11 +9,14 @@ import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from ".
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
 import { OllamaSetup } from "../components/OllamaSetup";
 import { SearchSetup } from "../components/SearchSetup";
+import { DangerZone } from "../components/DangerZone";
 import { getSetting, setSetting } from "../sqlite.server";
 import { listRunners } from "../llm/runner.server";
 import { discoverModels, openRouterShortlist } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
+import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
+import { listBackups } from "../services/backup.server";
 import {
   listCompanies,
   addCompany,
@@ -65,6 +68,7 @@ export async function loader() {
     })
   );
   return {
+    reset: { scopes: resetPreview(), backups: listBackups() },
     companies: listCompanies(),
     community: {
       on: getSetting("community_share") === "true",
@@ -201,14 +205,23 @@ export async function action({ request }: Route.ActionArgs) {
     return { ok: true, msg: `Scanned ${r.scanned} job(s), found ${r.boards} company board(s), added ${r.added} new.` };
   }
   if (intent === "careers-now") { startCrawl("careers", "manual"); return redirect("/crawl"); }
+  if (intent === "reset") {
+    const scopes = form.getAll("scope").map(String).filter((s): s is ResetScope => (ALL_SCOPES as string[]).includes(s));
+    const r = await performReset(scopes);
+    // Clearing the settings takes setup_complete with it, so the wizard is where this
+    // person now belongs — landing them back on a Settings page describing an install
+    // that no longer exists would be the wrong end of their own decision.
+    if (r.ok && r.toSetup) return redirect("/setup?step=1&cleared=1");
+    return { ok: r.ok, msg: r.message };
+  }
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profile", "Prompt"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profile", "Prompt", "Danger"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -220,14 +233,14 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
     <Shell>
       <div className="page-head">
         <h1>Settings</h1>
-        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Profile · Prompt</div>
+        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Profile · Prompt · Danger</div>
       </div>
       <hr className="rule double" />
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}
 
       <div className="tabs">
         {TABS.map((t) => (
-          <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{t}</button>
+          <button key={t} className={`tab ${tab === t ? "on" : ""} ${t === "Danger" ? "danger" : ""}`} onClick={() => setTab(t)}>{t}</button>
         ))}
       </div>
 
@@ -577,6 +590,8 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           </Form>
         </div>
       )}
+
+      {tab === "Danger" && <DangerZone scopes={reset.scopes} backups={reset.backups} busy={saving} />}
 
       {tab === "Prompt" && (
         <Form method="post" className="panel">

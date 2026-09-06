@@ -130,6 +130,17 @@ function seedDefaultBoards(db: Db) {
   ).run(JSON.stringify([...done]));
 }
 
+/**
+ * Put the shipped boards back after a reset.
+ *
+ * seedDefaultBoards runs once, inside getDb(), and the connection is memoised for the
+ * life of the process — so clearing the registry through Settings would otherwise
+ * leave an install with nowhere to look until it was restarted.
+ */
+export function reseedDefaultBoards(): void {
+  seedDefaultBoards(getDb());
+}
+
 // Older runs never recorded a runner, but llm_calls did — and a call inside a run's
 // own window belongs to it. Cheaper than leaving the whole history blank, and it
 // only ever fills a column that is still null.

@@ -1206,3 +1206,31 @@ button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
 }
 .gap-hard-row:last-child { border-bottom: 0; }
 .gap-hard-row:hover { background: var(--card); }
+
+/* ---- Settings → Danger zone ----
+   Marked in the spot colour throughout, because the only mistake worth designing
+   against here is someone reaching this tab believing it is one of the others. */
+.tab.danger { color: var(--vermillion); border-color: var(--vermillion); }
+.tab.danger.on { background: var(--vermillion); border-color: var(--vermillion); color: var(--paper); }
+.danger-panel { border-color: var(--vermillion); border-width: 2px; }
+.danger-panel > h3 { display: flex; align-items: center; gap: 9px; color: var(--vermillion); }
+.danger-list { display: grid; gap: 0; margin: 16px 0; border-top: 1px solid var(--rule-faint); }
+.danger-row {
+  display: grid; grid-template-columns: 20px 1fr; gap: 12px; align-items: start;
+  padding: 13px 12px; border-bottom: 1px solid var(--rule-faint); cursor: pointer;
+  transition: background .12s;
+}
+.danger-row:hover { background: var(--card); }
+.danger-row.on { background: var(--card); box-shadow: inset 3px 0 0 0 var(--vermillion); }
+.danger-row input { margin-top: 3px; accent-color: var(--vermillion); }
+.danger-row-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.danger-row-h strong { font-family: var(--display); font-weight: 600; font-size: 15.5px; }
+.danger-row-w { font-family: var(--serif); font-size: 13.5px; line-height: 1.55; color: var(--ink-soft); margin-top: 4px; }
+.danger-row-c { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; color: var(--vermillion); margin-top: 6px; line-height: 1.6; }
+.danger-all { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.danger-all .ghost-btn { display: inline-flex; align-items: center; gap: 7px; }
+.danger-gate {
+  display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
+  border-top: 1.5px solid var(--vermillion); padding-top: 16px;
+}
+.danger-gate input { font-family: var(--mono); letter-spacing: .3em; text-transform: uppercase; }
