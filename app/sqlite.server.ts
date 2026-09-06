@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { urlKey } from "./job-identity";
+import { DEFAULT_BOARDS } from "./default-boards";
 
 export const DB_PATH =
   process.env.JOBS_DB_PATH || resolve(process.cwd(), "data", "jobs.db");
@@ -79,9 +80,44 @@ export function getDb(): Db {
   // which process owns an in-flight run (see reconcileOrphans)
   try { ensureColumn(db, "crawl_runs", "owner_pid", "INTEGER"); } catch {}
   try { ensureColumn(db, "apply_sessions", "owner_pid", "INTEGER"); } catch {}
+  seedDefaultBoards(db);
   reconcileOrphans(db);
   global.__ledgerDb = db;
   return db;
+}
+
+// The shipped job boards (app/default-boards.ts), recorded per URL rather than
+// behind one "already seeded" flag. That distinction is the whole design: a board
+// you delete from the Companies tab stays deleted across restarts, while a board
+// added to DEFAULT_BOARDS in a later release still reaches a ledger that already
+// exists. Runs inside getDb(), so it cannot use getSetting() — that would recurse
+// back into the connection being built.
+function seedDefaultBoards(db: Db) {
+  const row = db.prepare("SELECT value FROM settings WHERE key='seeded_boards'").get() as
+    | { value: string }
+    | undefined;
+  let seeded: string[] = [];
+  try {
+    if (row) seeded = JSON.parse(row.value);
+  } catch {}
+  const done = new Set(Array.isArray(seeded) ? seeded : []);
+  const fresh = DEFAULT_BOARDS.filter((b) => !done.has(b.url));
+  if (!fresh.length) return;
+
+  // Someone may already track a default by hand (the registry has no unique index on
+  // careers_url, so nothing else would stop a second copy appearing).
+  const exists = db.prepare("SELECT 1 FROM companies WHERE careers_url=?");
+  const insert = db.prepare(
+    "INSERT INTO companies (name,kind,ats,slug,careers_url,active,note,created_at) VALUES (?,'board',NULL,NULL,?,1,?,?)"
+  );
+  const now = new Date().toISOString();
+  for (const b of fresh) {
+    if (!exists.get(b.url)) insert.run(b.name, b.url, b.note, now);
+    done.add(b.url);
+  }
+  db.prepare(
+    "INSERT INTO settings (key,value) VALUES ('seeded_boards',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+  ).run(JSON.stringify([...done]));
 }
 
 // A PID we recorded may belong to a process that has since exited. EPERM means it

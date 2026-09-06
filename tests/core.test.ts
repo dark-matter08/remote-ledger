@@ -391,7 +391,9 @@ test("ats: the registry seeds itself from jobs already in the ledger", async () 
   // running it again must not duplicate
   const second = bootstrapCompaniesFromJobs();
   assert.equal(second.added, 0, "bootstrap is idempotent");
-  assert.equal(listCompanies().length, 2);
+  // count only what the bootstrap can create: the registry also holds the job boards
+  // every install ships with, which have no ATS feed.
+  assert.equal(listCompanies().filter((c: any) => c.ats).length, 2);
 
   // and the same board cannot be added twice by hand
   const dup = addCompany({ name: "Railway", ats: "ashby", slug: "railway" });
@@ -655,6 +657,32 @@ test("registry: job boards are tracked separately from employers", async () => {
 
   // and the same board cannot be registered twice, whichever kind it is added as
   assert.ok(addCompany({ name: "Dupe", careersUrl: "https://jobs.ashbyhq.com/scanboardtest", kind: "board" }).error);
+});
+
+test("registry: shipped job boards seed themselves, and stay deleted once removed", async () => {
+  const { DEFAULT_BOARDS } = await import("../app/default-boards");
+  const { listCompanies, removeCompany } = await import("../app/services/ats.server");
+  const { getDb } = await import("../app/sqlite.server");
+
+  const boards = (url: string) =>
+    listCompanies().filter((c: any) => c.kind === "board" && c.careers_url === url);
+
+  for (const d of DEFAULT_BOARDS) {
+    const row = boards(d.url)[0];
+    assert.ok(row, `${d.name} is tracked without anyone adding it`);
+    assert.equal(row.name, d.name);
+    assert.equal(row.active, 1, "and is crawled without being switched on first");
+    assert.equal(row.note, d.note, "its note carries that board's crawl rules");
+  }
+
+  // Deleting a default has to outlive a restart, or the Companies tab could never
+  // say no to one. Dropping every copy first keeps this honest even when another
+  // test has registered the same board by hand.
+  const gone = DEFAULT_BOARDS[0];
+  for (const row of boards(gone.url)) removeCompany(row.id);
+  delete (global as any).__ledgerDb; // the next getDb() re-runs the bootstrap, as a restart does
+  getDb();
+  assert.equal(boards(gone.url).length, 0, "a default you removed is not seeded back");
 });
 
 test("cover letter PDF: letterhead added, salutation and sign-off never duplicated", async () => {
