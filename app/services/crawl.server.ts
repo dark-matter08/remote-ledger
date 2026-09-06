@@ -659,13 +659,23 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       // source anyway: the boards are exact, and nothing in them is imagined. The old
       // behaviour refused the run and told you to go and pick another mode by hand,
       // which is a worse version of doing it for you.
+      // Two different ways to research the live web, and the message has to tell them
+      // apart. canSearch asks whether the PROVIDER browses for itself. canTools asks
+      // whether we can browse on its behalf — we hold the results, so what comes back
+      // is checkable, which the provider's own browsing is not.
       const canSearch = await runnerCanSearchWeb();
+      const canTools = !canSearch && (await runnerCanUseTools()) && (await searchAvailable()).ok;
       if (type === "feeds" || !canSearch) {
         if (!canSearch && type !== "feeds") {
           const runner = (await defaultRunnerId()) || "(none)";
-          L("note", `${runner} cannot reach the live web, so there is nothing to research — reading the free job boards instead, where every posting is real.`);
-          if (runner === "openrouter-api") for (const line of await webSearchAdvice()) L("note", line);
-          else L("note", "An agent CLI (Claude Code, Gemini CLI) can search the web. A plain API runner cannot, whatever the prompt asks of it.");
+          if (canTools) {
+            L("note", `${runner} cannot browse by itself, so the app searches and fetches for it — every page it reads is one we retrieved.`);
+            L("note", "Reading the free job boards first, then researching for roles they do not carry.");
+          } else {
+            L("note", `${runner} cannot reach the live web, so there is nothing to research — reading the free job boards instead, where every posting is real.`);
+            if (runner === "openrouter-api") for (const line of await webSearchAdvice()) L("note", line);
+            else L("note", "An agent CLI can browse for itself. A plain API runner needs a search backend — set one up in Settings → Search and it can research too.");
+          }
         }
         L("reasoning", "Reading the free public job boards — keyless, exact, and nothing in them is imagined. No agent is asked to find anything.");
         const fed = await findViaFeeds(loc, stack, ac.signal, L);
@@ -680,7 +690,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
         }
           // The boards are the reliable base. If the runner can also use tools and a
           // search backend is configured, top up with roles the boards do not carry.
-          if (type !== "feeds" && !canSearch && (await runnerCanUseTools()) && (await searchAvailable()).ok) {
+          if (type !== "feeds" && canTools) {
             try {
               const want = Math.max(1, Math.min(10, Number(getSetting("crawl_target_count") || "5") || 5));
               const r = await researchWithTools(loc, stack, want, ac.signal, L);
