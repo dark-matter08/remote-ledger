@@ -25,5 +25,6 @@ export default [
   route("api/pending", "routes/api-pending.tsx"),
   route("api/dirs", "routes/api-dirs.tsx"),
   route("api/openrouter", "routes/api-openrouter.tsx"),
+  route("api/ollama", "routes/api-ollama.tsx"),
   route("api/update", "routes/api-update.tsx"),
 ] satisfies RouteConfig;

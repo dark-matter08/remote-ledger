@@ -7,6 +7,7 @@ import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
 import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from "../services/contribute.server";
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
+import { OllamaSetup } from "../components/OllamaSetup";
 import { getSetting, setSetting } from "../sqlite.server";
 import { listRunners } from "../llm/runner.server";
 import { discoverModels, openRouterShortlist } from "../llm/models.server";
@@ -79,6 +80,7 @@ export async function loader() {
       models: Object.fromEntries(runners.map((r) => [r.id, getSetting(`model_${r.id}`) || ""])),
       budget: getSetting("budget_monthly_usd") || "0",
       openrouterModel: getSetting("model_openrouter-api") || "",
+      ollamaModel: getSetting("model_ollama-api") || "",
       openrouterFreeOnly: getSetting("openrouter_free_only") === "true",
       openrouterFreeFallback: getSetting("openrouter_free_fallback") !== "false",
       openrouterFallbacks: getSetting("openrouter_fallbacks") || "",
@@ -201,7 +203,7 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "OpenRouter", "Scheduler", "Companies", "Profile", "Prompt"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Scheduler", "Companies", "Profile", "Prompt"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
@@ -217,7 +219,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
     <Shell>
       <div className="page-head">
         <h1>Settings</h1>
-        <div className="sub">Runners · Keys · OpenRouter · Scheduler · Profile · Prompt</div>
+        <div className="sub">Runners · Keys · OpenRouter · Local · Scheduler · Profile · Prompt</div>
       </div>
       <hr className="rule double" />
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}
@@ -315,6 +317,8 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
           hasKey={keys.some((k) => k.name === "openrouter_api_key" && k.set)}
         />
       )}
+
+      {tab === "Local" && <OllamaSetup currentModel={settings.ollamaModel} />}
 
       {tab === "Scheduler" && (
         <Form method="post" className="panel">

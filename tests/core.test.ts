@@ -1760,3 +1760,62 @@ test("upsertJobs: a crawl folds a twin it finds, instead of feeding it", async (
     "keeps the earliest discovery"
   );
 });
+
+test("ollama shelf: recommends the biggest useful model that actually fits", async () => {
+  const { OLLAMA_MODELS, fitsInRam, recommendedModel, sameModel, prettyBytes } = await import("../app/ollama");
+
+  // headroom matters: a 8GB model on an 8GB machine leaves nothing for the desktop
+  const big = OLLAMA_MODELS.find((m) => m.ramGb === 8)!;
+  assert.equal(fitsInRam(big, 8), false, "no headroom is not a fit");
+  assert.equal(fitsInRam(big, 16), true);
+
+  // a laptop with 8GB should be steered to something small, not the 12GB vision model
+  const small = recommendedModel(8);
+  assert.ok(small.ramGb <= 6, `suggested ${small.id} wants ${small.ramGb}GB on an 8GB machine`);
+  assert.ok(small.caps.includes("tools"), "the Ledger needs structured output, so tools is required");
+  assert.ok(!small.caps.includes("embedding"), "an embedding model cannot answer a prompt");
+
+  // a workstation should be offered more
+  assert.ok(recommendedModel(64).sizeGb >= small.sizeGb, "more memory should not suggest a smaller model");
+  // and an unknown machine still gets an answer rather than undefined
+  assert.ok(recommendedModel(0).id, "unknown RAM still yields a suggestion");
+
+  // /api/tags reports "llama3.2:3b"; a bare name means :latest
+  assert.equal(sameModel("llama3.2:3b", "llama3.2:3b"), true);
+  assert.equal(sameModel("mistral:latest", "mistral"), true, ":latest is implied");
+  assert.equal(sameModel("Mistral", "mistral"), true);
+  assert.equal(sameModel("llama3.2:3b", "llama3.2:1b"), false, "different tags are different models");
+
+  assert.equal(prettyBytes(0), "—");
+  assert.equal(prettyBytes(1024), "1.0 KB", "one decimal below 10, so 2.0 GB reads consistently");
+  assert.equal(prettyBytes(2.0 * 1024 ** 3), "2.0 GB");
+});
+
+test("ollama shelf: the catalogue itself is sane", async () => {
+  const { OLLAMA_MODELS, CAPABILITY_LABEL } = await import("../app/ollama");
+  const ids = OLLAMA_MODELS.map((m) => m.id);
+  assert.equal(new Set(ids).size, ids.length, "duplicate model ids would render twice and pull twice");
+  for (const m of OLLAMA_MODELS) {
+    assert.match(m.id, /^[a-z0-9._-]+(:[a-z0-9._-]+)?$/, `${m.id} is not a pullable tag`);
+    assert.ok(m.caps.length, `${m.id} claims no capability`);
+    for (const c of m.caps) assert.ok(CAPABILITY_LABEL[c], `${m.id} has an unlabelled capability ${c}`);
+    assert.ok(m.ramGb >= m.sizeGb, `${m.id} claims it needs less memory than it occupies on disk`);
+    assert.ok(m.blurb.length > 20 && !/\bAI\b.*\bpowerful\b/i.test(m.blurb), `${m.id} blurb says nothing`);
+  }
+  // the shelf is useless without something that can do the Ledger's core work
+  assert.ok(OLLAMA_MODELS.some((m) => m.caps.includes("tools") && m.ramGb <= 4), "nothing here fits a small laptop");
+  assert.ok(OLLAMA_MODELS.some((m) => m.caps.includes("vision")), "no vision model on the shelf");
+});
+
+test("ollama: the version is a number, not the warning paragraph around it", async () => {
+  const { parseVersion } = await import("../app/services/ollama.server");
+  // exactly what the CLI prints when the daemon is not running
+  assert.equal(
+    parseVersion("Warning: could not connect to a running Ollama instance\nWarning: client version is 0.17.7"),
+    "0.17.7"
+  );
+  assert.equal(parseVersion("ollama version is 0.5.1"), "0.5.1");
+  assert.equal(parseVersion("0.17.7-rc1"), "0.17.7-rc1");
+  assert.equal(parseVersion("no version here"), null);
+  assert.equal(parseVersion(""), null);
+});
