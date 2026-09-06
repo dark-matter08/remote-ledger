@@ -904,6 +904,10 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
           catRaw("lab/json-free:free", "0", ["tools", "response_format"]),
           catRaw("lab/plain-free:free", "0", ["tools"]),
           catRaw("lab/other-json-free:free", "0", ["response_format"]),
+          // enough free models to overrun OpenRouter's cap if nothing enforces it
+          catRaw("lab/json-free-2:free", "0", ["tools", "response_format"]),
+          catRaw("lab/json-free-3:free", "0", ["tools", "response_format"]),
+          catRaw("lab/json-free-4:free", "0", ["tools", "response_format"]),
           catRaw("lab/paid", "0.000003", ["tools", "response_format"]),
         ],
       }),
@@ -953,6 +957,20 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
       !body.models.includes("lab/plain-free:free"),
       "a JSON request never falls back to a model that cannot do JSON"
     );
+    // OpenRouter answers 400 to a longer array — "'models' array must have 3 items or
+    // fewer" — so an over-long chain is not a longer chain, it is no call at all.
+    assert.ok(
+      body.models.length <= 3,
+      `chain must fit OpenRouter's limit, got ${body.models.length}: ${body.models.join(", ")}`
+    );
+
+    // the same cap applies to a hand-written list, which is not otherwise bounded
+    setSetting("openrouter_fallbacks", "lab/json-free-2:free, lab/json-free-3:free, lab/json-free-4:free, lab/other-json-free:free");
+    await or.run({ purpose: "misc", prompt: "p", json: true } as any, "lab/json-free:free");
+    const long = JSON.parse(seen!.init.body);
+    assert.ok(long.models.length <= 3, `configured chain must be capped too, got ${long.models.length}`);
+    assert.equal(long.models[0], "lab/json-free:free", "the model asked for stays first");
+    setSetting("openrouter_fallbacks", "");
 
     // a model without response_format support must not be sent one
     await or.run({ purpose: "misc", prompt: "p", json: true } as any, "lab/plain-free:free");
