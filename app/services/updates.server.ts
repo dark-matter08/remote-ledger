@@ -26,8 +26,13 @@ export interface UpdateState {
 }
 
 // Reaching the network on every page load would be rude; a release is not urgent.
+// Only the fetch is throttled, though. Everything else here is a local ref read that
+// costs nothing — and in the case of the commit we are running, changes at exactly
+// the moment somebody is watching for it. Caching that is how a finished update goes
+// on insisting for fifteen minutes that it has not happened.
 const TTL_MS = 15 * 60_000;
-let memo: { at: number; state: UpdateState } | null = null;
+let lastFetch = 0;
+let lastFetchError: string | undefined;
 
 function git(args: string[], timeoutMs = 20_000): string | null {
   const r = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8", timeout: timeoutMs });
@@ -48,42 +53,38 @@ export function currentCommit(): string {
 }
 
 export async function checkForUpdate(force = false): Promise<UpdateState> {
-  if (!force && memo && Date.now() - memo.at < TTL_MS) return memo.state;
-
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || "main";
+  const current = currentCommit();
   const base: UpdateState = {
     behind: 0,
-    current: short(git(["rev-parse", "HEAD"])),
+    current,
     latest: "",
     subject: "",
     branch,
     dirty: Boolean(git(["status", "--porcelain"])),
     checkedAt: new Date().toISOString(),
   };
-  if (!base.current) {
-    // not a clone, or git is not installed — either way there is nothing to offer
-    const state = { ...base, error: "not a git checkout" };
-    memo = { at: Date.now(), state };
-    return state;
-  }
+  // not a clone, or git is not installed — either way there is nothing to offer
+  if (!current) return { ...base, error: "not a git checkout" };
 
   // A fetch writes only remote refs, so it cannot disturb the working tree of a
   // running app. Failing it is normal (offline, no remote) and not worth an alarm.
-  if (git(["fetch", "--quiet", "origin", branch], 30_000) === null) {
-    const state = { ...base, error: "could not reach the origin" };
-    memo = { at: Date.now(), state };
-    return state;
+  if (force || Date.now() - lastFetch >= TTL_MS) {
+    const fetched = git(["fetch", "--quiet", "origin", branch], 30_000) !== null;
+    lastFetch = Date.now();
+    lastFetchError = fetched ? undefined : "could not reach the origin";
   }
+  const remote = git(["rev-parse", `origin/${branch}`]);
+  if (!remote) return { ...base, error: lastFetchError || "no origin to compare against" };
 
   const behind = Number(git(["rev-list", "--count", `HEAD..origin/${branch}`]) || "0") || 0;
-  const state: UpdateState = {
+  return {
     ...base,
     behind,
-    latest: short(git(["rev-parse", `origin/${branch}`])),
+    latest: short(remote),
     subject: behind ? git(["log", "-1", "--pretty=%s", `origin/${branch}`]) || "" : "",
+    error: lastFetchError,
   };
-  memo = { at: Date.now(), state };
-  return state;
 }
 
 /**
@@ -132,6 +133,6 @@ export async function applyUpdate(to: string): Promise<{ ok: boolean; message: s
     stdio: ["ignore", out, out],
   });
   child.unref();
-  memo = null; // whatever happens next, the cached answer is now wrong
+  lastFetch = 0; // the next check refetches rather than trusting a stale origin
   return { ok: true, message: `updating to ${state.latest} — the app restarts in a moment` };
 }
