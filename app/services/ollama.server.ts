@@ -11,6 +11,7 @@ import { exec, execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { platform, totalmem } from "node:os";
 import { promisify } from "node:util";
+import { resetOllamaProbe } from "../llm/adapters.server";
 
 const pexec = promisify(exec);
 const pexecFile = promisify(execFile);
@@ -173,7 +174,12 @@ export async function startDaemon(waitMs = 15000): Promise<boolean> {
   }
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
-    if (await daemonRunning(1000)) return true;
+    if (await daemonRunning(1000)) {
+      // the Runners table holds its answer for a few seconds; do not make the user
+      // wait for that to expire before it agrees the runner is up
+      resetOllamaProbe();
+      return true;
+    }
     await new Promise((r) => setTimeout(r, 500));
   }
   return false;

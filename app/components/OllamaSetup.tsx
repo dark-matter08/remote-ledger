@@ -4,7 +4,7 @@
 // This is the only runner the Ledger can set up for you end to end, because it is the
 // only one with nothing to sign up for. Everything here is explicit: the install
 // command is printed before it can be run, and nothing is pulled without a click.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFetcher } from "react-router";
 import { Check, Download, HardDrive, Play, RefreshCw, Trash2, Zap } from "lucide-react";
 import {
@@ -14,6 +14,7 @@ import {
   type OllamaCapability,
   fitsInRam,
   prettyBytes,
+  pullPhase,
   recommendedModel,
   sameModel,
 } from "../ollama";
@@ -30,6 +31,14 @@ interface Status {
   hasBrew: boolean;
 }
 
+interface ActResult {
+  ok: boolean;
+  msg: string;
+  intent?: string;
+  model?: string;
+  output?: string;
+}
+
 interface Pull {
   model: string;
   status: string;
@@ -44,7 +53,7 @@ const CAPS: OllamaCapability[] = ["tools", "vision", "reasoning", "code", "embed
 
 export function OllamaSetup({ currentModel }: { currentModel: string }) {
   const poll = useFetcher<{ status: Status; pulls: Pull[] }>();
-  const act = useFetcher<{ ok: boolean; msg: string; output?: string }>();
+  const act = useFetcher<ActResult>();
   const [caps, setCaps] = useState<Set<OllamaCapability>>(new Set());
   const [custom, setCustom] = useState("");
   const [showAll, setShowAll] = useState(false);
@@ -54,16 +63,42 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
   const busy = act.state !== "idle";
   const pulling = pulls.some((p) => !p.done);
 
+  // Which row is mid-action, and which row the last answer belongs to. Without this
+  // the only feedback was a notice at the top of the tab — and the table is well below
+  // the fold, so pressing Test looked like it did nothing at all.
+  const inFlight = busy
+    ? { intent: String(act.formData?.get("intent") || ""), model: String(act.formData?.get("model") || "") }
+    : null;
+  const VERB: Record<string, string> = {
+    test: "Testing",
+    pull: "Starting",
+    remove: "Removing",
+    use: "Switching",
+  };
+  const rowState = (id: string) => {
+    if (inFlight && inFlight.model && sameModel(inFlight.model, id))
+      return { pending: `${VERB[inFlight.intent] ?? "Working"}…` };
+    if (!busy && act.data?.model && sameModel(act.data.model, id) && act.data.intent !== "pull")
+      return { result: act.data };
+    return {};
+  };
+
   // Poll while something is moving. A pull runs for minutes, and Ollama keeps going
   // whether or not this tab is open, so the interval only drives the display.
+  // The fetcher is a new object on every state change, so holding it in the deps
+  // below tore the interval down and rebuilt it on each poll — the timer kept being
+  // reset before it could fire. Reach for it through a ref and depend only on the
+  // things that should actually change the cadence.
+  const load = useRef(poll.load);
+  load.current = poll.load;
   useEffect(() => {
-    if (poll.state === "idle" && !poll.data) poll.load("/api/ollama");
-  }, [poll]);
+    load.current("/api/ollama");
+  }, []);
   useEffect(() => {
     const every = pulling || busy ? 1000 : 10000;
-    const t = setInterval(() => poll.load("/api/ollama"), every);
+    const t = setInterval(() => load.current("/api/ollama"), every);
     return () => clearInterval(t);
-  }, [pulling, busy, poll]);
+  }, [pulling, busy]);
 
   const installedNames = useMemo(() => (status?.models ?? []).map((m) => m.name), [status]);
   const isInstalled = (id: string) => installedNames.some((n) => sameModel(n, id));
@@ -210,8 +245,10 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
               <th>Model</th>
               <th>Size</th>
               <th>Can do</th>
-              <th style={{ width: "34%" }}>Good for</th>
-              <th></th>
+              <th style={{ width: "32%" }}>Good for</th>
+              {/* fixed, so a row switching from a button to a progress meter does not
+                  resize every other column in the table */}
+              <th style={{ width: 210 }}></th>
             </tr>
           </thead>
           <tbody>
@@ -220,6 +257,7 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
               const p = pullOf(m.id);
               const inUse = sameModel(currentModel, m.id);
               const tooBig = status?.totalRamGb ? !fitsInRam(m, status.totalRamGb) : false;
+              const row = rowState(m.id);
               return (
                 <tr key={m.id}>
                   <td>
@@ -240,20 +278,24 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
                     ))}
                   </td>
                   <td className="job-fine">{m.blurb}</td>
-                  <td>
-                    {p ? (
-                      <div style={{ minWidth: 150 }}>
-                        <div className="meter-row">
-                          <div className="meter"><div className="fill" style={{ width: `${p.percent ?? 0}%` }} /></div>
+                  <td style={{ textAlign: "right" }}>
+                    {row.pending ? (
+                      <span className="job-fine">{row.pending}</span>
+                    ) : p ? (
+                      <div>
+                        <div className="meter-row" style={{ marginTop: 0 }}>
+                          <div className="meter">
+                            <div className="fill live" style={{ ["--target" as any]: `${p.percent ?? 0}%` }} />
+                          </div>
                           <span className="meter-val">{p.percent === null ? "…" : `${p.percent}%`}</span>
                         </div>
                         <div className="job-fine">
-                          {p.status}
+                          {pullPhase(p.status)}
                           {p.total > 0 && <> · {prettyBytes(p.completed)} / {prettyBytes(p.total)}</>}
                         </div>
                       </div>
                     ) : here ? (
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
                         {!inUse && !m.caps.includes("embedding") && (
                           <button className="btn" disabled={busy} onClick={() => run("use", m.id)}>
                             <Check size={13} /> Use
@@ -276,6 +318,14 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
                         <Download size={13} /> Pull
                       </button>
                     )}
+                    {row.result && (
+                      <div
+                        className="job-fine"
+                        style={{ marginTop: 6, color: row.result.ok ? "var(--green)" : "var(--vermillion)" }}
+                      >
+                        {row.result.msg}
+                      </div>
+                    )}
                   </td>
                 </tr>
               );
@@ -294,6 +344,7 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
             />
             <button
               className="ghost-btn"
+              style={{ whiteSpace: "nowrap" }}
               disabled={busy || !custom.trim() || !status?.installed}
               onClick={() => { run("pull", custom.trim()); setCustom(""); }}
             >
@@ -309,28 +360,43 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
         <div className="panel">
           <h3><HardDrive size={15} /> On this machine</h3>
           <table className="ledger-table">
-            <thead><tr><th>Model</th><th>Size</th><th></th></tr></thead>
+            <thead><tr><th>Model</th><th>Size</th><th style={{ width: 210 }}></th></tr></thead>
             <tbody>
-              {status.models.map((m) => (
+              {status.models.map((m) => {
+                const row = rowState(m.name);
+                return (
                 <tr key={m.name}>
                   <td>
                     {m.name}
                     {sameModel(currentModel, m.name) && <> <span className="badge on">In use</span></>}
                   </td>
                   <td className="num">{prettyBytes(m.sizeBytes)}</td>
-                  <td>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {!sameModel(currentModel, m.name) && (
-                        <button className="btn" disabled={busy} onClick={() => run("use", m.name)}>Use</button>
-                      )}
-                      <button className="ghost-btn" disabled={busy} onClick={() => run("test", m.name)}>Test</button>
-                      <button className="ghost-btn" disabled={busy} onClick={() => run("remove", m.name)}>
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
+                  <td style={{ textAlign: "right" }}>
+                    {row.pending ? (
+                      <span className="job-fine">{row.pending}</span>
+                    ) : (
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        {!sameModel(currentModel, m.name) && (
+                          <button className="btn" disabled={busy} onClick={() => run("use", m.name)}>Use</button>
+                        )}
+                        <button className="ghost-btn" disabled={busy} onClick={() => run("test", m.name)}>Test</button>
+                        <button className="ghost-btn" disabled={busy} onClick={() => run("remove", m.name)}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )}
+                    {row.result && (
+                      <div
+                        className="job-fine"
+                        style={{ marginTop: 6, color: row.result.ok ? "var(--green)" : "var(--vermillion)" }}
+                      >
+                        {row.result.msg}
+                      </div>
+                    )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           <p className="hint">

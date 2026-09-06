@@ -196,3 +196,21 @@ export function prettyBytes(n: number): string {
   }
   return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
+
+/**
+ * Ollama's pull status is machine talk — "pulling 2bada8a74506" names the layer being
+ * fetched, which changes several times per download and means nothing to the reader.
+ * Turn it into the phase they actually care about.
+ */
+export function pullPhase(status: string): string {
+  const s = String(status || "").toLowerCase().trim();
+  if (!s) return "starting";
+  if (s.includes("manifest")) return "resolving";
+  if (s.startsWith("pulling")) return "downloading";
+  if (s.includes("verifying")) return "verifying";
+  if (s.includes("writing")) return "writing";
+  if (s.includes("digest")) return "verifying";
+  if (s === "success" || s === "done") return "done";
+  if (s.includes("exist")) return "already here";
+  return s;
+}

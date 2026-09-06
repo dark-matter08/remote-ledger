@@ -356,6 +356,13 @@ a {
   );
   animation: ink-fill 1.1s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
+/* A meter that reports live progress rather than settling once. The ink-fill
+   animation is a 1.1s one-shot: correct for a fit score revealed on scroll, wrong
+   for a download that updates every second, where it would restart from zero on
+   every tick. Same ink, same hatch, no animation. */
+.meter .fill.live { animation: none; width: var(--target, 0%); transition: width .25s ease; }
+@media (prefers-reduced-motion: reduce) { .meter .fill.live { transition: none; } }
+
 @keyframes ink-fill {
   from { width: 0%; }
   to { width: var(--target, 0%); }

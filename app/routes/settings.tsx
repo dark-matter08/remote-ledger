@@ -240,8 +240,14 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               <tbody>
                 {runners.map((r) => (
                   <tr key={r.id}>
-                    <td>{r.label}</td><td>{r.kind.toUpperCase()}</td>
-                    <td>{r.available ? <span className="badge ok">Ready</span> : <span className="badge off">{r.needsKey ? "Needs key" : "Not installed"}</span>}</td>
+                    <td>
+                      {r.label}
+                      {r.detail && <div className="job-fine">{r.detail}</div>}
+                    </td>
+                    <td>{r.kind.toUpperCase()}</td>
+                    {/* a local runner can be installed and simply not started, which is
+                        neither a missing key nor a missing install */}
+                    <td>{r.available ? <span className="badge ok">Ready</span> : <span className="badge off">{r.needsKey ? "Needs key" : r.kind === "api" ? "Not running" : "Not installed"}</span>}</td>
                     <td>{settings.models[r.id] || r.defaultModel || "—"}</td>
                   </tr>
                 ))}

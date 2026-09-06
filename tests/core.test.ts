@@ -1819,3 +1819,46 @@ test("ollama: the version is a number, not the warning paragraph around it", asy
   assert.equal(parseVersion("no version here"), null);
   assert.equal(parseVersion(""), null);
 });
+
+test("ollama: a pull reports the phase, not the layer hash", async () => {
+  const { pullPhase } = await import("../app/ollama");
+  // exactly what Ollama streams — the hash changes several times per download
+  assert.equal(pullPhase("pulling 2bada8a74506"), "downloading");
+  assert.equal(pullPhase("pulling manifest"), "resolving");
+  assert.equal(pullPhase("verifying sha256 digest"), "verifying");
+  assert.equal(pullPhase("writing manifest"), "resolving");
+  assert.equal(pullPhase("success"), "done");
+  assert.equal(pullPhase(""), "starting");
+  // anything unrecognised is shown as-is rather than swallowed
+  assert.equal(pullPhase("removing any unused layers"), "removing any unused layers");
+});
+
+test("ollama runner: available means the daemon answers, not that a key is absent", async () => {
+  const { adapterById, resetOllamaProbe } = await import("../app/llm/adapters.server");
+  const or = adapterById("ollama-api")!;
+  const real = globalThis.fetch;
+  let asked = 0;
+
+  try {
+    // daemon down: a local runner with no key must not report itself ready, or it can
+    // be picked as the default and then fail every call with a connection error
+    resetOllamaProbe();
+    globalThis.fetch = (async () => { asked++; throw new Error("ECONNREFUSED"); }) as any;
+    const down = await or.info();
+    assert.equal(down.available, false, "nothing listening is not available");
+    assert.match(String(down.detail), /Settings → Local/, "says where to fix it");
+
+    // and the answer is held briefly, because settings asks every runner on every render
+    await or.info();
+    assert.equal(asked, 1, "the probe is cached rather than run per info() call");
+
+    resetOllamaProbe();
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({ version: "0.17.7" }) })) as any;
+    const up = await or.info();
+    assert.equal(up.available, true);
+    assert.match(String(up.detail), /nothing leaves this machine/);
+  } finally {
+    globalThis.fetch = real;
+    resetOllamaProbe();
+  }
+});
