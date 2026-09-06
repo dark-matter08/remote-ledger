@@ -80,9 +80,14 @@ function ensureTrust() {
     if (certTrusted()) return ok("certificate trusted — the browser will not warn");
   }
   warn(`the certificate is still untrusted, so ${DOMAIN} will show a browser warning.`);
-  say("    The app itself is fine — this is only the certificate. To fix it:");
-  say("      npm run ledger trust");
-  say("    If it keeps failing, `dropport doctor` will say why.");
+  say("    The app itself is fine — this is only the certificate.");
+  // dropport before 0.2.3 asked Node whether the certificate was trusted. Node ships
+  // its own CA bundle and misreports the failure, so `trust` answered "already
+  // trusted — nothing to do" and skipped the work on exactly the machines that
+  // needed it. If that is what you just saw above, this is why.
+  say("    If it said \"already trusted — nothing to do\" each time, dropport is out of date:");
+  say("      npm install -g github:dark-matter08/dropport && npm run ledger trust");
+  say("    Otherwise `dropport doctor` will say why.");
   return false;
 }
 
