@@ -32,7 +32,7 @@ import {
   acceptSuggestion,
   dismissSuggestion,
   deleteKbItem,
-} from "../services/kb.server";
+  importResumeToKb,} from "../services/kb.server";
 import { loggedTask } from "../services/crawl.server";
 import { availableRunners } from "../llm/runner.server";
 import { getDefaultProfile } from "../resume/profiles.server";
@@ -43,6 +43,10 @@ export function meta(_: Route.MetaArgs) {
 
 export async function loader() {
   const runners = await availableRunners();
+  // Mirror the résumé in before anything is listed. It is what most notes are about,
+  // and an entry that is not here cannot be added to — the capture would have no
+  // choice but to start a new node beside the job it belongs to.
+  importResumeToKb();
   return {
     hasRunner: runners.length > 0,
     hasProfile: !!getDefaultProfile(),

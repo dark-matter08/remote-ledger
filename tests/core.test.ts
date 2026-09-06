@@ -1272,6 +1272,37 @@ test("openrouter: a failed refresh is retried, not held for the whole TTL", asyn
   }
 });
 
+test("kb: the résumé is mirrored in, and re-importing refreshes rather than duplicates", async () => {
+  const { saveProfile, getDefaultProfile } = await import("../app/resume/profiles.server");
+  const { importResumeToKb, kbItems } = await import("../app/services/kb.server");
+  const { emptyResume } = await import("../app/resume/types");
+
+  const base = emptyResume();
+  base.contact.name = "Test Person";
+  base.skills = ["TypeScript", "GraphQL"];
+  base.experience = [
+    { company: "Camsol Technologies", role: "FullStack Developer", start: "2022", end: "2024", location: "Remote",
+      bullets: ["Built services in TypeScript for two products."] },
+  ];
+  base.projects = [{ name: "Ntopor", role: "Lead", start: "", end: "", url: "", bullets: ["A GraphQL API."] }];
+  saveProfile({ name: "kb-import-test", data: base, raw_text: "", makeDefault: true });
+
+  const first = importResumeToKb();
+  assert.ok(first.added >= 2, "an experience entry and a project both come across");
+
+  const job = kbItems().find((i: any) => i.title === "Camsol Technologies")!;
+  assert.ok(job, "the job on the résumé is now something a note can be added to");
+  assert.equal(job.kind, "experience");
+  assert.equal(job.role, "FullStack Developer");
+  assert.ok(job.tags.includes("TypeScript"), "skills the bullets evidence come with it");
+
+  // the whole point of keying on resume: paths — a second import must not double it
+  const again = importResumeToKb();
+  assert.equal(again.added, 0, "nothing new the second time");
+  assert.equal(kbItems().filter((i: any) => i.title === "Camsol Technologies").length, 1);
+  assert.ok(again.updated >= 2, "existing rows are refreshed instead");
+});
+
 test("runner: JSON survives a model that answers and then explains itself", async () => {
   const { tryParseJson } = await import("../app/llm/runner.server");
 

@@ -201,18 +201,42 @@ export function acceptSuggestion(id: number): { ok: boolean; msg: string } {
 // collaborators or claim the role is unclear; assume ownership unless evidence clearly says otherwise.
 const SYSTEM = "You build a developer's personal knowledge base from THEIR OWN projects, for résumé writing. The folder and notes belong to the user — treat the user as the owner/primary author and write about it as their work ('you'/'your'). Do NOT speculate that the role is unclear or that collaborators may have done it; assume the user built it unless the evidence clearly contradicts that. Be concrete about WHAT the project is and DOES (purpose, what problem it solves, architecture, stack) — infer this from the code when the README is thin. Only invent nothing; when a specific metric/scope is genuinely unknown, put it in a question. Output ONLY valid JSON.\n\n" + HUMAN_STYLE;
 
-interface Analysis { title: string; kind: string; summary: string; tags: string[]; bullets: string[]; questions: string[] }
+interface Analysis {
+  title: string; kind: string; summary: string; tags: string[]; bullets: string[]; questions: string[];
+  /** An existing kb_items.id this is more detail about, rather than a new thing. */
+  belongsTo?: number | null;
+}
 
-async function analyze(mode: "note" | "project", title: string, body: string, note?: string, deep = false): Promise<Analysis> {
+async function analyze(
+  mode: "note" | "project",
+  title: string,
+  body: string,
+  note?: string,
+  deep = false,
+  /** What is already known, so a note can land on it instead of beside it. */
+  known: { id: number; label: string }[] = []
+): Promise<Analysis> {
   const ctx = note ? `\n\nContext you gave about this work: "${note}"` : "";
   const deepNote = deep ? "\n\nSource files are included below — READ THEM to determine what the project actually does, especially if the README is thin or missing." : "";
   const cap = deep ? 60000 : 14000;
-  const prompt = `${mode === "project" ? "Analyze YOUR OWN software project from its files" : "You described what you're working on"}:${ctx}${deepNote}\n\n"""${body.slice(0, cap)}"""\n\nReturn JSON:\n{\n  "title": "short project name",\n  "kind": "project|experience|skill",\n  "summary": "2-4 sentence summary: what the project IS and DOES (purpose, key features, architecture, stack) and your role building it — written about your own work, never in vague third person",\n  "tags": ["tech","stack","tools actually used"],\n  "bullets": ["2-4 résumé bullets, action-led, first-person-friendly, factual; quantify ONLY if the evidence gives numbers"],\n  "questions": ["1-3 questions ONLY for genuinely missing specifics (impact metrics, team size); do not ask who built it"]\n}`;
+  // Naming the existing entries is what stops "I used GraphQL at Camsol" becoming a
+  // second Camsol. The model picks one by number or picks none; it never invents an id.
+  const roster = known.length
+    ? `\n\nAlready in this person's knowledge base:\n${known.map((k, i) => `${i + 1}. ${k.label}`).join("\n")}\n` +
+      `If what follows is ADDITIONAL DETAIL about one of those — the same job, company or project — return its number as "belongs_to". Return null when it is genuinely a different piece of work. Adding detail to an entry that exists is almost always right.`
+    : "";
+  const prompt = `${mode === "project" ? "Analyze YOUR OWN software project from its files" : "You described what you're working on"}:${ctx}${deepNote}${roster}\n\n"""${body.slice(0, cap)}"""\n\nReturn JSON:\n{\n  "title": "short project name",\n  "kind": "project|experience|skill",\n  "summary": "2-4 sentence summary: what the project IS and DOES (purpose, key features, architecture, stack) and your role building it — written about your own work, never in vague third person",\n  "tags": ["tech","stack","tools actually used"],\n  "bullets": ["2-4 résumé bullets, action-led, first-person-friendly, factual; quantify ONLY if the evidence gives numbers"],\n  "questions": ["1-3 questions ONLY for genuinely missing specifics (impact metrics, team size); do not ask who built it"]${known.length ? ',\n  "belongs_to": null' : ""}\n}`;
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 1800, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
+  const pick = Number(j.belongs_to);
+  // a name is not a skill: models list the candidate's own name among the tags, and
+  // it then shows up on the card as something they know how to do
+  const own = String(getDefaultProfile()?.data.contact?.name || "").trim().toLowerCase();
   return {
     title: String(j.title || title), kind: normalizeKind(j.kind), summary: stripAiTells(String(j.summary || "")),
-    tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
+    belongsTo: Number.isFinite(pick) && pick >= 1 && pick <= known.length ? known[pick - 1].id : null,
+    tags: (Array.isArray(j.tags) ? j.tags.map(String) : [])
+      .filter((t: string) => t.trim() && (!own || t.trim().toLowerCase() !== own)),
     bullets: Array.isArray(j.bullets) ? j.bullets.map((b: unknown) => stripAiTells(String(b))) : [],
     questions: Array.isArray(j.questions) ? j.questions.map((q: unknown) => stripAiTells(String(q))) : [],
   };
@@ -284,6 +308,83 @@ const normalizeKind = (k?: string) => (["project", "experience", "skill", "fact"
  * agent read this and drafted that" is the same claim a crawl makes, and it deserves
  * the same receipt.
  */
+/**
+ * Put the base résumé into the knowledge base.
+ *
+ * Without this there is nothing for new knowledge to attach to. Someone writes "I
+ * used GraphQL at Camsol", the capture has never heard of Camsol, and the only thing
+ * it can do is invent a fresh node beside the Camsol entry that is already on the
+ * résumé — which is how you end up with the same job recorded twice, once with the
+ * history and once with the new detail.
+ *
+ * Keyed by `resume:` paths so re-importing refreshes those rows rather than
+ * duplicating them, and so a row that came from the résumé is distinguishable from
+ * one somebody wrote by hand.
+ */
+export function importResumeToKb(): { added: number; updated: number } {
+  const profile = getDefaultProfile();
+  if (!profile) return { added: 0, updated: 0 };
+  const db = getDb();
+  let added = 0;
+  let updated = 0;
+
+  const upsert = (o: {
+    path: string; kind: string; title: string; summary: string; tags: string[];
+    role?: string | null; start?: string | null; end?: string | null; location?: string | null;
+  }) => {
+    const ex = db.prepare("SELECT id, summary FROM kb_items WHERE source_path=?").get(o.path) as any;
+    if (ex) {
+      // Only the résumé's own fields are refreshed. Anything learned since — the
+      // context, the tags a note added — belongs to the item, not to the import.
+      const tags = Array.from(new Set([...safeTags((db.prepare("SELECT tags FROM kb_items WHERE id=?").get(ex.id) as any)?.tags), ...o.tags]));
+      db.prepare("UPDATE kb_items SET title=?, summary=?, tags=?, role=?, start_date=?, end_date=?, location=?, updated_at=? WHERE id=?")
+        .run(o.title.slice(0, 200), (o.summary || ex.summary || "").slice(0, 4000), JSON.stringify(tags.slice(0, 30)),
+             o.role ?? null, o.start ?? null, o.end ?? null, o.location ?? null, NOW(), ex.id);
+      updated++;
+      return ex.id as number;
+    }
+    added++;
+    return insertItem({
+      kind: o.kind, title: o.title, summary: o.summary, tags: o.tags, source: "resume",
+      source_path: o.path, role: o.role ?? null, start_date: o.start ?? null,
+      end_date: o.end ?? null, location: o.location ?? null,
+    });
+  };
+
+  const skills = (profile.data.skills || []).map(String);
+  for (const e of profile.data.experience || []) {
+    const company = String(e.company || "").trim();
+    if (!company) continue;
+    upsert({
+      path: `resume:experience:${company.toLowerCase()}`,
+      kind: "experience",
+      title: company,
+      summary: (e.bullets || []).join(" ").slice(0, 4000),
+      // the skills list is the résumé's own vocabulary; a note can add to it later
+      tags: skills.filter((sk) => (e.bullets || []).join(" ").toLowerCase().includes(sk.toLowerCase())),
+      role: e.role || null,
+      start: e.start || null,
+      end: e.end || null,
+      location: e.location || null,
+    });
+  }
+  for (const pr of profile.data.projects || []) {
+    const name = String(pr.name || "").trim();
+    if (!name) continue;
+    upsert({
+      path: `resume:project:${name.toLowerCase()}`,
+      kind: "project",
+      title: name,
+      summary: (pr.bullets || []).join(" ").slice(0, 4000),
+      tags: skills.filter((sk) => (pr.bullets || []).join(" ").toLowerCase().includes(sk.toLowerCase())),
+      role: pr.role || null,
+      start: pr.start || null,
+      end: pr.end || null,
+    });
+  }
+  return { added, updated };
+}
+
 export async function addManualNote(text: string): Promise<number> {
   const runId = createCrawlRun("note", "kb");
   const L = (kind: string, t: string) => crawlLog(runId, kind, t);
@@ -297,7 +398,28 @@ export async function addManualNote(text: string): Promise<number> {
   L("reasoning", "Nothing is fetched for this one. The analyzer sees only what you typed, so every bullet it drafts has to come out of that.");
 
   try {
-    const a = await analyze("note", "Recent work", text);
+    // The résumé is the thing most notes are about, so it has to be in here before
+    // the note is read — otherwise there is nothing to attach to and the only
+    // possible outcome is a new node beside the job it belongs to.
+    const imported = importResumeToKb();
+    if (imported.added) L("step", `Brought ${imported.added} entr(y/ies) in from your résumé first, so this can attach to one.`);
+
+    const known = kbItems().map((i) => ({
+      id: i.id,
+      label: [i.title, i.role, i.kind === "experience" ? "(a job on your résumé)" : i.kind].filter(Boolean).join(" · "),
+    }));
+
+    const a = await analyze("note", "Recent work", text, undefined, false, known);
+
+    if (a.belongsTo) {
+      const to = known.find((k) => k.id === a.belongsTo);
+      if (mergeIntoItem(a.belongsTo, a, null)) {
+        L("result", `Added to "${to?.label || a.belongsTo}" — ${a.tags.length} skill(s), ${a.bullets.length} new bullet(s), ${a.questions.length} question(s).`);
+        updateCrawlRun(runId, { status: "done", ended_at: NOW(), received: 1, scraped: 1, updated: 1 });
+        return a.belongsTo;
+      }
+    }
+
     const id = insertItem({ kind: a.kind, title: a.title, summary: a.summary, tags: a.tags, source: "manual" });
     addSuggestions(id, a.bullets.map((b) => ({ section: "project", bullet: b })));
     addQuestions(id, a.questions);
@@ -524,14 +646,20 @@ function resolveLinkRef(ref: string): number | null {
 
 // Merge a fresh analysis into an EXISTING item (union tags, richer summary, new bullets/
 // questions) instead of creating a new one — used when a source is linked to an item.
-function mergeIntoItem(itemId: number, a: Analysis, sourcePath: string): boolean {
+function mergeIntoItem(itemId: number, a: Analysis, sourcePath: string | null): boolean {
   const db = getDb();
   const item = db.prepare("SELECT * FROM kb_items WHERE id=?").get(itemId) as any;
   if (!item) return false;
   const tags = Array.from(new Set([...safeTags(item.tags), ...a.tags]));
   const summary = a.summary && a.summary.length > (item.summary || "").length ? a.summary : (item.summary || a.summary);
+  // A note carries no path of its own, and taking one away would orphan the row from
+  // the résumé import that keys on it.
+  const path = sourcePath ?? item.source_path;
+  const source = sourcePath
+    ? item.source === "scan" ? "scan" : "manual+scan"
+    : String(item.source).includes("+note") ? item.source : `${item.source}+note`;
   db.prepare("UPDATE kb_items SET summary=?, tags=?, source_path=?, source=?, updated_at=? WHERE id=?")
-    .run((summary || "").slice(0, 4000), JSON.stringify(tags.slice(0, 30)), sourcePath, item.source === "scan" ? "scan" : "manual+scan", NOW(), itemId);
+    .run((summary || "").slice(0, 4000), JSON.stringify(tags.slice(0, 30)), path, source, NOW(), itemId);
   const haveBullets = new Set((db.prepare("SELECT bullet FROM kb_suggestions WHERE item_id=?").all(itemId) as any[]).map((r) => r.bullet));
   addSuggestions(itemId, a.bullets.filter((b) => !haveBullets.has(b)).map((b) => ({ section: "project", bullet: b })));
   const haveQs = new Set((db.prepare("SELECT question FROM kb_questions WHERE item_id=?").all(itemId) as any[]).map((r) => r.question));
