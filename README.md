@@ -63,6 +63,9 @@ npm run serve start     # build + run detached; survives closing the terminal
 npm run serve restart   # rebuild and replace it, after code changes
 npm run serve status    # up? on what address?
 npm run serve stop
+
+npm run serve enable    # start it again on every login, and keep it up
+npm run serve disable   # stop doing that
 ```
 
 Then the ledger lives at **http://remoteledger.local:5173** whenever your machine is
