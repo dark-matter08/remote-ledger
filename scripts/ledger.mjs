@@ -170,6 +170,16 @@ function setupDropport() {
     step("Skipping the https address, as asked");
     return null;
   }
+  // Not attempted on Windows, and saying so beats failing at Caddy and implying that
+  // installing it would help. dropport puts a proxy behind a real hostname by
+  // installing a service — launchd or systemd — and has no Windows implementation, so
+  // Caddy on its own gets you nothing. The app runs on its port there.
+  if (WIN) {
+    step("Skipping the https address on Windows");
+    say("    dropport sets this up by installing a background service, and it only");
+    say("    knows launchd and systemd so far. Installing Caddy would not help yet.");
+    return null;
+  }
   if (!ensureCaddy() || !ensureDropport()) {
     warn("skipping the https address — the app still runs, just with a port in the URL.");
     return null;

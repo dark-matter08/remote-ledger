@@ -39,6 +39,10 @@ const AGENT_LABEL = "dev.remoteledger.server";
 const AGENT_PLIST = resolve(homedir(), "Library", "LaunchAgents", `${AGENT_LABEL}.plist`);
 const SYSTEMD_UNIT = resolve(homedir(), ".config", "systemd", "user", "remote-ledger.service");
 const AUTOSTART_FILE = MAC ? AGENT_PLIST : SYSTEMD_UNIT;
+// Windows has no launchd or systemd --user. A Scheduled Task is the closest thing:
+// it runs in the user's session at logon, needs no admin, and survives a reboot.
+const TASK_NAME = "The Remote Ledger";
+const WIN_LAUNCHER = resolve(PROJECT, "data", "start-ledger.cmd");
 const GUI = () => `gui/${process.getuid?.() ?? 501}`;
 
 // launchd opens the job's stdout/stderr itself, before the process exists — and it is
@@ -326,13 +330,46 @@ WantedBy=default.target
 }
 
 function autostartEnabled() {
-  return !WIN && existsSync(AUTOSTART_FILE);
+  if (WIN) {
+    // schtasks exits non-zero when the task does not exist, which is the whole query
+    return spawnSync("schtasks", ["/Query", "/TN", TASK_NAME], { stdio: "ignore" }).status === 0;
+  }
+  return existsSync(AUTOSTART_FILE);
+}
+
+/**
+ * A launcher the task can point at.
+ *
+ * schtasks /TR takes one command and no working directory, and quoting a long node
+ * invocation through it is its own kind of misery. A one-line .cmd sidesteps both:
+ * the task runs the file, the file sets the directory and the environment.
+ */
+function writeWinLauncher(entry) {
+  mkdirSync(dirname(WIN_LAUNCHER), { recursive: true });
+  writeFileSync(
+    WIN_LAUNCHER,
+    [
+      "@echo off",
+      `cd /d "${PROJECT}"`,
+      `set "PORT=${PORT}"`,
+      "set NODE_ENV=production",
+      `"${process.execPath}" "${entry}" "${SERVER_ENTRY}"`,
+      "",
+    ].join("\r\n")
+  );
+  return WIN_LAUNCHER;
 }
 
 /** The pid launchd/systemd is supervising, if it is the one running. */
 function supervisedPid() {
   if (!autostartEnabled()) return null;
   try {
+    if (WIN) {
+      // schtasks has no pid; "Running" is the most it will tell us, and the pid file
+      // is written by the server itself either way
+      const out = execSync(`schtasks /Query /TN "${TASK_NAME}" /FO LIST`, { encoding: "utf8" });
+      return /Status:\s*Running/i.test(out) ? (readPid() ?? 0) : null;
+    }
     if (MAC) {
       const out = execSync(`launchctl list ${AGENT_LABEL} 2>/dev/null`, { encoding: "utf8" });
       const m = /"PID"\s*=\s*(\d+)/.exec(out);
@@ -347,10 +384,6 @@ function supervisedPid() {
 }
 
 async function enable() {
-  if (WIN) {
-    say("  Windows has no equivalent here — add a shortcut to shell:startup, or use Task Scheduler.");
-    process.exit(1);
-  }
   if (!existsSync(SERVER_ENTRY)) build();
 
   // hand the port over: a manually started copy would win the race on the next boot
@@ -362,9 +395,28 @@ async function enable() {
     say("  cannot find @react-router/serve — run an install first.");
     process.exit(1);
   }
-  mkdirSync(dirname(AUTOSTART_FILE), { recursive: true });
   mkdirSync(dirname(AGENT_LOG), { recursive: true });
-  writeFileSync(AUTOSTART_FILE, MAC ? agentPlist(entry) : systemdUnit(entry));
+
+  if (WIN) {
+    const launcher = writeWinLauncher(entry);
+    // ONLOGON rather than ONSTART: ONSTART needs an administrator to register, and
+    // this is a single-user desktop app that has no business asking for one.
+    spawnSync("schtasks", ["/Delete", "/TN", TASK_NAME, "/F"], { stdio: "ignore" }); // may not exist
+    const r = spawnSync(
+      "schtasks",
+      ["/Create", "/TN", TASK_NAME, "/TR", `"${launcher}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"],
+      { stdio: "pipe", encoding: "utf8" }
+    );
+    if (r.status !== 0) {
+      say(`  Windows refused the scheduled task: ${String(r.stderr || r.stdout || "").trim().slice(0, 200)}`);
+      process.exit(1);
+    }
+    // the task only fires at the next logon, so start it now as well
+    spawnSync("schtasks", ["/Run", "/TN", TASK_NAME], { stdio: "ignore" });
+  } else {
+    mkdirSync(dirname(AUTOSTART_FILE), { recursive: true });
+    writeFileSync(AUTOSTART_FILE, MAC ? agentPlist(entry) : systemdUnit(entry));
+  }
 
   if (MAC) {
     spawnSync("launchctl", ["bootout", GUI(), AUTOSTART_FILE], { stdio: "ignore" }); // may not be loaded
@@ -373,7 +425,7 @@ async function enable() {
       say(`  launchctl refused it: ${String(r.stderr || "").trim() || "unknown error"}`);
       process.exit(1);
     }
-  } else {
+  } else if (!WIN) {
     spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
     const r = spawnSync("systemctl", ["--user", "enable", "--now", "remote-ledger"], { stdio: "pipe" });
     if (r.status !== 0) {
@@ -398,6 +450,13 @@ function disable() {
     say("  automatic start was not enabled");
     return;
   }
+  if (WIN) {
+    spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
+    spawnSync("schtasks", ["/Delete", "/TN", TASK_NAME, "/F"], { stdio: "ignore" });
+    rmSync(WIN_LAUNCHER, { force: true });
+    say("  automatic start disabled, and the server stopped.");
+    return;
+  }
   if (MAC) {
     spawnSync("launchctl", ["bootout", GUI(), AUTOSTART_FILE], { stdio: "ignore" });
   } else {
@@ -410,13 +469,20 @@ function disable() {
 
 /** Restart whatever is supervising it, rather than fighting KeepAlive. */
 function supervisedRestart() {
-  if (MAC) spawnSync("launchctl", ["kickstart", "-k", `${GUI()}/${AGENT_LABEL}`], { stdio: "ignore" });
-  else spawnSync("systemctl", ["--user", "restart", "remote-ledger"], { stdio: "ignore" });
+  if (WIN) {
+    spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
+    spawnSync("schtasks", ["/Run", "/TN", TASK_NAME], { stdio: "ignore" });
+  } else if (MAC) {
+    spawnSync("launchctl", ["kickstart", "-k", `${GUI()}/${AGENT_LABEL}`], { stdio: "ignore" });
+  } else {
+    spawnSync("systemctl", ["--user", "restart", "remote-ledger"], { stdio: "ignore" });
+  }
 }
 
 /** Stop it now. It still comes back at login unless `disable` is run. */
 function supervisedStop() {
-  if (MAC) spawnSync("launchctl", ["bootout", GUI(), AUTOSTART_FILE], { stdio: "ignore" });
+  if (WIN) spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
+  else if (MAC) spawnSync("launchctl", ["bootout", GUI(), AUTOSTART_FILE], { stdio: "ignore" });
   else spawnSync("systemctl", ["--user", "stop", "remote-ledger"], { stdio: "ignore" });
 }
 
