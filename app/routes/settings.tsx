@@ -17,6 +17,7 @@ import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
 import { listBackups } from "../services/backup.server";
+import { currentVersion } from "../services/updates.server";
 import {
   listCompanies,
   addCompany,
@@ -69,6 +70,7 @@ export async function loader() {
     })
   );
   return {
+    version: currentVersion(),
     reset: { scopes: resetPreview(), backups: listBackups() },
     companies: listCompanies(),
     community: {
@@ -224,7 +226,7 @@ const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -237,6 +239,12 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
       <div className="page-head">
         <h1>Settings</h1>
         <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Profile · Prompt · Danger</div>
+        {/*
+          In the head rather than inside a tab: the reason to look it up is usually
+          that you are telling someone else what you are running, and hunting through
+          nine tabs for it is not that.
+        */}
+        <div className="version" title="The release this copy is on, from git">{version}</div>
       </div>
       <hr className="rule double" />
       {actionData?.msg && <div className="notice ok">{actionData.msg}</div>}

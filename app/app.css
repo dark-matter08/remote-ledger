@@ -932,6 +932,12 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
   margin: 0; line-height: .9; letter-spacing: -.01em;
 }
 .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
+/* the release this copy is on — quiet, but findable without opening a tab */
+.page-head .version {
+  display: inline-block; margin-top: 10px; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .14em; color: var(--ink-faint);
+  border: 1px solid var(--rule-faint); padding: 3px 9px;
+}
 
 .panel { border: 1.5px solid var(--rule); background: var(--card); padding: 22px 24px; margin: 18px 0; }
 .panel > h3 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0 0 4px; }
