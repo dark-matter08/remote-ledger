@@ -103,9 +103,9 @@ export async function listLocal(): Promise<{ name: string; sizeBytes: number; mo
  * piping a downloaded script into a shell. The official installer is the fallback, and
  * the UI prints it in full so nobody runs it without reading it.
  */
-export function installCommand(hasBrew: boolean): string | null {
-  if (MAC) return hasBrew ? "brew install ollama" : "curl -fsSL https://ollama.com/install.sh | sh";
-  if (WIN) return "winget install Ollama.Ollama";
+export function installCommand(hasBrew: boolean, os: string = platform()): string | null {
+  if (os === "darwin") return hasBrew ? "brew install ollama" : "curl -fsSL https://ollama.com/install.sh | sh";
+  if (os === "win32") return "winget install Ollama.Ollama";
   return "curl -fsSL https://ollama.com/install.sh | sh";
 }
 
