@@ -761,7 +761,10 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
         totals.errors += fed.errors;
         if (fed.jobs.length) {
           L("result", `${fed.jobs.length} role(s) worth keeping — following each through to the employer's own posting…`);
-          const { alive, dropped } = await verifyJobs(fed.jobs, { limit: 40, signal: ac.signal, onLog: (line) => L("step", line) });
+          // keepOnBoard only here. These came out of a board's own API with their
+          // descriptions attached, so they cannot be imagined — unlike an agent's
+          // links, which must be walked through to an employer or dropped.
+          const { alive, dropped } = await verifyJobs(fed.jobs, { limit: 40, keepOnBoard: true, signal: ac.signal, onLog: (line) => L("step", line) });
           L("result", `Verified ${alive.length} live · dropped ${dropped.length} (dead link, closed, or never left the board).`);
           totals.errors += dropped.length;
           for (const a of alive) collected.set(keyOf(a.job), a);

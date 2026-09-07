@@ -41,7 +41,21 @@ const TIMEOUT_MS = 20_000;
 const DESC_CAP = 4000;
 const MAX_PER_FEED = 150;
 
-const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+/** Boards send titles and company names HTML-encoded — "1840 &#038; Company". */
+function entities(s: string): string {
+  return s
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/&#0?38;|&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+const str = (v: unknown): string | null =>
+  typeof v === "string" && v.trim() ? entities(v).trim() : null;
 
 // Every one of these ships descriptions as HTML.
 function unhtml(s: unknown): string | null {
@@ -120,9 +134,9 @@ export const FEEDS: Feed[] = [
       (Array.isArray(j) ? j : [])
         .filter((x: any) => str(x?.position) && str(x?.company))
         .map((x: any) => ({
-          company: String(x.company).trim(),
+          company: entities(String(x.company)).trim(),
           source: "RemoteOK",
-          title: String(x.position).trim(),
+          title: entities(String(x.position)).trim(),
           url: String(x?.url || x?.apply_url || "").trim(),
           location: place(x?.location),
           remote: true,
@@ -141,9 +155,9 @@ export const FEEDS: Feed[] = [
       f.feed?.remotive ? `https://remotive.com/api/remote-jobs?category=${f.feed.remotive}` : null,
     parse: (j) =>
       (Array.isArray(j?.jobs) ? j.jobs : []).map((x: any) => ({
-        company: String(x?.company_name || "").trim(),
+        company: entities(String(x?.company_name || "")).trim(),
         source: "Remotive",
-        title: String(x?.title || "").trim(),
+        title: entities(String(x?.title || "")).trim(),
         url: String(x?.url || "").trim(),
         location: place(x?.candidate_required_location),
         remote: true,
@@ -160,9 +174,9 @@ export const FEEDS: Feed[] = [
     url: "https://himalayas.app/jobs/api?limit=100",
     parse: (j) =>
       (Array.isArray(j?.jobs) ? j.jobs : []).map((x: any) => ({
-        company: String(x?.companyName || "").trim(),
+        company: entities(String(x?.companyName || "")).trim(),
         source: "Himalayas",
-        title: String(x?.title || "").trim(),
+        title: entities(String(x?.title || "")).trim(),
         url: String(x?.applicationLink || x?.guid || "").trim(),
         location: place(x?.locationRestrictions),
         remote: true,
@@ -183,9 +197,9 @@ export const FEEDS: Feed[] = [
       f.feed?.jobicy ? `https://jobicy.com/api/v2/remote-jobs?count=50&industry=${f.feed.jobicy}` : null,
     parse: (j) =>
       (Array.isArray(j?.jobs) ? j.jobs : []).map((x: any) => ({
-        company: String(x?.companyName || "").trim(),
+        company: entities(String(x?.companyName || "")).trim(),
         source: "Jobicy",
-        title: String(x?.jobTitle || "").trim(),
+        title: entities(String(x?.jobTitle || "")).trim(),
         url: String(x?.url || "").trim(),
         location: place(x?.jobGeo),
         remote: true,

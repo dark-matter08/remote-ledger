@@ -1577,6 +1577,30 @@ test("gaps: a draft needs either a place or a note, and says which is missing", 
   assert.doesNotMatch(empty.error || "", /^pick where/, "the old message demanded an entry and offered no alternative");
 });
 
+test("verify: a feed posting that never leaves its board is kept, an agent's is not", async () => {
+  const { verifyJobs } = await import("../app/services/scrape.server");
+
+  // Jobicy's page links to the company's homepage and keeps the apply button
+  // internal, so resolveLive correctly reports "could not resolve a final
+  // application link". Dropping it was the wrong POLICY, not a scraper failure: a
+  // support crawl scored seven real, open roles and saved none of them, which is
+  // exactly what "no jobs were added" looked like on a non-engineer's machine.
+  const boardJob = { company: "Toast", role: "Customer Care Tax Expert", apply_url: "https://jobicy.com/jobs/1-x" };
+
+  // Strict by default — an agent can imagine a link, so it must reach an employer.
+  const strict = await verifyJobs([boardJob], { limit: 1 });
+  const lenient = await verifyJobs([boardJob], { limit: 1, keepOnBoard: true });
+
+  // Both make a real network call; what matters is that the two policies differ only
+  // in what they do with a board-only result, never in what they call live.
+  assert.ok(
+    strict.alive.length <= lenient.alive.length,
+    "keepOnBoard may only ever keep more, never fewer"
+  );
+  assert.equal(strict.alive.length + strict.dropped.length, 1);
+  assert.equal(lenient.alive.length + lenient.dropped.length, 1);
+});
+
 test("fields: relevance comes from the profile, not from a hardcoded trade", async () => {
   const { fieldById, inField, keywordTokens, keywordHit } = await import("../app/fields");
   const support = fieldById("support")!;

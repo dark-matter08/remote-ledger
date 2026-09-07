@@ -358,6 +358,14 @@ export interface LiveCheck {
   hops: string[];        // intermediate URLs walked (aggregator → employer)
   jdText: string;
   jdHtml: string;
+  /**
+   * The board's page loaded and reads like a live posting, but no link off it led to
+   * the employer's own application form. Distinct from a failure: it is the ordinary
+   * shape of several boards — Jobicy's page links to the company homepage and keeps
+   * the apply button internal — and for a posting that came out of that board's own
+   * API, the board's URL is a real place to apply rather than a dead end.
+   */
+  boardOnly?: boolean;
 }
 
 // Walk a URL to its FINAL application page (following redirects and aggregator
@@ -419,8 +427,22 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
     const clean = bodyText.replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
     if (status >= 400) return { ok: false, status, finalUrl, reason: `HTTP ${status}`, hops, jdText: "", jdHtml: "" };
     if (DEAD.test(clean.slice(0, 6000))) return { ok: false, status, finalUrl, reason: "posting closed / no longer open", hops, jdText: "", jdHtml: "" };
-    if (AGGREGATOR.test(hostOf(finalUrl)))
-      return { ok: false, status, finalUrl, reason: `could not resolve a final application link off ${hostOf(finalUrl)}`, hops, jdText: "", jdHtml: "" };
+    if (AGGREGATOR.test(hostOf(finalUrl))) {
+      const clean2 = clean.slice(0, 6000);
+      return {
+        ok: false,
+        status,
+        finalUrl,
+        reason: `could not resolve a final application link off ${hostOf(finalUrl)}`,
+        hops,
+        // Hand back what was read anyway. The caller decides whether a posting that
+        // never leaves its board is worth keeping; that depends on where the posting
+        // came from, which is not knowable here.
+        jdText: jdText.replace(/\s+\n/g, "\n").trim().slice(0, 16000),
+        jdHtml: sanitizeJdHtml(jdHtml),
+        boardOnly: clean2.length >= 400,
+      };
+    }
     if (isCareersIndex(finalUrl))
       return { ok: false, status, finalUrl, reason: "that is a careers index, not a posting", hops, jdText: "", jdHtml: "" };
     // Same trick as the fetch path: an employer page that paints a Greenhouse job in
@@ -461,9 +483,19 @@ export interface VerifyResult {
   dropped: { company: string; role: string; url: string; reason: string }[];
 }
 
+/**
+ * @param opts.keepOnBoard Accept a posting that never leaves the board it came from.
+ *
+ * On by default for feed crawls and off for agent research, because the two produce
+ * different risks. An agent can imagine a job, so its links must be walked through to
+ * an employer or thrown away. A feed posting came out of the board's own API with its
+ * description attached — it cannot be imagined, and several boards deliberately keep
+ * the apply button internal. Dropping those meant a support crawl that scored seven
+ * real, open roles saved none of them, which is what "no jobs were added" looked like.
+ */
 export async function verifyJobs(
   jobs: any[],
-  opts: { onLog?: (line: string) => void; limit?: number; signal?: AbortSignal } = {}
+  opts: { onLog?: (line: string) => void; limit?: number; signal?: AbortSignal; keepOnBoard?: boolean } = {}
 ): Promise<VerifyResult> {
   const onLog = opts.onLog ?? (() => {});
   const list = jobs.slice(0, opts.limit ?? 40);
@@ -485,7 +517,14 @@ export async function verifyJobs(
     if (!/^https?:\/\//.test(url)) { drop("no/invalid apply URL"); continue; }
 
     const r = await resolveLive(browser, url, onLog);
-    if (!r.ok) { drop(r.reason); continue; }
+    if (!r.ok) {
+      if (!(opts.keepOnBoard && r.boardOnly)) { drop(r.reason); continue; }
+      // Apply through the board. Said plainly on the card rather than silently, so
+      // nobody is surprised by where the link goes.
+      alive.push({ job: { ...job, apply_url: r.finalUrl || url }, jd: r.jdText, jdHtml: r.jdHtml });
+      onLog(`✓ ${company} — live on ${hostOf(r.finalUrl || url)}; apply through the board (no employer link published)`);
+      continue;
+    }
 
     // store the FINAL employer apply URL (not the aggregator/redirect we started at)
     const resolved = r.finalUrl && r.finalUrl !== url ? { ...job, apply_url: r.finalUrl } : job;
