@@ -36,6 +36,7 @@ func main() {
 	for _, a := range os.Args[1:] {
 		if a == "--version" || a == "-v" {
 			fmt.Printf("remote-ledger installer %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+			ui.HoldOpen()
 			return
 		}
 	}
@@ -112,6 +113,7 @@ func main() {
 	ui.Say("Opening it now. The first screen asks what work you are looking for.")
 	openURL(appURL)
 	fmt.Println()
+	ui.HoldOpen()
 }
 
 // ask presents the component screen. Defaults are chosen so that pressing Enter

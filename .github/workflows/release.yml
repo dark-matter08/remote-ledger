@@ -52,6 +52,16 @@ jobs:
           codesign --verify --verbose dist/remote-ledger-macos
 
           GOOS=linux   GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/remote-ledger-linux ./cmd/installer
+
+          # The icon and version metadata for the .exe. Go links any *.syso sitting in
+          # the package directory, so this has to exist before the Windows build and
+          # only affects it. Generated here rather than committed so the version in
+          # the file properties matches the tag instead of going stale.
+          go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 \
+            -icon=public/favicon.ico \
+            -product-version="${VERSION}" \
+            -o=cmd/installer/resource_windows_amd64.syso \
+            cmd/installer/versioninfo.json
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/remote-ledger-windows.exe ./cmd/installer
 
           cd dist && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS

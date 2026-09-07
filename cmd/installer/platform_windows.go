@@ -3,7 +3,9 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -43,4 +45,35 @@ func freeDiskBytes(path string) uint64 {
 		return 0
 	}
 	return freeForCaller
+}
+
+// gitCandidates is where Git for Windows actually lands, for the window between
+// installing it and the PATH being visible to a process that started before it.
+func gitCandidates() []string {
+	var out []string
+	for _, base := range []string{
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+		filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs"),
+		`C:\Program Files`,
+	} {
+		if base == "" {
+			continue
+		}
+		out = append(out,
+			filepath.Join(base, "Git", "cmd", "git.exe"),
+			filepath.Join(base, "Git", "bin", "git.exe"),
+		)
+	}
+	return out
+}
+
+// ownsConsole reports whether this process is the only one attached to the console,
+// which is what a double-click looks like. When it is, the window closes the instant
+// main returns — taking every error message with it.
+func ownsConsole() bool {
+	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleProcessList")
+	var pids [8]uint32
+	n, _, _ := proc.Call(uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids)))
+	return n == 1
 }

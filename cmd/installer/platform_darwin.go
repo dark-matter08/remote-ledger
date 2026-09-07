@@ -38,3 +38,10 @@ func freeDiskBytes(path string) uint64 {
 	}
 	return st.Bavail * uint64(st.Bsize)
 }
+
+func gitCandidates() []string {
+	return []string{"/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"}
+}
+
+// A terminal on macOS outlives the process, so there is nothing to hold open.
+func ownsConsole() bool { return false }
