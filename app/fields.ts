@@ -182,6 +182,17 @@ export function fieldLabel(id: string | null | undefined): string {
 }
 
 /**
+ * The same thing as a bare noun, for prose that supplies its own grammar:
+ * "remote roles in ${fieldNoun(id)}". fieldLabel's trailing "role" reads as
+ * "remote roles in customer support & success role" here.
+ */
+export function fieldNoun(id: string | null | undefined): string {
+  const f = fieldById(id);
+  if (!f || f.id === "other") return "the candidate's own line of work";
+  return f.label.toLowerCase();
+}
+
+/**
  * Keywords, split into things worth matching a title against.
  *
  * Both the phrase and its words: "Customer Support Specialist" typed as one comma-free

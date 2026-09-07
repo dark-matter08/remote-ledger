@@ -260,7 +260,7 @@ export async function action({ request }: Route.ActionArgs) {
 const STEPS = [
   { n: 1, title: "The AI", hint: "Pick what does the thinking — a subscription you already pay for, your own key, or a model on this machine." },
   { n: 2, title: "Your résumé", hint: "One PDF. It is read once, into structured fields you can edit; the file itself is not uploaded anywhere." },
-  { n: 3, title: "Your target", hint: "Where you can work from and what you work in. These two answers are written straight into the search." },
+  { n: 3, title: "Your target", hint: "The line of work you are in, where you can work from, and the words that appear in the postings you want. All three go straight into the search." },
   { n: 4, title: "Where to look", hint: "The boards that get read. Some need no AI at all, which is what makes a free setup work." },
   { n: 5, title: "First jobs", hint: "Run it once, watch it, and see what lands on the board." },
   { n: 6, title: "You're set", hint: "What was decided for you, and the parts of the app this wizard did not cover." },

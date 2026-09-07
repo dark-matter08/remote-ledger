@@ -171,12 +171,34 @@ export function fitsInRam(model: OllamaModel, totalRamGb: number): boolean {
 }
 
 /** What we suggest first, given the machine. Biggest tool-capable model that fits. */
+/**
+ * The model to suggest for this machine.
+ *
+ * Not simply the biggest that fits. On a modest laptop the largest model that
+ * technically fits is the one that makes the app feel broken — every score, every
+ * tailored bullet, every drafted answer waits on it, and a first-time user reads slow
+ * as broken and stops. Below the comfortable line, capability is worth less than
+ * finishing.
+ *
+ * Above ~16 GB there is headroom for the largest that fits. Below it, the pick is the
+ * best model that leaves room to actually run — roughly half the machine's memory,
+ * since the OS and a browser want the rest.
+ */
 export function recommendedModel(totalRamGb: number): OllamaModel {
   const usable = OLLAMA_MODELS.filter(
     (m) => m.caps.includes("tools") && !m.caps.includes("embedding") && fitsInRam(m, totalRamGb)
   );
+  if (!usable.length) return OLLAMA_MODELS[0];
   // sizeGb is a decent proxy for capability inside this shelf
-  return usable.sort((a, b) => b.sizeGb - a.sizeGb)[0] ?? OLLAMA_MODELS[0];
+  const bySize = [...usable].sort((a, b) => b.sizeGb - a.sizeGb);
+  if (totalRamGb >= 16) return bySize[0];
+  const comfortable = bySize.filter((m) => m.ramGb <= totalRamGb / 2);
+  return comfortable[0] ?? bySize[bySize.length - 1];
+}
+
+/** Will this be slow enough here to be worth warning about before it is downloaded? */
+export function willBeSlow(model: OllamaModel, totalRamGb: number): boolean {
+  return totalRamGb > 0 && model.ramGb > totalRamGb / 2;
 }
 
 /** `llama3.2:3b` and `llama3.2:3b` from /api/tags ("llama3.2:3b") are the same thing. */

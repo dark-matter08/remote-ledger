@@ -183,15 +183,15 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
             : <span className="badge ok">{kb.items.length} item{kb.items.length === 1 ? "" : "s"}</span>}
         </h3>
         <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-          Tell the agent what you're building, or point it at a project folder. It reads your work, drafts
+          Tell the agent what you have been working on, or point it at a folder. It reads your work, drafts
           résumé bullets, and asks what it can't infer. Nothing touches a résumé until you accept it.
         </p>
 
         <Form method="post">
           <input type="hidden" name="intent" value="kb-note" />
           <div className="field">
-            <label>What are you building / working on?</label>
-            <textarea name="text" placeholder="e.g. Building a Rust CLI that syncs Postgres → SQLite for offline-first apps; designed the WAL replication and shipped it to 3 teams." style={{ minHeight: 80 }} />
+            <label>What have you been working on?</label>
+            <textarea name="text" placeholder="e.g. Rewrote the escalation procedure after the Q3 backlog and cut average handover from 40 minutes to 12 — or: built a Rust CLI that syncs Postgres to SQLite and shipped it to 3 teams." style={{ minHeight: 80 }} />
           </div>
           <button className="btn" disabled={busy || !kb.hasRunner}>Capture &amp; draft bullets</button>
         </Form>
@@ -199,22 +199,22 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
 
       {/* opt-in folder scan — read locally on the server, never uploaded */}
       <div className="panel kb">
-        <h3>Scan a project folder {kb.scanning ? <span className="badge off">scanning…</span> : null}</h3>
+        <h3>Read a folder of your work {kb.scanning ? <span className="badge off">scanning…</span> : null}</h3>
         <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>
-          The runner reads README/manifests/source <strong>on this machine</strong> (skips node_modules, .git, build output) — nothing is uploaded, so it's safe for big folders. A <strong>GitHub repo</strong> works too: paste its URL or <code>owner/repo</code> and it is fetched with the <code>gh</code> login you already have, private ones included, then read the same way and thrown away. Sources stay and can be re-scanned manually or on a schedule.
+          The runner reads what is in the folder <strong>on this machine</strong> — documents (.pdf, .docx, .md, .txt) and, in a project folder, its README, manifests and source (skipping node_modules, .git and build output). Nothing is uploaded, so it is safe for big folders. A <strong>GitHub repo</strong> works too: paste its URL or <code>owner/repo</code> and it is fetched with the <code>gh</code> login you already have, private ones included, then read the same way and thrown away. Sources stay and can be re-scanned manually or on a schedule.
         </p>
         <Form method="post">
           <input type="hidden" name="intent" value="kb-add-source" />
           <div className="field">
-            <label>Folder or GitHub repo</label>
-            <DirPicker name="path" placeholder="/Users/you/Projects/my-app  ·  or  owner/repo  ·  or click Browse" />
+            <label>Folder, or a GitHub repo</label>
+            <DirPicker name="path" placeholder="a folder of documents, a project folder, or owner/repo — or click Browse" />
           </div>
           <div className="row2">
             <div className="field">
               <label>This folder is…</label>
               <div className="radiocol">
-                <label><input type="radio" name="kind" value="project" checked={scanKind === "project"} onChange={() => setScanKind("project")} /> A single project I'm working on</label>
-                <label><input type="radio" name="kind" value="company" checked={scanKind === "company"} onChange={() => setScanKind("company")} /> A company folder with several projects</label>
+                <label><input type="radio" name="kind" value="project" checked={scanKind === "project"} onChange={() => setScanKind("project")} /> One piece of work</label>
+                <label><input type="radio" name="kind" value="company" checked={scanKind === "company"} onChange={() => setScanKind("company")} /> A company folder holding several</label>
                 <span className="hint" style={{ margin: "2px 0 0", textTransform: "none", letterSpacing: 0 }}>A GitHub repo is detected from what you paste — this choice is ignored for one.</span>
               </div>
             </div>
@@ -239,7 +239,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
             </div>
             {scanKind === "project" ? (
               <div className="field">
-                <label>Link to existing project (optional)</label>
+                <label>Link to something already here (optional)</label>
                 <Select name="linkRef" defaultValue="0" options={[
                   { value: "0", label: "— Create a new item —" },
                   ...kb.linkable.map((it: any) => ({ value: it.value, label: it.label })),
@@ -258,7 +258,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
                   which is enough unless you worked there twice &mdash; then say which stint.
                 </p>
                 <label style={{ marginTop: 14 }}>Your role / title there</label>
-                <input type="text" name="role" placeholder="e.g. Senior Backend Engineer" />
+                <input type="text" name="role" placeholder="e.g. Customer Support Specialist" />
                 <p className="hint" style={{ marginTop: 6 }}>A company folder becomes <strong>one</strong> résumé experience entry — not one entry per sub-project.</p>
               </div>
             )}
@@ -273,7 +273,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
           <div className="field">
             <label>{scanKind === "company" ? "Company name & context" : "A few words about this folder (optional)"}</label>
             <input type="text" name="label" placeholder={scanKind === "company" ? "Company name (e.g. Acme Corp)" : "Label (e.g. Acme Corp)"} style={{ marginBottom: 8 }} />
-            <textarea name="note" placeholder="Context for the agent — e.g. 'My work at Acme; I led the billing service and the data pipeline.'" style={{ minHeight: 64 }} />
+            <textarea name="note" placeholder="Context for the agent — e.g. 'My work at Acme; I ran tier 2 support and rewrote the escalation process.'" style={{ minHeight: 64 }} />
           </div>
           <button className="btn" disabled={busy || !kb.hasRunner || kb.scanning}>{kb.scanning ? "Scanning…" : "Add & scan folder"}</button>
         </Form>
@@ -369,7 +369,7 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
 }
 
 // Facts only you know about a project: whether it is deployed, who actually uses it,
-// how big it got. The scanner reads the code, which cannot answer any of that, so
+// how big it got. The scanner reads the files, which cannot answer any of that, so
 // without this the drafts have to guess — and guessing is where they go wrong.
 function ItemContext({ item, busy }: { item: any; busy: boolean }) {
   const fetcher = useFetcher<any>();
@@ -392,7 +392,7 @@ function ItemContext({ item, busy }: { item: any; busy: boolean }) {
         value={text}
         onChange={(e) => setText(e.target.value)}
         style={{ minHeight: 62 }}
-        placeholder={"Deployed at\u2026, used by\u2026, roughly N users. Anything the code cannot tell the AI."}
+        placeholder={"Used by\u2026, roughly N people, ran from\u2026 to\u2026 Anything the files cannot say for themselves."}
       />
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
         <button className="ghost-btn" disabled={busy || saving || !dirty}>{saving ? "Saving\u2026" : "Save context"}</button>
@@ -430,7 +430,7 @@ function KbQuestion({ q }: { q: any }) {
         <input type="hidden" name="intent" value="kb-answer" />
         <input type="hidden" name="id" value={q.id} />
         <input type="hidden" name="itemId" value={q.item_id || ""} />
-        <textarea name="answer" value={text} onChange={(e) => setText(e.target.value)} placeholder={drafting ? "Drafting from the project's code + your résumé…" : "Your answer…"} />
+        <textarea name="answer" value={text} onChange={(e) => setText(e.target.value)} placeholder={drafting ? "Drafting from the folder + your résumé…" : "Your answer…"} />
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button className="ghost-btn" disabled={saving || !text.trim()}>{saving ? "Saving…" : "Save answer"}</button>
           <button type="button" className="ghost-btn" disabled={drafting} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}

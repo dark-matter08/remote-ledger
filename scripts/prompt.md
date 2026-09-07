@@ -7,7 +7,7 @@ CANDIDATE PROFILE (match every job to this):
 - Open to startups, scale-ups, MNCs, agencies and established employers.
 
 TASK:
-Find REAL, currently-open remote {{field}}s the candidate could realistically
+Find REAL, currently-open remote roles in {{field}} the candidate could realistically
 apply to and work remotely from their location (worldwide / regional / "anywhere"
 remote). Use web search and fetch live pages. Prefer roles matching their skills.
 Do NOT invent jobs or links; verify each application URL resolves.

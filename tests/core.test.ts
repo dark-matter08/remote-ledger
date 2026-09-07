@@ -1468,6 +1468,74 @@ test("kb: an entry already scanned from its folder is adopted, not duplicated", 
   );
 });
 
+test("ollama: a modest machine is offered a model that finishes, and warned", async () => {
+  const { recommendedModel, willBeSlow, fitsInRam } = await import("../app/ollama");
+
+  // The old rule was "biggest that fits", which on an 8 GB laptop picked a model
+  // wanting all 8 — every score and every tailored bullet then waits on it, and a
+  // first-time user reads slow as broken.
+  const small = recommendedModel(8);
+  assert.ok(fitsInRam(small, 8));
+  assert.ok(small.ramGb <= 4, `8 GB should leave room to run: got ${small.id} wanting ${small.ramGb} GB`);
+  assert.equal(willBeSlow(small, 8), false);
+
+  // Plenty of memory: take the most capable that fits, as before.
+  const big = recommendedModel(32);
+  assert.ok(big.ramGb >= small.ramGb, "headroom should buy capability");
+
+  // Nothing comfortable fits, so say so rather than pretend.
+  assert.equal(willBeSlow(recommendedModel(4), 4), true);
+  assert.ok(recommendedModel(4).caps.includes("tools"), "still has to be usable for the app's work");
+});
+
+test("kb: a folder of documents is work too, not just a repository", async () => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const { readDocument, DOC_FILE_RE } = await import("../app/services/documents.server");
+
+  const dir = resolve(TEST_DIR, "support-folder");
+  mkdirSync(dir, { recursive: true });
+
+  // A .docx, built the way Word builds one: a zip with word/document.xml inside.
+  // This is THE document format for everyone the scan used to be blind to, so it is
+  // read without adding a zip dependency to open one file in one archive.
+  const { default: zlib } = await import("node:zlib");
+  const xml = Buffer.from(
+    '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>' +
+      "<w:p><w:r><w:t>Escalation Handling Procedure &amp; Tier 2 Handover</w:t></w:r></w:p>" +
+      "<w:p><w:r><w:t>Cut average handover time from 40 minutes to 12.</w:t></w:r></w:p>" +
+      "</w:body></w:document>",
+    "utf8"
+  );
+  const body = zlib.deflateRawSync(xml);
+  const nameBuf = Buffer.from("word/document.xml", "latin1");
+  const head = Buffer.alloc(30);
+  head.writeUInt32LE(0x04034b50, 0);
+  head.writeUInt16LE(8, 8); // deflate
+  head.writeUInt32LE(body.length, 18);
+  head.writeUInt32LE(xml.length, 22);
+  head.writeUInt16LE(nameBuf.length, 26);
+  writeFileSync(resolve(dir, "procedure.docx"), Buffer.concat([head, nameBuf, body]));
+  writeFileSync(resolve(dir, "csat.md"), "# CSAT\nHeld 94% across 2025 on ~60 tickets a day.\n");
+
+  assert.ok(DOC_FILE_RE.test("procedure.docx") && DOC_FILE_RE.test("report.pdf"));
+  assert.equal(DOC_FILE_RE.test("screenshot.png"), false, "an image has no text to read");
+
+  const docx = await readDocument(resolve(dir, "procedure.docx"));
+  assert.match(docx.text, /Escalation Handling Procedure & Tier 2 Handover/);
+  assert.match(docx.text, /40 minutes to 12/);
+
+  const md = await readDocument(resolve(dir, "csat.md"));
+  assert.match(md.text, /94%/);
+
+  // An unreadable file is named with the reason, never counted as evidence — a bullet
+  // written around a file nobody read is exactly the fabrication the app guards against.
+  writeFileSync(resolve(dir, "scan.pdf"), "not really a pdf");
+  const bad = await readDocument(resolve(dir, "scan.pdf"));
+  assert.equal(bad.text, "");
+  assert.ok(bad.problem, "it says why rather than going quiet");
+});
+
 test("gaps: a skill you did not learn at a listed employer still gets kept", async () => {
   const { getDb } = await import("../app/sqlite.server");
   const { fillGaps } = await import("../app/services/gaps.server");

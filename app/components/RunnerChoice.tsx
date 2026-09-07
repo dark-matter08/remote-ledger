@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Form, useFetcher } from "react-router";
 import { Check, Copy, Download, Play, RefreshCw, TerminalSquare, Zap } from "lucide-react";
 import { Select } from "./Select";
-import { recommendedModel, sameModel } from "../ollama";
+import { recommendedModel, sameModel, willBeSlow } from "../ollama";
 
 // Step one of the wizard: pick the AI that does the work.
 //
@@ -179,9 +179,17 @@ function LocalPane() {
       {s?.running && suggested && (
         <div style={{ marginTop: 6 }}>
           <p className="setup-prose">
-            With {s.totalRamGb} GB of memory, <strong>{suggested.label} {suggested.params}</strong> is the most
-            capable model that comfortably fits — it wants about {suggested.ramGb} GB to run.
+            With {s.totalRamGb} GB of memory, <strong>{suggested.label} {suggested.params}</strong> is the pick —
+            it wants about {suggested.ramGb} GB to run. Bigger models exist and this is not the biggest that
+            would technically fit; below about 16 GB, one that finishes beats one that is cleverer.
           </p>
+          {willBeSlow(suggested, s.totalRamGb) && (
+            <div className="notice warn">
+              On {s.totalRamGb} GB this will work but it will be slow — think tens of seconds for a score, minutes
+              for a tailored résumé. Nothing is wrong when that happens. If it is too slow to live with, a free
+              OpenRouter model under &ldquo;My own API key&rdquo; is the faster route on a machine this size.
+            </div>
+          )}
           {pulling ? (
             <p className="hint">Downloading {pulling.model} — {pulling.percent ?? 0}%. It keeps going if you move on.</p>
           ) : have ? (

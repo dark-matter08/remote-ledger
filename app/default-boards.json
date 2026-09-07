@@ -23,5 +23,10 @@
     "name": "InclusivelyRemote",
     "url": "https://inclusivelyremote.com/",
     "note": "remote roles open worldwide. Each posting is public at /job/<slug>/ and carries schema.org JobPosting markup with the real hiringOrganization. The /jobs/ index and /alerts-jobs/ redirect to a login (/login/?restricted=page) — never follow or file those. Browse the homepage and the public /job-category/<x>/ and /job-type/<x>/ listings instead, open each /job/<slug>/ page, and follow its Apply Now button (class btn-apply-job-external), which links straight to the employer's own ATS. File that employer URL, never the inclusivelyremote.com page."
+  },
+  {
+    "name": "Jobspresso",
+    "url": "https://jobspresso.co/",
+    "note": "curated remote board that is not tech-only — it keeps separate public category pages at /remote-customer-service-jobs/, /remote-marketing-jobs/, /remote-sales-jobs/, /remote-writing-jobs/, /remote-design-jobs/, /remote-product-management-jobs/, /remote-non-tech-jobs/ and /remote-software-jobs/. Browse the category that matches the candidate's line of work and follow the /job/<slug>/ links; each posting is public and carries the employer's own application link. robots.txt: everything above is allowed, but /*? is disallowed — do NOT build search-query URLs — and it asks for a 3-second crawl delay."
   }
 ]

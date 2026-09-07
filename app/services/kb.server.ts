@@ -11,6 +11,7 @@ import { join, basename, extname, relative } from "node:path";
 import { getDb, getSetting } from "../sqlite.server";
 import { runLLM, tryParseJson, defaultRunnerId } from "../llm/runner.server";
 import { HUMAN_STYLE, stripAiTells } from "../llm/style";
+import { DOC_FILE_RE, readDocuments } from "./documents.server";
 import { getDefaultProfile, saveProfile } from "../resume/profiles.server";
 import { createCrawlRun, crawlLog, updateCrawlRun } from "../db.server";
 
@@ -199,7 +200,11 @@ export function acceptSuggestion(id: number): { ok: boolean; msg: string } {
 // ---------- LLM extraction ----------
 // This is the USER'S OWN work — attribute everything to them ("you"), don't hedge about
 // collaborators or claim the role is unclear; assume ownership unless evidence clearly says otherwise.
-const SYSTEM = "You build a developer's personal knowledge base from THEIR OWN projects, for résumé writing. The folder and notes belong to the user — treat the user as the owner/primary author and write about it as their work ('you'/'your'). Do NOT speculate that the role is unclear or that collaborators may have done it; assume the user built it unless the evidence clearly contradicts that. Be concrete about WHAT the project is and DOES (purpose, what problem it solves, architecture, stack) — infer this from the code when the README is thin. Only invent nothing; when a specific metric/scope is genuinely unknown, put it in a question. Output ONLY valid JSON.\n\n" + HUMAN_STYLE;
+// Deliberately says "work", not "projects", and never "developer". The folder being
+// read is as likely to hold escalation procedures, schemes of work or reconciliation
+// checklists as it is source code, and a prompt that calls the reader a developer
+// writes about a customer support handbook as though it were a codebase.
+const SYSTEM = "You build someone's personal knowledge base from THEIR OWN work, for résumé writing. The folder and notes belong to the user — treat the user as the owner/primary author and write about it as their work ('you'/'your'). Do NOT speculate that the role is unclear or that colleagues may have done it; assume the user did it unless the evidence clearly contradicts that. Be concrete about WHAT the work is and DOES: what it is for, what problem it solves, who it serves, and the tools, systems or methods involved — infer this from the material itself when the summary documents are thin. Invent nothing; when a specific metric or scope is genuinely unknown, put it in a question. Output ONLY valid JSON.\n\n" + HUMAN_STYLE;
 
 interface Analysis {
   title: string; kind: string; summary: string; tags: string[]; bullets: string[]; questions: string[];
@@ -267,7 +272,7 @@ export async function draftKbAnswer(questionId: number, notes?: string): Promise
   if (!q) return { error: "question not found" };
   let projectText = q.title ? `Project: ${q.title}\nSummary: ${q.summary || ""}\nTech: ${safeTags(q.tags).join(", ")}` : "";
   if (q.source_path && existsSync(q.source_path)) {
-    try { const g = gatherProjectText(q.source_path, "deep"); if (g) projectText += `\n\nProject files (for grounding):\n${g.text.slice(0, 30000)}`; } catch {}
+    try { const g = await gatherProjectText(q.source_path, "deep"); if (g) projectText += `\n\nProject files (for grounding):\n${g.text.slice(0, 30000)}`; } catch {}
   }
   const profile = getDefaultProfile();
   // Facts the user typed beat anything inferred from code. The code says what the
@@ -508,7 +513,16 @@ function fileScore(rel: string): number {
   return s;
 }
 
-function gatherProjectText(dir: string, depth: ScanDepth = "standard"): { name: string; text: string } | null {
+/** Does this folder hold documents we can actually read? Top level only, and cheap. */
+function hasDocuments(dir: string): boolean {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).some((e) => e.isFile() && DOC_FILE_RE.test(e.name));
+  } catch {
+    return false;
+  }
+}
+
+async function gatherProjectText(dir: string, depth: ScanDepth = "standard"): Promise<{ name: string; text: string } | null> {
   const parts: string[] = [];
   // README
   for (const r of READMES) { const p = join(dir, r); if (existsSync(p)) { try { parts.push(`# ${r}\n` + readFileSync(p, "utf8").slice(0, 6000)); break; } catch {} } }
@@ -559,6 +573,23 @@ function gatherProjectText(dir: string, depth: ScanDepth = "standard"): { name: 
     }
   }
 
+  // The documents. Read after the README and the manifests so a repository is
+  // unaffected, and before the length check so a folder holding nothing else still
+  // has something to say for itself.
+  try {
+    const docs = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && DOC_FILE_RE.test(e.name) && !READMES.includes(e.name))
+      .map((e) => join(dir, e.name))
+      .slice(0, depth === "quick" ? 4 : depth === "deep" ? 25 : 12);
+    if (docs.length) {
+      for (const d of await readDocuments(docs, depth === "deep" ? 40000 : 16000)) {
+        // A scan with no text layer is named and left empty rather than counted as
+        // evidence — the model must not write a bullet around a file it never read.
+        parts.push(d.text ? `# ${d.name}\n${d.text}` : `# ${d.name}\n(${d.problem || "unreadable"})`);
+      }
+    }
+  } catch {}
+
   const text = parts.join("\n\n").trim();
   if (text.length < 40) return null;
   return { name: basename(dir), text };
@@ -568,7 +599,13 @@ function gatherProjectText(dir: string, depth: ScanDepth = "standard"): { name: 
 // immediate subdirectories. Bounded so a big folder can't run forever.
 function candidateProjects(root: string, max = 12): string[] {
   const out: string[] = [];
-  const looksLikeProject = (d: string) => MANIFESTS.some((m) => existsSync(join(d, m))) || READMES.some((r) => existsSync(join(d, r)));
+  // A README or a manifest is what a repository looks like. A folder of documents —
+  // procedures, reports, reviews, scorecards — is what everyone else's work looks
+  // like, and it used to be skipped with "nothing to read here".
+  const looksLikeProject = (d: string) =>
+    MANIFESTS.some((m) => existsSync(join(d, m))) ||
+    READMES.some((r) => existsSync(join(d, r))) ||
+    hasDocuments(d);
   if (looksLikeProject(root)) out.push(root);
   let entries: any[] = [];
   try { entries = readdirSync(root, { withFileTypes: true }); } catch { return out; }
@@ -893,7 +930,7 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
     dirs = src.kind === "company" ? candidateProjects(src.path) : [src.path];
   }
   if (!dirs.length) {
-    L("error", "Nothing with a README or manifest to read here.");
+    L("error", "Nothing readable here — no README, no manifest, and no documents (.pdf, .docx, .md, .txt) at the top level of this folder.");
     updateCrawlRun(runId, { status: "done", ended_at: NOW(), note: src.path });
     db.prepare("UPDATE kb_sources SET last_scanned_at=? WHERE id=?").run(NOW(), src.id);
     return;
@@ -910,7 +947,7 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
     const company = (src.label || basename(src.path)).slice(0, 120);
     const parts: string[] = [];
     for (const dir of dirs) {
-      const g = gatherProjectText(dir, depth);
+      const g = await gatherProjectText(dir, depth);
       if (g) { parts.push(`### Project: ${g.name}\n${g.text}`); L("step", `read ${g.name} (${g.text.length} chars)`); }
     }
     if (!parts.length) {
@@ -949,8 +986,8 @@ async function runSourceScan(runId: number, src: KbSource): Promise<void> {
   const linkId = src.link_item_id ? Number(src.link_item_id) : null;
   let found = 0, added = 0, updated = 0;
   for (const dir of dirs) {
-    const g = gatherProjectText(dir, depth);
-    if (!g) { L("step", `skipped ${basename(dir)} — no readable README/manifest/source`); continue; }
+    const g = await gatherProjectText(dir, depth);
+    if (!g) { L("step", `skipped ${basename(dir)} — nothing readable in it`); continue; }
     L("step", `reading ${g.name} (${g.text.length} chars, ${depth}) → analyzing…`);
     try {
       const a = await analyze("project", g.name, g.text, noteCtx || undefined, depth === "deep");

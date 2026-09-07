@@ -32,7 +32,7 @@ import {
 } from "./ats.server";
 import { fetchAllFeeds, type FeedPosting } from "./feeds.server";
 import { webSearchAdvice } from "../llm/openrouter.server";
-import { fieldById, fieldLabel, inField, keywordHit, keywordTokens, type JobField } from "../fields";
+import { fieldById, fieldLabel, fieldNoun, inField, keywordHit, keywordTokens, type JobField } from "../fields";
 
 export type CrawlType = "find" | "update" | "full" | "careers" | "feeds";
 
@@ -68,14 +68,14 @@ function buildPrompt(o: PromptOpts): string {
     try {
       tmpl = readFileSync(resolve(process.cwd(), "scripts", "prompt.md"), "utf8");
     } catch {
-      tmpl = "Find remote {{field}}s for someone in {{location}} matching {{stack}}. Return a JSON array.";
+      tmpl = "Find remote roles in {{field}} for someone in {{location}} matching {{stack}}. Return a JSON array.";
     }
   }
   const loc = getSetting("profile_location") || "a remote-friendly location";
   const stack = getSetting("profile_stack") || "not stated";
   // The template used to say "remote software roles" outright; the field it actually
   // is now travels with the location and the keywords.
-  const field = fieldLabel(getSetting("profile_field"));
+  const field = fieldNoun(getSetting("profile_field"));
 
   if (o.mode === "count") {
     const want = o.remaining ?? o.target ?? 5;
@@ -124,12 +124,12 @@ export function targetPreview(): string {
     try {
       tmpl = readFileSync(resolve(process.cwd(), "scripts", "prompt.md"), "utf8");
     } catch {
-      tmpl = "Find remote {{field}}s for someone in {{location}} matching {{stack}}.";
+      tmpl = "Find remote roles in {{field}} for someone in {{location}} matching {{stack}}.";
     }
   }
   const loc = getSetting("profile_location") || "(nowhere yet — fill in the box above)";
   const stack = getSetting("profile_stack") || "(nothing yet — fill in the box above)";
-  const field = fieldLabel(getSetting("profile_field"));
+  const field = fieldNoun(getSetting("profile_field"));
   return tmpl
     .split("\n")
     .slice(0, 14)
