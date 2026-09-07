@@ -42,8 +42,13 @@ function exec(
   opts: { input?: string; timeoutMs?: number } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolveP) => {
+    // windowsHide: the server is started detached and so has no console of its own.
+    // Windows gives a console-mode child a brand new *visible* window when the parent
+    // has none, so every one of these flashed a black window on screen — several times
+    // a minute, since the status endpoints are polled. It is not optional here.
     const child = spawn(cmd, args, {
       env: { ...process.env, PATH: augmentedPath() },
+      windowsHide: true,
     });
     let stdout = "",
       stderr = "";
@@ -751,7 +756,7 @@ export async function streamClaude(opts: {
     if (opts.model && opts.model !== "default") args.push("--model", opts.model);
     if (opts.system) args.push("--append-system-prompt", opts.system);
     if (opts.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
-    const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() } });
+    const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() }, windowsHide: true });
     let timedOut = false;
     let aborted = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs ?? 600000);

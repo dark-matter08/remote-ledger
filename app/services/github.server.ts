@@ -56,7 +56,7 @@ export const looksLikeRepo = (s: string): boolean =>
   /github\.com/i.test(s) || (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(String(s || "").trim()) && !s.startsWith("/") && !s.startsWith("~"));
 
 function gh(args: string[], timeoutMs = 60_000): { ok: boolean; out: string; err: string } {
-  const r = spawnSync("gh", args, { encoding: "utf8", timeout: timeoutMs });
+  const r = spawnSync("gh", args, { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
   return {
     ok: r.status === 0,
     out: String(r.stdout || "").trim(),
@@ -65,7 +65,7 @@ function gh(args: string[], timeoutMs = 60_000): { ok: boolean; out: string; err
 }
 
 function git(args: string[], cwd: string, timeoutMs = 60_000): string | null {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", timeout: timeoutMs });
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", timeout: timeoutMs, windowsHide: true });
   return r.status === 0 ? String(r.stdout || "").trim() : null;
 }
 

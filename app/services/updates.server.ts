@@ -35,7 +35,7 @@ let lastFetch = 0;
 let lastFetchError: string | undefined;
 
 function git(args: string[], timeoutMs = 20_000): string | null {
-  const r = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8", timeout: timeoutMs });
+  const r = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8", timeout: timeoutMs, windowsHide: true });
   return r.status === 0 ? String(r.stdout || "").trim() : null;
 }
 
@@ -139,6 +139,7 @@ export async function applyUpdate(to: string): Promise<{ ok: boolean; message: s
     cwd: process.cwd(),
     detached: true,
     stdio: ["ignore", out, out],
+    windowsHide: true,
   });
   child.unref();
   applying = Date.now();

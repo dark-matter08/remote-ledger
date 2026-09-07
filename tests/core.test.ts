@@ -2263,8 +2263,12 @@ test("ollama: every platform has a way to install it from the app", async () => 
   const { installCommand } = await import("../app/services/ollama.server");
 
   // Windows used to return null here, so the wizard fell through to "go to a website
-  // and come back" — the one platform where the Install button did nothing.
-  assert.match(String(installCommand(false, "win32")), /winget/, "Windows installs through winget");
+  // and come back" — the one platform where the Install button did nothing. It then
+  // went through winget, which failed on a real machine with nothing printed under it.
+  // Ollama's own script is what its docs give for Windows.
+  const win = String(installCommand(false, "win32"));
+  assert.match(win, /ollama\.com\/install\.ps1/, "Windows uses the vendor's own script");
+  assert.match(win, /-NoProfile|-ExecutionPolicy/, "and does not trip over a user's PowerShell profile or policy");
 
   // macOS prefers Homebrew over piping a downloaded script into a shell
   assert.equal(installCommand(true, "darwin"), "brew install ollama");
@@ -2276,4 +2280,47 @@ test("ollama: every platform has a way to install it from the app", async () => 
   for (const os of ["darwin", "win32", "linux"]) {
     assert.ok(installCommand(false, os), `${os} must have something to offer`);
   }
+});
+
+test("no server-side child process may pop a console window on Windows", async () => {
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  // The server is started detached and so owns no console of its own. Windows gives a
+  // console-mode child a brand new *visible* window when its parent has none, so every
+  // one of these flashed a black window on screen — and the status endpoints behind
+  // them are polled every few seconds. Windows became unusable to watch.
+  //
+  // This is invisible on macOS and Linux, which is exactly why it needs a test.
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const full = join(dir, e);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (full.endsWith(".server.ts")) files.push(full);
+    }
+  };
+  walk("app");
+
+  const CALL = /\b(spawnSync|spawn|execSync|execFileSync|pexecFile|pexec)\(/g;
+  const offenders: string[] = [];
+
+  for (const file of files) {
+    const src = readFileSync(file, "utf8");
+    for (const m of src.matchAll(CALL)) {
+      // walk to the matching close paren so we read this call's arguments and no others
+      let depth = 0;
+      let i = m.index! + m[0].length - 1;
+      for (; i < src.length; i++) {
+        if (src[i] === "(") depth++;
+        else if (src[i] === ")" && --depth === 0) break;
+      }
+      const args = src.slice(m.index!, i + 1);
+      if (!args.includes("windowsHide")) {
+        offenders.push(`${file}:${src.slice(0, m.index!).split("\n").length} ${m[1]}(`);
+      }
+    }
+  }
+
+  assert.deepEqual(offenders, [], `these spawn a visible console window on Windows:\n${offenders.join("\n")}`);
 });

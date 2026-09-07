@@ -91,18 +91,18 @@ export function pendingBoardSuggestions(): BoardSuggestion[] {
 // ---------- the pull request ----------
 
 function gh(args: string[], timeoutMs = 90_000) {
-  const r = spawnSync("gh", args, { encoding: "utf8", timeout: timeoutMs });
+  const r = spawnSync("gh", args, { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
   return { ok: r.status === 0, out: String(r.stdout || "").trim(), err: String(r.stderr || r.error?.message || "").trim() };
 }
 
 function git(args: string[], cwd: string, timeoutMs = 120_000) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", timeout: timeoutMs });
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", timeout: timeoutMs, windowsHide: true });
   return { ok: r.status === 0, out: String(r.stdout || "").trim(), err: String(r.stderr || r.error?.message || "").trim() };
 }
 
 /** Where this clone came from — the repo a contribution goes back to. */
 export function upstreamRepo(): { owner: string; repo: string; slug: string } | null {
-  const r = spawnSync("git", ["remote", "get-url", "origin"], { cwd: process.cwd(), encoding: "utf8" });
+  const r = spawnSync("git", ["remote", "get-url", "origin"], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
   if (r.status !== 0) return null;
   return parseRepoRef(String(r.stdout || "").trim());
 }
