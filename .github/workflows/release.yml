@@ -1,0 +1,76 @@
+# Cut a release: three binaries, checksums, attached to the tag.
+#
+#   git tag v0.1.0 && git push --tags
+#
+# macOS is one universal file rather than two, which is what keeps this to the three
+# downloads INSTALL.md promises.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest # for lipo, which only exists here
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Not pinned to 1.22: on current macOS its internal linker emits binaries
+          # without LC_UUID, which the system then refuses to run — so a release
+          # built with it would ship a macOS binary that cannot start.
+          go-version: stable
+          cache: false
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          GOOS=darwin  GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/mac-arm64 ./cmd/installer
+          GOOS=darwin  GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/mac-amd64 ./cmd/installer
+          lipo -create -output dist/remote-ledger-macos dist/mac-arm64 dist/mac-amd64
+          rm dist/mac-arm64 dist/mac-amd64
+
+          # Ad-hoc sign, or current macOS kills the binary on launch with SIGKILL —
+          # no message, no window, nothing. lipo discards the signatures of its
+          # inputs, so this has to happen after it, not before.
+          #
+          # This is NOT notarization. It only makes the file runnable; Gatekeeper
+          # will still say "unidentified developer" the first time, which INSTALL.md
+          # explains. Without it, the download does not run at all.
+          codesign --force --sign - dist/remote-ledger-macos
+          codesign --verify --verbose dist/remote-ledger-macos
+
+          GOOS=linux   GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/remote-ledger-linux ./cmd/installer
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/remote-ledger-windows.exe ./cmd/installer
+
+          cd dist && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            Download the file for your computer, then see
+            [INSTALL.md](https://github.com/${{ github.repository }}/blob/main/INSTALL.md).
+
+            | Computer | File |
+            |---|---|
+            | Mac | `remote-ledger-macos` |
+            | Windows | `remote-ledger-windows.exe` |
+            | Linux | `remote-ledger-linux` |
+
+            These are **unsigned**, so macOS and Windows will warn you the first time.
+            INSTALL.md says how to get past that, and why it happens. Verify what you
+            downloaded against `SHA256SUMS`.
