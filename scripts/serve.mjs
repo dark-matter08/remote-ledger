@@ -396,10 +396,19 @@ function supervisedPid() {
   if (!autostartEnabled()) return null;
   try {
     if (WIN) {
-      // schtasks has no pid; "Running" is the most it will tell us, and the pid file
-      // is written by the server itself either way
-      const out = execSync(`schtasks /Query /TN "${TASK_NAME}" /FO LIST`, { encoding: "utf8" });
-      return /Status:\s*Running/i.test(out) ? (readPid() ?? 0) : null;
+      // When the task was refused and we fell back to the Startup folder there is no
+      // task to query — and execSync passes the child's stderr straight through, so
+      // asking printed "ERROR: The system cannot find the file specified." into the
+      // middle of an otherwise successful install. Swallow it and answer from the pid
+      // file, which the server writes either way.
+      const q = spawnSync("schtasks", ["/Query", "/TN", TASK_NAME, "/FO", "LIST"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      if (q.status === 0) return /Status:\s*Running/i.test(q.stdout || "") ? (readPid() ?? 0) : null;
+      // no task: the Startup-folder route is in play, so the pid file is all there is
+      const pid = readPid();
+      return pid && pidAlive(pid) ? pid : null;
     }
     if (MAC) {
       const out = execSync(`launchctl list ${AGENT_LABEL} 2>/dev/null`, { encoding: "utf8" });

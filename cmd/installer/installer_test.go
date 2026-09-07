@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -124,5 +125,31 @@ func TestOwnsConsoleIsFalseOffWindows(t *testing.T) {
 	// would just be a prompt in the way of every scripted run.
 	if runtime.GOOS != "windows" && ownsConsole() {
 		t.Error("ownsConsole should be false anywhere but Windows")
+	}
+}
+
+func TestFinalAddress(t *testing.T) {
+	dir := t.TempDir()
+	// nothing written yet — the setup failed before it got there
+	if got := finalAddress(dir); got != fallbackURL {
+		t.Errorf("with no file, got %q want the localhost fallback", got)
+	}
+
+	data := filepath.Join(dir, "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// the case this exists for: the proxy came up, so the app is not on localhost
+	if err := os.WriteFile(filepath.Join(data, "address"), []byte("https://remoteledger.dp.local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := finalAddress(dir); got != "https://remoteledger.dp.local" {
+		t.Errorf("got %q, want the proxy address with the newline trimmed", got)
+	}
+
+	// anything that is not a url is not something to hand to a browser
+	os.WriteFile(filepath.Join(data, "address"), []byte("null"), 0o644)
+	if got := finalAddress(dir); got != fallbackURL {
+		t.Errorf("garbage should fall back, got %q", got)
 	}
 }

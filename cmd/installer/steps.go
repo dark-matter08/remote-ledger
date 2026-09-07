@@ -193,3 +193,21 @@ func openURL(url string) {
 		_ = exec.Command("xdg-open", url).Start()
 	}
 }
+
+// finalAddress is the URL the setup settled on.
+//
+// With dropport working that is https://remoteledger.dp.local; without it, a port on
+// localhost. Guessing from whether the proxy was *requested* is not the same question
+// — it can be requested and still fail — so ledger.mjs writes down what actually
+// answers and this reads it.
+func finalAddress(appDir string) string {
+	b, err := os.ReadFile(filepath.Join(appDir, "data", "address"))
+	if err != nil {
+		return fallbackURL
+	}
+	addr := strings.TrimSpace(string(b))
+	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
+		return fallbackURL
+	}
+	return addr
+}

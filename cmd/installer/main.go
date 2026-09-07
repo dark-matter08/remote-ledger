@@ -16,7 +16,9 @@ import (
 
 var version = "dev" // set by the release workflow
 
-const appURL = "http://localhost:5173"
+// Where the app ends up depends on whether the proxy came up, and only the setup
+// itself knows — so it writes the answer down rather than us guessing.
+const fallbackURL = "http://localhost:5173"
 
 func homeDir() string {
 	h, err := os.UserHomeDir()
@@ -110,8 +112,9 @@ func main() {
 	ui.Title("Ready")
 	ui.Say("The Ledger is running, and starts again every time you log in.")
 	ui.Say("")
-	ui.Say("Opening it now. The first screen asks what work you are looking for.")
-	openURL(appURL)
+	addr := finalAddress(appDir)
+	ui.Say("Opening %s — the first screen asks what work you are looking for.", addr)
+	openURL(addr)
 	fmt.Println()
 	ui.HoldOpen()
 }
