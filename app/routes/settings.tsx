@@ -26,6 +26,7 @@ import {
 } from "../services/ats.server";
 // the component renders these, so they must come from the client-safe module
 import { boardUrl, ATS_KINDS } from "../ats";
+import { JOB_FIELDS, DEFAULT_FIELD, fieldById } from "../fields";
 
 const KEY_FIELDS = [
   { name: "anthropic_api_key", label: "Anthropic" },
@@ -104,6 +105,7 @@ export async function loader() {
       searchPrompt: getSetting("search_prompt") || defaultPrompt(),
       defaultStyle: getSetting("default_resume_style") || "letterpress",
       profileLocation: getSetting("profile_location") || "",
+      profileField: getSetting("profile_field") || "",
       profileStack: getSetting("profile_stack") || "",
     },
   };
@@ -168,8 +170,9 @@ export async function action({ request }: Route.ActionArgs) {
   }
   if (intent === "save-profile") {
     save("profile_location");
+    save("profile_field");
     save("profile_stack");
-    return { ok: true, msg: "Profile saved." };
+    return { ok: true, msg: "Profile saved. The next crawl searches on this." };
   }
   if (intent === "save-prompt") {
     save("search_prompt");
@@ -429,18 +432,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         </Form>
       )}
 
-      {tab === "Profile" && (
-        <Form method="post" className="panel">
-          <input type="hidden" name="intent" value="save-profile" />
-          <h3>Your profile</h3>
-          <p className="hint">Personalizes the job-search prompt and resume matching.</p>
-          <div className="row2">
-            <div className="field"><label>Location</label><input type="text" name="profile_location" defaultValue={settings.profileLocation} placeholder="e.g. your city, country" /></div>
-            <div className="field"><label>Target stack / keywords</label><input type="text" name="profile_stack" defaultValue={settings.profileStack} placeholder="e.g. TypeScript, Node, React, AWS" /></div>
-          </div>
-          <button className="btn" disabled={saving}>Save</button>
-        </Form>
-      )}
+      {tab === "Profile" && <ProfileTab settings={settings} saving={saving} />}
 
       {tab === "Companies" && (
         <div className="panel">
@@ -597,12 +589,57 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         <Form method="post" className="panel">
           <input type="hidden" name="intent" value="save-prompt" />
           <h3>Job-search prompt</h3>
-          <p className="hint">What the scheduler asks the AI to find each crawl. Uses {"{{location}}"} and {"{{stack}}"}.</p>
+          <p className="hint">What the scheduler asks the AI to find each crawl. Uses {"{{location}}"}, {"{{field}}"} and {"{{stack}}"} from your profile.</p>
           <div className="field"><textarea name="search_prompt" defaultValue={settings.searchPrompt} style={{ minHeight: 300, fontFamily: "var(--mono)", fontSize: 12 }} /></div>
           <button className="btn" disabled={saving}>Save</button>
         </Form>
       )}
 
     </Shell>
+  );
+}
+
+/**
+ * Who this ledger is searching for.
+ *
+ * The field is not decoration: it selects the vocabulary the crawl filters on, it is
+ * what the boards are asked for where they can answer that, and it is interpolated
+ * into the scorer where "software engineering role" used to be hardcoded. Leaving it
+ * unset is a valid answer and says so — everything then falls to the keywords.
+ */
+function ProfileTab({ settings, saving }: { settings: any; saving: boolean }) {
+  const [field, setField] = useState<string>(settings.profileField || DEFAULT_FIELD);
+  const chosen = fieldById(field);
+  return (
+    <Form method="post" className="panel">
+      <input type="hidden" name="intent" value="save-profile" />
+      <h3>Your profile</h3>
+      <p className="hint">Decides which postings are read at all, and how each one is scored against you.</p>
+      <div className="field">
+        <label>Line of work</label>
+        <Select
+          name="profile_field"
+          value={field}
+          onChange={setField}
+          options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))}
+        />
+      </div>
+      <div className="row2">
+        <div className="field">
+          <label>Location</label>
+          <input type="text" name="profile_location" defaultValue={settings.profileLocation} placeholder="e.g. your city, country" />
+        </div>
+        <div className="field">
+          <label>Skills and keywords</label>
+          <input key={field} type="text" name="profile_stack" defaultValue={settings.profileStack} placeholder={`e.g. ${chosen?.example || ""}`} />
+        </div>
+      </div>
+      <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "0 0 14px" }}>
+        The free boards are asked for <strong>{chosen?.label.toLowerCase() || "your field"}</strong> where they
+        take that as a parameter, and every posting they return is judged against it. The keywords weight the
+        result; the field decides what is looked at in the first place.
+      </p>
+      <button className="btn" disabled={saving}>Save</button>
+    </Form>
   );
 }

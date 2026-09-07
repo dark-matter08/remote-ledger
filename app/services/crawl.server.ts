@@ -30,8 +30,9 @@ import {
   boardUrl,
   type AtsPosting,
 } from "./ats.server";
-import { fetchAllFeeds } from "./feeds.server";
+import { fetchAllFeeds, type FeedPosting } from "./feeds.server";
 import { webSearchAdvice } from "../llm/openrouter.server";
+import { fieldById, fieldLabel, inField, keywordHit, keywordTokens, type JobField } from "../fields";
 
 export type CrawlType = "find" | "update" | "full" | "careers" | "feeds";
 
@@ -67,17 +68,21 @@ function buildPrompt(o: PromptOpts): string {
     try {
       tmpl = readFileSync(resolve(process.cwd(), "scripts", "prompt.md"), "utf8");
     } catch {
-      tmpl = "Find remote jobs for {{location}} matching {{stack}}. Return a JSON array.";
+      tmpl = "Find remote {{field}}s for someone in {{location}} matching {{stack}}. Return a JSON array.";
     }
   }
   const loc = getSetting("profile_location") || "a remote-friendly location";
-  const stack = getSetting("profile_stack") || "software engineering";
+  const stack = getSetting("profile_stack") || "not stated";
+  // The template used to say "remote software roles" outright; the field it actually
+  // is now travels with the location and the keywords.
+  const field = fieldLabel(getSetting("profile_field"));
 
   if (o.mode === "count") {
     const want = o.remaining ?? o.target ?? 5;
     const cap = Math.max(12, want * 6); // generous per-round safety cap on web actions
     const body = tmpl
       .replaceAll("{{location}}", loc)
+      .replaceAll("{{field}}", field)
       .replaceAll("{{stack}}", stack)
       .replaceAll("{{budget_min}}", "as long as it takes")
       .replaceAll("{{max_actions}}", String(cap));
@@ -98,6 +103,7 @@ function buildPrompt(o: PromptOpts): string {
   const maxActions = actionBudget(timeoutMin);
   const body = tmpl
     .replaceAll("{{location}}", loc)
+    .replaceAll("{{field}}", field)
     .replaceAll("{{stack}}", stack)
     .replaceAll("{{budget_min}}", String(timeoutMin))
     .replaceAll("{{max_actions}}", String(maxActions));
@@ -118,16 +124,18 @@ export function targetPreview(): string {
     try {
       tmpl = readFileSync(resolve(process.cwd(), "scripts", "prompt.md"), "utf8");
     } catch {
-      tmpl = "Find remote jobs for {{location}} matching {{stack}}.";
+      tmpl = "Find remote {{field}}s for someone in {{location}} matching {{stack}}.";
     }
   }
   const loc = getSetting("profile_location") || "(nowhere yet — fill in the box above)";
   const stack = getSetting("profile_stack") || "(nothing yet — fill in the box above)";
+  const field = fieldLabel(getSetting("profile_field"));
   return tmpl
     .split("\n")
     .slice(0, 14)
     .join("\n")
     .replaceAll("{{location}}", loc)
+    .replaceAll("{{field}}", field)
     .replaceAll("{{stack}}", stack)
     .trim();
 }
@@ -240,8 +248,6 @@ const SCORE_BATCH = 20;
 const BOARD_CONCURRENCY = 6;
 
 const REMOTE_RE = /\b(remote|anywhere|worldwide|global|distributed|work from home|wfh)\b/i;
-const ENGINEERING_RE =
-  /\b(engineer|engineering|developer|programmer|architect|sre|devops|platform|full[- ]?stack|back[- ]?end|front[- ]?end|software|data|infrastructure)\b/i;
 
 // A board that says remote:false is believed. Silence is not a no, so fall back to
 // reading the location and title.
@@ -251,36 +257,48 @@ function remoteEligible(p: AtsPosting): boolean {
   return REMOTE_RE.test(`${p.location || ""} ${p.title}`);
 }
 
-function stackTokens(stack: string): string[] {
-  return stack
-    .split(/[,/·|]+/)
-    .map((t) => t.trim().toLowerCase())
-    .filter((t) => t.length > 1);
+/**
+ * Which line of work this ledger is searching in, and the words to match on.
+ *
+ * Both come from the profile now. What was here before was a hardcoded engineering
+ * regex that passed unconditionally, ahead of the user's own keywords — so on the
+ * live boards a customer support specialist and a backend engineer got back the same
+ * 35 postings, every one of them engineering, while seven real support roles in the
+ * same pool were discarded. The profile was not being weighted lightly; outside
+ * software it was not being read at all.
+ */
+function searchFor(): { field: JobField | null; tokens: string[] } {
+  return {
+    field: fieldById(getSetting("profile_field")),
+    tokens: keywordTokens(getSetting("profile_stack") || ""),
+  };
 }
 
-function looksRelevant(p: AtsPosting, tokens: string[]): boolean {
-  if (ENGINEERING_RE.test(p.title)) return true;
+/**
+ * On the ATS path the net can be wide: the companies were chosen by the user, so a
+ * keyword anywhere in the posting is a fair signal and the cost of a false positive
+ * is one scoring slot on a board they asked to watch.
+ */
+function looksRelevant(p: AtsPosting, field: JobField | null, tokens: string[]): boolean {
+  if (inField(field, p.title)) return true;
   const hay = `${p.title} ${p.description || ""}`.toLowerCase();
   return tokens.some((t) => hay.includes(t));
 }
 
-// Titles only, and a narrower vocabulary than ENGINEERING_RE: no bare "data",
-// "platform" or "infrastructure", which carry a job on the ATS path but not here.
-const ENGINEERING_TITLE_RE =
-  /\b(engineer|engineering|developer|programmer|architect|sre|devops|full[- ]?stack|back[- ]?end|front[- ]?end|software|qa|sdet|tech(nical)? lead)\b/i;
-
-// The ATS path is already fenced in by the companies you chose to track, so reading
-// the description for a stack keyword is a fair net there. A public feed has no such
-// fence — the entire remote market arrives at once, and matching on the body lets
-// "FedEx courier" through on the word "express" in its own boilerplate, then spends
-// a scoring slot on it. Out here, a posting is judged by what it calls itself.
-function titleLooksRelevant(p: AtsPosting, tokens: string[]): boolean {
-  if (ENGINEERING_TITLE_RE.test(p.title)) return true;
-  // whole words: a substring match on the stack reads "Express" out of "Expression
-  // of Interest" and scores a posting that is not a role at all
-  return tokens.some((t) =>
-    new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(p.title)
-  );
+/**
+ * On a public feed there is no such fence — the entire remote market arrives at once,
+ * so a posting is judged by what it calls itself and by how its own board filed it.
+ * Matching on the body out here lets "FedEx courier" through on the word "express" in
+ * its own boilerplate and then spends a scoring slot on it.
+ *
+ * With neither a field nor a keyword there is nothing to filter ON, and quietly
+ * keeping nothing would look like four dead boards. Everything goes through to the
+ * scorer instead, which is the honest reading of an empty profile.
+ */
+function titleLooksRelevant(p: FeedPosting, field: JobField | null, tokens: string[]): boolean {
+  if (!field && !tokens.length) return true;
+  if (inField(field, p.title, p.categories)) return true;
+  return keywordHit(`${p.title} · ${(p.categories || []).join(" · ")}`, tokens);
 }
 
 async function pooled<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>): Promise<R[]> {
@@ -302,6 +320,7 @@ async function scoreCandidates(
   batch: Candidate[],
   loc: string,
   stack: string,
+  field: string,
   L: (k: string, t: string) => void
 ): Promise<any[]> {
   const listing = batch
@@ -317,7 +336,20 @@ async function scoreCandidates(
     maxTokens: 3000,
     system:
       "You score real, already-verified job postings against one candidate. Every posting below exists and its link is known good, so never invent, alter or return a URL. Judge fit only, and be honest: a bad match scored highly wastes the candidate's time.",
-    prompt: `CANDIDATE\n- Based in: ${loc}. Needs roles workable remotely from there.\n- Target stack: ${stack}\n\nPOSTINGS\n${listing}\n\nFor each posting return an entry. DROP anything that is not a software engineering role the candidate could do, or that cannot be worked remotely from their location.\nReturn ONLY JSON: { "jobs": [ { "i": 0, "category": "high|medium|stretch", "fit_score": 0-100, "stack": "short tech fine-print e.g. 'TS · Node · Postgres'", "eligibility": "short note e.g. 'Open worldwide'", "seniority": "Mid|Senior|Contract|Varies" } ] }\nOmit an entry entirely to drop that posting. "high" means strong stack match AND clearly eligible from ${loc}.`,
+    // "DROP anything that is not a software engineering role" used to be hardcoded
+    // here, which deleted every posting a non-engineer was actually looking for —
+    // the few support roles that got past the filter were then removed by the scorer
+    // itself. The line the candidate works in comes from their profile now.
+    prompt:
+      `CANDIDATE\n- Based in: ${loc}. Needs roles workable remotely from there.\n` +
+      `- Line of work: ${field}\n- Skills and keywords: ${stack}\n\nPOSTINGS\n${listing}\n\n` +
+      `For each posting return an entry. DROP anything that is not a ${field} the candidate could do, ` +
+      `or that cannot be worked remotely from their location.\n` +
+      `Return ONLY JSON: { "jobs": [ { "i": 0, "category": "high|medium|stretch", "fit_score": 0-100, ` +
+      `"stack": "the short fine-print that matters for THIS role — tools, systems, languages spoken, ` +
+      `shift, certifications; e.g. 'TS · Node · Postgres' for engineering, 'Zendesk · Tier 2 · EMEA hours' ` +
+      `for support", "eligibility": "short note e.g. 'Open worldwide'", "seniority": "Mid|Senior|Contract|Varies" } ] }\n` +
+      `Omit an entry entirely to drop that posting. "high" means a strong match on their skills AND clearly eligible from ${loc}.`,
   });
 
   const parsed = (r.json?.jobs || []) as any[];
@@ -356,9 +388,14 @@ async function findViaFeeds(
   signal: AbortSignal,
   L: (kind: string, text: string) => void
 ): Promise<{ jobs: any[]; received: number; errors: number }> {
-  const tokens = stackTokens(stack);
+  const { field, tokens } = searchFor();
+  const fieldWords = fieldLabel(field?.id);
   let errors = 0;
-  const sweep = await fetchAllFeeds(signal);
+  L("step", field
+    ? `Looking for ${field.label.toLowerCase()} roles${tokens.length ? `, weighted to: ${tokens.slice(0, 6).join(", ")}` : ""}.`
+    : "No field set in your profile, so every posting goes to the scorer. Settings → Profile narrows this a lot.");
+  // ask each board for this field where it can answer that; the broad feed otherwise
+  const sweep = await fetchAllFeeds(signal, field);
   for (const f of sweep.perFeed) L("step", `${f.name}: ${f.count} posting(s).`);
   for (const e of sweep.errors) {
     errors++;
@@ -369,7 +406,7 @@ async function findViaFeeds(
     return { jobs: [], received: 0, errors };
   }
 
-  const keep = sweep.postings.filter((p) => remoteEligible(p) && titleLooksRelevant(p, tokens));
+  const keep = sweep.postings.filter((p) => remoteEligible(p) && titleLooksRelevant(p, field, tokens));
   L("result", `${sweep.postings.length} posting(s) across ${sweep.perFeed.length} feed(s) → ${keep.length} remote + relevant.`);
   const shortlist: Candidate[] = keep
     .slice(0, MAX_CANDIDATES)
@@ -380,7 +417,7 @@ async function findViaFeeds(
   const jobs: any[] = [];
   for (let i = 0; i < shortlist.length && !signal.aborted; i += SCORE_BATCH) {
     try {
-      jobs.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, L)));
+      jobs.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, fieldWords, L)));
     } catch (e: any) {
       errors++;
       const why = String(e?.message || e);
@@ -402,7 +439,8 @@ async function runCareersCrawl(
 ): Promise<{ received: number; inserted: number; updated: number; errors: number }> {
   const loc = getSetting("profile_location") || "remote";
   const stack = getSetting("profile_stack") || "software engineering";
-  const tokens = stackTokens(stack);
+  const { field, tokens } = searchFor();
+  const fieldWords = fieldLabel(field?.id);
   const companies = activeCompanies();
   const boards = companies.filter((c) => c.ats && c.slug);
   const pages = companies.filter((c) => c.kind !== "board" && !c.ats && c.careers_url);
@@ -423,7 +461,7 @@ async function runCareersCrawl(
     try {
       const posts = await fetchBoard(c.ats as any, c.slug!);
       received += posts.length;
-      const keep = posts.filter((p) => remoteEligible(p) && looksRelevant(p, tokens)).slice(0, MAX_PER_COMPANY);
+      const keep = posts.filter((p) => remoteEligible(p) && looksRelevant(p, field, tokens)).slice(0, MAX_PER_COMPANY);
       markCompanyChecked(c.id, keep.length);
       for (const p of keep)
         candidates.push({ companyName: c.name, source: c.ats ? `${c.name} (${c.ats})` : c.name, posting: p });
@@ -444,7 +482,7 @@ async function runCareersCrawl(
     L("note", `Scoring the first ${shortlist.length} of ${candidates.length} candidates this run; the rest will be picked up next time.`);
   for (let i = 0; i < shortlist.length && !signal.aborted; i += SCORE_BATCH) {
     try {
-      scored.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, L)));
+      scored.push(...(await scoreCandidates(shortlist.slice(i, i + SCORE_BATCH), loc, stack, fieldWords, L)));
     } catch (e: any) {
       errors++;
       const why = String(e?.message || e);

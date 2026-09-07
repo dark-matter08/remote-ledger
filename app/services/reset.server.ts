@@ -131,7 +131,7 @@ export const RESET_SCOPES: ScopeDef[] = [
   {
     id: "settings",
     label: "Settings, profile & onboarding",
-    what: "Chosen runner and model, budget, schedule, location and target stack — and the flag that says you finished setup.",
+    what: "Chosen runner and model, budget, schedule, your line of work, location and keywords — and the flag that says you finished setup.",
     caution: "Clearing this returns you to the opening screen.",
     tables: [
       "settings",

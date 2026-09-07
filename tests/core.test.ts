@@ -1468,6 +1468,61 @@ test("kb: an entry already scanned from its folder is adopted, not duplicated", 
   );
 });
 
+test("fields: relevance comes from the profile, not from a hardcoded trade", async () => {
+  const { fieldById, inField, keywordTokens, keywordHit } = await import("../app/fields");
+  const support = fieldById("support")!;
+  const software = fieldById("software")!;
+
+  // The bug this replaces: an engineering regex passed unconditionally, ahead of the
+  // user's own keywords, so a support search and an engineering search returned the
+  // same 35 postings off the live boards — every one of them engineering.
+  assert.equal(inField(support, "Customer Service Agent"), true);
+  assert.equal(inField(support, "Senior Golang Developer"), false, "an engineer's job is not a support search result");
+  assert.equal(inField(software, "Senior Golang Developer"), true);
+  assert.equal(inField(software, "Customer Service Agent"), false);
+
+  // The board already classified it. A title that does not say what it is still can.
+  assert.equal(inField(support, "Escalations Lead, Tier 2"), false, "title alone gives nothing away");
+  assert.equal(
+    inField(support, "Escalations Lead, Tier 2", ["Customer Support & Success"]),
+    true,
+    "but Jobicy filed it under support, and that is the board's own answer"
+  );
+
+  // "Customer Support Specialist" typed without commas used to become one token that
+  // had to appear verbatim in a title, so the user contributed nothing to their search.
+  const toks = keywordTokens("Customer Support Specialist");
+  assert.ok(toks.includes("customer support specialist"), "the phrase is still the strongest signal");
+  assert.ok(toks.includes("support"), "and its words are what catch 'Support Specialist, Tier 2'");
+  assert.equal(
+    toks.includes("specialist"),
+    false,
+    "but not the job-shape words: 'specialist' alone matched Amazon Specialist and HR Systems Integration Engineer"
+  );
+  assert.equal(keywordHit("Tier 2 Support Advisor", toks), true);
+  assert.equal(keywordHit("Kitchen Technician", toks), false);
+});
+
+test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {
+  const { JOB_FIELDS, fieldById, fieldLabel, inField } = await import("../app/fields");
+
+  for (const f of JOB_FIELDS) {
+    assert.ok(f.label.length > 3, `${f.id} needs a label`);
+    assert.ok(f.example.length > 10, `${f.id} needs an example`);
+    assert.equal(fieldById(f.id)?.id, f.id);
+  }
+  // A field that matched everything would keep the whole remote market; one that
+  // matched nothing has to fall through to the user's keywords instead.
+  const other = fieldById("other")!;
+  assert.equal(inField(other, "Customer Service Agent"), false);
+  assert.equal(inField(other, "Senior Golang Developer"), false);
+
+  // The scorer interpolates this where "software engineering role" was hardcoded.
+  assert.equal(fieldLabel("support"), "customer support & success role");
+  assert.match(fieldLabel(null), /line of work/, "an unset field must not name a trade");
+  assert.match(fieldLabel("other"), /line of work/);
+});
+
 test("runner: a model the server cannot load is a permanent failure, not a retry", async () => {
   const { isPermanentModelError } = await import("../app/llm/adapters.server");
 

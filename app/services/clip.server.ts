@@ -16,6 +16,7 @@
 // in milliseconds, and the reading happens where every other piece of AI work in the
 // app is already visible.
 import { getSetting } from "../sqlite.server";
+import { fieldLabel } from "../fields";
 import { upsertJobs, setJd, setMeta } from "../db.server";
 import { runLLM, tryParseJson } from "../llm/runner.server";
 import { loggedTask } from "./crawl.server";
@@ -40,7 +41,8 @@ const VALID = new Set(["high", "medium", "stretch"]);
 
 async function readPosting(jd: string, fallbackCompany: string, fallbackRole: string): Promise<Read | null> {
   const loc = getSetting("profile_location") || "a remote-friendly location";
-  const stack = getSetting("profile_stack") || "software engineering";
+  const stack = getSetting("profile_stack") || "not stated";
+  const field = fieldLabel(getSetting("profile_field"));
 
   const r = await runLLM({
     purpose: "job-research",
@@ -50,13 +52,13 @@ async function readPosting(jd: string, fallbackCompany: string, fallbackRole: st
     system:
       "You read one job posting the candidate has already found and saved. The posting is real and its link is known good, so never invent or alter a URL. Name the employer and the role as the posting itself does, and judge the fit honestly — a bad match scored highly wastes the candidate's time.",
     prompt:
-      `CANDIDATE\n- Based in: ${loc}. Needs roles workable remotely from there.\n- Target stack: ${stack}\n\n` +
+      `CANDIDATE\n- Based in: ${loc}. Needs roles workable remotely from there.\n- Line of work: ${field}\n- Skills and keywords: ${stack}\n\n` +
       `The page was titled as "${fallbackRole}" at "${fallbackCompany}", which may be wrong — prefer what the posting says.\n\n` +
       `POSTING\n${jd.slice(0, 6000)}\n\n` +
       `Return ONLY JSON: { "company": "the employer", "role": "the job title", "category": "high|medium|stretch", ` +
-      `"fit_score": 0-100, "stack": "short tech fine-print e.g. 'TS · Node · Postgres'", ` +
+      `"fit_score": 0-100, "stack": "the short fine-print that matters for THIS role — tools, systems, languages spoken, shift, certifications", ` +
       `"eligibility": "short note e.g. 'Open worldwide'", "seniority": "Mid|Senior|Contract|Varies" }\n` +
-      `"high" means a strong stack match AND clearly eligible from ${loc}.`,
+      `"high" means a strong match on their skills AND clearly eligible from ${loc}.`,
   });
 
   const j = tryParseJson(r.text);

@@ -7,6 +7,7 @@ import { Select } from "../components/Select";
 import { FilePicker } from "../components/FilePicker";
 import { ParseLoader } from "../components/ParseLoader";
 import { RunnerChoice } from "../components/RunnerChoice";
+import { JOB_FIELDS, DEFAULT_FIELD, fieldById } from "../fields";
 import { listRunners } from "../llm/runner.server";
 import { discoverModels, openRouterShortlist } from "../llm/models.server";
 import { setSecret, hasSecret } from "../secrets.server";
@@ -107,6 +108,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         }
       : null,
     location: getSetting("profile_location") || "",
+    field: getSetting("profile_field") || "",
     stack: getSetting("profile_stack") || "",
     autofilled: getSetting("target_autofilled") === "true",
     promptPreview: targetPreview(),
@@ -220,6 +222,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (intent === "save-profile") {
     setSetting("profile_location", String(form.get("location") || "").trim());
+    setSetting("profile_field", String(form.get("field") || ""));
     setSetting("profile_stack", String(form.get("stack") || "").trim());
     return { ok: true, msg: "Saved. The prompt below is what an agent will actually be handed." };
   }
@@ -280,7 +283,7 @@ export default function Setup({ loaderData, actionData }: Route.ComponentProps) 
   const done: Record<number, boolean> = {
     1: d.runners.some((r) => r.available),
     2: d.hasResume,
-    3: !!d.location.trim(),
+    3: !!d.location.trim() && !!d.field,
     4: d.feedNames.length > 0 || d.boards.length > 0 || d.companyCount > 0,
     5: d.jobCount > 0,
     6: false,
@@ -476,13 +479,18 @@ function ResumeStep({ d, busy, parsing }: { d: any; busy: boolean; parsing: bool
 // ---- step 3 ---------------------------------------------------------------
 
 function TargetStep({ d, busy }: { d: any; busy: boolean }) {
+  const [field, setField] = useState<string>(d.field || DEFAULT_FIELD);
+  const chosen = fieldById(field);
+
   return (
     <>
       <p className="setup-prose">
-        Two answers, and they do more work than anything else you type here. <strong>Location</strong> is
-        not where you want to move — it is where you will be sitting, so a role that says "remote, US only"
-        can be ruled out before it wastes your afternoon. <strong>Stack</strong> is the words that appear in
-        the postings you want, not a description of yourself.
+        Three answers, and they do more work than anything else you type here.{" "}
+        <strong>Your line of work</strong> is the one that decides which postings even get looked at.{" "}
+        <strong>Location</strong> is not where you want to move — it is where you will be sitting, so a role
+        that says &ldquo;remote, US only&rdquo; can be ruled out before it wastes your afternoon.{" "}
+        <strong>Keywords</strong> are the words that appear in the postings you want, not a description of
+        yourself.
       </p>
 
       {d.autofilled && (
@@ -491,24 +499,44 @@ function TargetStep({ d, busy }: { d: any; busy: boolean }) {
 
       <Form method="post">
         <input type="hidden" name="intent" value="save-profile" />
+        <div className="field">
+          <label>What kind of work are you looking for?</label>
+          <Select
+            name="field"
+            value={field}
+            onChange={setField}
+            options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))}
+          />
+        </div>
         <div className="row2">
           <div className="field">
             <label>Where you will be working from</label>
             <input type="text" name="location" defaultValue={d.location} placeholder="e.g. Lagos, Nigeria — or Remote (UTC+1)" />
           </div>
           <div className="field">
-            <label>Stack and keywords</label>
-            <input type="text" name="stack" defaultValue={d.stack} placeholder="e.g. TypeScript, Node, React, Postgres, AWS" />
+            <label>Skills and keywords</label>
+            <input key={field} type="text" name="stack" defaultValue={d.stack} placeholder={`e.g. ${chosen?.example || ""}`} />
           </div>
         </div>
         <button className="btn" disabled={busy}>Save</button>
       </Form>
 
       <div className="setup-read">
+        <h4>Why the first box matters most</h4>
+        <p className="setup-prose" style={{ marginTop: 0 }}>
+          The boards that get read are asked for <strong>{chosen?.label.toLowerCase() || "your field"}</strong>{" "}
+          where they can answer that, and everything they send back is judged against it. Set to the wrong
+          field, the crawl reads the whole remote market and scores an afternoon of the wrong jobs — which
+          used to be exactly what happened to anyone who was not a software engineer, because the field was
+          not a question and the answer was hardcoded.
+        </p>
+      </div>
+
+      <div className="setup-read">
         <h4>What that becomes</h4>
         <p className="setup-prose" style={{ marginTop: 0 }}>
-          The opening of the brief an agent is handed on every crawl. Your two answers are in it verbatim,
-          which is why a vague stack produces vague jobs.
+          The opening of the brief an agent is handed on every crawl. Your answers are in it verbatim,
+          which is why a vague keyword list produces vague jobs.
         </p>
         <pre className="setup-pre">{d.promptPreview}</pre>
         <p className="hint" style={{ marginTop: 10 }}>

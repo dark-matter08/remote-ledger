@@ -18,11 +18,22 @@
 // these boards asks to be credited as the source of a listing, which is what the
 // `source` field carries into the ledger and onto the job card.
 import type { AtsPosting } from "./ats.server";
+import { type JobField } from "../fields";
 
 /** An AtsPosting plus who is hiring and which board it was read from. */
 export interface FeedPosting extends AtsPosting {
   company: string;
   source: string;
+  /**
+   * How the board itself classified this posting.
+   *
+   * Every one of these feeds labels its own jobs and the app used to drop the lot:
+   * RemoteOK tags them ("customer support", "non tech"), Remotive gives a category
+   * ("Customer Service"), Himalayas a parentCategory ("Developer"), Jobicy an
+   * industry ("Customer Support & Success"). Relevance was left guessing from the
+   * title alone when the board had already answered the question.
+   */
+  categories: string[];
 }
 
 const UA = "the-remote-ledger (personal job tracker)";
@@ -55,6 +66,16 @@ function place(v: unknown): string | null {
 
 const first = (v: unknown): string | null => (Array.isArray(v) ? str(v[0]) : str(v));
 
+/** Board labels, in whatever shape that board sends them. */
+function labels(...vals: unknown[]): string[] {
+  const out: string[] = [];
+  for (const v of vals) {
+    if (Array.isArray(v)) for (const x of v) { const s = str(x); if (s) out.push(s); }
+    else { const s = str(v); if (s) out.push(s); }
+  }
+  return [...new Set(out.map((s) => s.replace(/[-_]+/g, " ")))].slice(0, 12);
+}
+
 // Boards date postings in seconds since the epoch as often as they do in ISO.
 function when(v: unknown): string | null {
   const s = str(v);
@@ -67,7 +88,14 @@ function when(v: unknown): string | null {
 interface Feed {
   id: string;
   name: string;
+  /** The whole board, unfiltered. Always valid, always the fallback. */
   url: string;
+  /**
+   * The same board narrowed to one field, where that board takes a parameter and the
+   * parameter was actually verified to work. Returning null means "no filter for this
+   * field here" — a guessed slug comes back with zero jobs and looks like an outage.
+   */
+  fieldUrl?: (field: JobField) => string | null;
   parse: (json: any) => FeedPosting[];
 }
 
@@ -78,6 +106,15 @@ export const FEEDS: Feed[] = [
     id: "remoteok",
     name: "RemoteOK",
     url: "https://remoteok.com/api",
+    // No fieldUrl and no categories, both deliberate and both measured:
+    //   · `?tag=customer support` and `?tag=dev` return the identical 99 postings,
+    //     so the parameter is ignored and using it would only look like a filter.
+    //   · Its tags are auto-applied and wrong off the tech path — "Kitchen Technician"
+    //     comes tagged [payroll, vfx, customer support], "Police Officer" [education,
+    //     customer support]. Trusting them as a classification kept 158 of 185
+    //     postings for a support search and put a visual merchandiser in front of a
+    //     backend engineer. The other three boards publish a real taxonomy; this one
+    //     publishes keywords, so here the title is all we go on.
     // element 0 is the API's legal notice, not a job — hence the title guard
     parse: (j) =>
       (Array.isArray(j) ? j : [])
@@ -93,12 +130,15 @@ export const FEEDS: Feed[] = [
           description: unhtml(x?.description),
           descriptionHtml: null, // verification fetches the employer's own page anyway
           updatedAt: when(x?.date) || when(x?.epoch),
+          categories: [],
         })),
   },
   {
     id: "remotive",
     name: "Remotive",
     url: "https://remotive.com/api/remote-jobs",
+    fieldUrl: (f) =>
+      f.feed?.remotive ? `https://remotive.com/api/remote-jobs?category=${f.feed.remotive}` : null,
     parse: (j) =>
       (Array.isArray(j?.jobs) ? j.jobs : []).map((x: any) => ({
         company: String(x?.company_name || "").trim(),
@@ -111,6 +151,7 @@ export const FEEDS: Feed[] = [
         description: unhtml(x?.description),
         descriptionHtml: null,
         updatedAt: when(x?.publication_date),
+        categories: labels(x?.category),
       })),
   },
   {
@@ -129,12 +170,17 @@ export const FEEDS: Feed[] = [
         description: unhtml(x?.description) || unhtml(x?.excerpt),
         descriptionHtml: null,
         updatedAt: when(x?.pubDate),
+        // parentCategories is the coarse one (Design, Developer, Marketing,
+        // Operations, Product, Sales); categories is per-role and very long-tailed
+        categories: labels(x?.parentCategories, x?.categories),
       })),
   },
   {
     id: "jobicy",
     name: "Jobicy",
     url: "https://jobicy.com/api/v2/remote-jobs?count=50",
+    fieldUrl: (f) =>
+      f.feed?.jobicy ? `https://jobicy.com/api/v2/remote-jobs?count=50&industry=${f.feed.jobicy}` : null,
     parse: (j) =>
       (Array.isArray(j?.jobs) ? j.jobs : []).map((x: any) => ({
         company: String(x?.companyName || "").trim(),
@@ -147,13 +193,13 @@ export const FEEDS: Feed[] = [
         description: unhtml(x?.jobDescription) || unhtml(x?.jobExcerpt),
         descriptionHtml: null,
         updatedAt: when(x?.pubDate),
+        categories: labels(x?.jobIndustry, x?.jobType),
       })),
   },
 ];
 
-/** Postings from one board. Throws if the feed is down or unreadable. */
-export async function fetchFeed(feed: Feed, signal?: AbortSignal): Promise<FeedPosting[]> {
-  const r = await fetch(feed.url, {
+async function readFeed(feed: Feed, url: string, signal?: AbortSignal): Promise<FeedPosting[]> {
+  const r = await fetch(url, {
     headers: { "user-agent": UA, accept: "application/json" },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
   });
@@ -161,6 +207,34 @@ export async function fetchFeed(feed: Feed, signal?: AbortSignal): Promise<FeedP
   const parsed = feed.parse(await r.json());
   // a row with no employer or nowhere to apply cannot survive verification anyway
   return parsed.filter((p) => p.company && p.title && /^https?:\/\//.test(p.url)).slice(0, MAX_PER_FEED);
+}
+
+/**
+ * Postings from one board, narrowed to a field where the board can do it.
+ *
+ * Asking the board for the right jobs beats asking for everything and discarding 80%
+ * of it: the pool that comes back is bigger in the part that matters and costs the
+ * same one request. But a filter is only worth using if it works — a slug the board
+ * does not recognise returns an empty list that is indistinguishable from an outage,
+ * so an empty targeted read falls back to the whole board rather than reporting zero.
+ *
+ * Throws only if the unfiltered read fails; that is a real outage.
+ */
+export async function fetchFeed(
+  feed: Feed,
+  signal?: AbortSignal,
+  field?: JobField | null
+): Promise<FeedPosting[]> {
+  const targeted = field ? feed.fieldUrl?.(field) : null;
+  if (targeted) {
+    try {
+      const narrowed = await readFeed(feed, targeted, signal);
+      if (narrowed.length) return narrowed;
+    } catch {
+      // the board may not know this parameter at all; the broad read below is the answer
+    }
+  }
+  return readFeed(feed, feed.url, signal);
 }
 
 export interface FeedSweep {
@@ -173,8 +247,11 @@ export interface FeedSweep {
  * Read every board at once. One board being down is a smaller result, never a
  * failed crawl, so each is settled independently.
  */
-export async function fetchAllFeeds(signal?: AbortSignal): Promise<FeedSweep> {
-  const results = await Promise.allSettled(FEEDS.map((f) => fetchFeed(f, signal)));
+export async function fetchAllFeeds(
+  signal?: AbortSignal,
+  field?: JobField | null
+): Promise<FeedSweep> {
+  const results = await Promise.allSettled(FEEDS.map((f) => fetchFeed(f, signal, field)));
   const postings: FeedPosting[] = [];
   const perFeed: FeedSweep["perFeed"] = [];
   const errors: FeedSweep["errors"] = [];
