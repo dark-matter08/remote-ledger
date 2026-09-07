@@ -118,7 +118,17 @@ function certTrusted() {
  * retrying and worth verifying rather than assuming.
  */
 function ensureTrust() {
-  if (certTrusted()) return ok("certificate already trusted");
+  // On Windows the system store IS the browser store — Chrome and Edge both read what
+  // certutil writes — so the check above settles it and there is nothing more to do.
+  if (WIN && certTrusted()) return ok("certificate already trusted");
+
+  // Everywhere else it does not. Chrome and Chromium on Linux keep their own store,
+  // and Firefox keeps one per profile on every platform; curl reads none of them. The
+  // system store alone was enough to satisfy curl and return early here, while the
+  // browser went on showing a full-page warning.
+  //
+  // dropport 0.2.4 checks both and exits without escalating when both are in place, so
+  // asking it every time costs a probe rather than a password prompt.
   for (const waitMs of [0, 3000, 6000]) {
     if (waitMs) {
       say(`  the proxy may still be starting — waiting ${waitMs / 1000}s and trying again…`);
@@ -129,10 +139,9 @@ function ensureTrust() {
   }
   warn(`the certificate is still untrusted, so ${DOMAIN} will show a browser warning.`);
   say("    The app itself is fine — this is only the certificate.");
-  // dropport before 0.2.3 asked Node whether the certificate was trusted. Node ships
-  // its own CA bundle and misreports the failure, so `trust` answered "already
-  // trusted — nothing to do" and skipped the work on exactly the machines that
-  // needed it. If that is what you just saw above, this is why.
+  // dropport before 0.2.4 only filled the system trust store, which curl reads and
+  // browsers largely do not, then answered "already trusted — nothing to do" while
+  // Chrome kept warning. If that is what you saw above, this is why.
   say("    If it said \"already trusted — nothing to do\" each time, dropport is out of date:");
   say("      npm install -g dropport@latest && npm run ledger trust");
   say("    Otherwise `dropport doctor` will say why.");
