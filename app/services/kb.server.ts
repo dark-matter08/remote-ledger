@@ -481,7 +481,7 @@ export async function redraftItem(itemId: number): Promise<void> {
   if (!item) return;
   const qas = db.prepare("SELECT question, answer FROM kb_questions WHERE item_id=? AND answer IS NOT NULL").all(itemId) as any[];
   if (!qas.length) return;
-  const prompt = `Project: ${item.title}\nSummary: ${item.summary}\nTech: ${safeTags(item.tags).join(", ")}\n\nThe developer answered clarifying questions:\n${qas.map((q) => `Q: ${q.question}\nA: ${q.answer}`).join("\n")}\n\nUsing ONLY these facts, write 2-3 stronger résumé bullets. Return JSON: {"bullets":["..."]}`;
+  const prompt = `Work: ${item.title}\nSummary: ${item.summary}\nSkills and tools: ${safeTags(item.tags).join(", ")}\n\nThey answered clarifying questions:\n${qas.map((q) => `Q: ${q.question}\nA: ${q.answer}`).join("\n")}\n\nUsing ONLY these facts, write 2-3 stronger résumé bullets. Return JSON: {"bullets":["..."]}`;
   const r = await runLLM({ purpose: "misc", system: SYSTEM, prompt, json: true, maxTokens: 800, temperature: 0.3 });
   const j = tryParseJson(r.text) || {};
   addSuggestions(itemId, (Array.isArray(j.bullets) ? j.bullets : []).map((b: string) => ({ section: "project", bullet: stripAiTells(String(b)) })));

@@ -17,8 +17,14 @@ Privacy: data + keys stay on the machine; only the chosen AI provider is called.
   `pdf.server.ts` (Playwright), `versions.server.ts`, `types.ts`.
 - `app/db.server.ts` — jobs, applications/stages, events, board, funnel, source stats, crawl upsert.
 - `app/default-boards.ts` — job boards seeded into every install (per-URL, so a deletion sticks).
+- `app/fields.ts` — the line of work (`profile_field`). Selects the crawl's relevance
+  vocabulary, the board-side feed filters, and the noun interpolated into the scorer and
+  prompt.md. Was a hardcoded engineering regex; see the commit for the measurements.
 - `app/services/` — `crawl.server.ts` (in-process crawl via runner), `feeds.server.ts` (keyless
-  public job feeds: free discovery when the runner cannot browse), `scheduler.server.ts` (in-app timer),
+  public job feeds, asked for the user's field where the board takes a parameter; RemoteOK is
+  excluded from both category-trust and field-filtering, measured, see the file),
+  `documents.server.ts` (read .pdf/.docx/.md/.txt out of a folder — the KB is not repo-only),
+  `scheduler.server.ts` (in-app timer),
   `backup.server.ts` (VACUUM INTO, 6-hourly, keep 10), `reset.server.ts` (Settings → Danger zone:
   per-scope wipe, backs up first, re-seeds the shipped boards, sends you back to `/setup`).
 - `app/routes/setup.tsx` — the onboarding wizard: six steps, one on screen at a time, `?step=N`.
