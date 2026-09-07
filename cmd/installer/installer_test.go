@@ -153,3 +153,44 @@ func TestFinalAddress(t *testing.T) {
 		t.Errorf("garbage should fall back, got %q", got)
 	}
 }
+
+func TestWriteLauncher(t *testing.T) {
+	root := t.TempDir()
+	app := filepath.Join(root, "app")
+	node := filepath.Join(root, "runtime", "node-v22", "bin", "node")
+
+	path, err := writeLauncher(root, app, node)
+	if err != nil {
+		t.Fatalf("writeLauncher: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading it back: %v", err)
+	}
+	text := string(body)
+
+	// The whole point is that Node is vendored and npm is not on PATH, so the launcher
+	// has to name the interpreter we installed rather than hoping to find one.
+	if !strings.Contains(text, node) {
+		t.Errorf("launcher does not reference the vendored node:\n%s", text)
+	}
+	if !strings.Contains(text, "ledger.mjs") {
+		t.Errorf("launcher does not run ledger.mjs:\n%s", text)
+	}
+	if !strings.Contains(text, app) {
+		t.Errorf("launcher does not enter the app directory:\n%s", text)
+	}
+	// and it has to forward whatever the user typed — restart, stop, status
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(text, "%*") {
+			t.Errorf("windows launcher drops its arguments:\n%s", text)
+		}
+	} else if !strings.Contains(text, `"$@"`) {
+		t.Errorf("shell launcher drops its arguments:\n%s", text)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || info.Mode()&0o100 == 0 {
+		t.Errorf("launcher is not executable (mode %v)", info.Mode())
+	}
+}
