@@ -29,6 +29,10 @@ that goes out is the call to the AI provider you chose.
 
 ## Quick start
 
+> Not a developer? [**INSTALL.md**](INSTALL.md) is the version of this without a
+> terminal in it. A one-click installer is [planned](docs/INSTALLER.md).
+
+
 If you just want to *use* it, there is one command. It installs what is missing,
 gives the app a real web address, runs it in the background and brings it back every
 time you log in:
