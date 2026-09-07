@@ -52,6 +52,19 @@ export function currentCommit(): string {
   return short(git(["rev-parse", "HEAD"], 5_000));
 }
 
+/**
+ * A version someone can read out to you, rather than a commit hash.
+ *
+ * `git describe` gives the release tag when the checkout sits on one, and the tag
+ * plus a distance when it does not — v0.1.14-2-g89b7989. Installed copies are cloned
+ * shallow and start with no tags at all, so --always keeps the commit as the floor:
+ * always something true, even if it is only the sha. The fetch below asks for tags
+ * so that floor is reached only until the first update check.
+ */
+export function currentVersion(): string {
+  return git(["describe", "--tags", "--always"], 5_000) || "unknown";
+}
+
 export async function checkForUpdate(force = false): Promise<UpdateState> {
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || "main";
   const current = currentCommit();
@@ -70,7 +83,19 @@ export async function checkForUpdate(force = false): Promise<UpdateState> {
   // A fetch writes only remote refs, so it cannot disturb the working tree of a
   // running app. Failing it is normal (offline, no remote) and not worth an alarm.
   if (force || Date.now() - lastFetch >= TTL_MS) {
-    const fetched = git(["fetch", "--quiet", "origin", branch], 30_000) !== null;
+    // --tags because the installer clones shallow, which brings none, and without them
+    // the version above can only ever be a commit hash. That alone is not enough: the
+    // tag refs arrive but the commits they point at do not, so describe has nothing to
+    // measure from and --deepen is what gives it some.
+    //
+    // Only while there is still no tag to describe from, and only when the clone really
+    // is shallow. Deepening is relative, so doing it every time would drag the whole
+    // history down 50 commits at a time — and the same flag on a full clone truncates
+    // it rather than extending it.
+    const wantsDepth =
+      git(["rev-parse", "--is-shallow-repository"]) === "true" && git(["describe", "--tags"], 5_000) === null;
+    const fetchArgs = ["fetch", "--quiet", "--tags", ...(wantsDepth ? ["--deepen=50"] : []), "origin", branch];
+    const fetched = git(fetchArgs, 60_000) !== null;
     lastFetch = Date.now();
     lastFetchError = fetched ? undefined : "could not reach the origin";
   }
