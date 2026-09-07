@@ -204,7 +204,8 @@ Windows shows a SmartScreen interstitial. Both are documented in `INSTALL.md`, a
 both are the exact moment a non-technical user gives up — which is the argument for
 the second route.
 
-**Package managers**, where trust is already solved:
+**Package managers**, where trust is already solved. None of these is published yet —
+they are the plan, not a route anyone can take today:
 
 - macOS — a Homebrew tap: `brew install dark-matter08/tap/remote-ledger`
 - Windows — a Scoop bucket first (a manifest in our own repo), winget later
