@@ -40,14 +40,22 @@ const ok = (m) => { say(`  ✓ ${m}`); return true; };
 const warn = (m) => { say(`  ! ${m}`); return false; };
 
 function run(cmd, args, opts = {}) {
+  // Node 22 warns (DEP0190) when a command, an argument array and shell:true are
+  // passed together, because it concatenates rather than escapes. We already quote in
+  // winSafe, so hand it the finished line and no array — which is the shape the
+  // warning is asking for.
   const [c, a] = winSafe(cmd, args);
-  const r = spawnSync(c, a, { stdio: "inherit", cwd: PROJECT, shell: WIN, ...opts });
+  const r = WIN
+    ? spawnSync([c, ...a].join(" "), { stdio: "inherit", cwd: PROJECT, shell: true, ...opts })
+    : spawnSync(c, a, { stdio: "inherit", cwd: PROJECT, ...opts });
   return r.status === 0;
 }
 
 function capture(cmd, args, opts = {}) {
   const [c, a] = winSafe(cmd, args);
-  const r = spawnSync(c, a, { encoding: "utf8", cwd: PROJECT, shell: WIN, ...opts });
+  const r = WIN
+    ? spawnSync([c, ...a].join(" "), { encoding: "utf8", cwd: PROJECT, shell: true, ...opts })
+    : spawnSync(c, a, { encoding: "utf8", cwd: PROJECT, ...opts });
   return r.status === 0 ? String(r.stdout || "") : null;
 }
 
@@ -58,10 +66,45 @@ const nap = (ms) => Atomics.wait(new Int32Array(napBuf), 0, 0, ms);
  * Does the browser's answer match ours? curl without -k validates the whole chain,
  * so exit 0 here means a real browser will not warn either.
  */
+/**
+ * Does anything answer for our hostname over https?
+ *
+ * Deliberately not checking the certificate: whether the browser trusts it is a
+ * separate question, asked separately by certTrusted. This one is only "is the proxy
+ * in front of the app", which stays true even when the certificate is not yet trusted.
+ */
+function proxyServing() {
+  if (WIN) {
+    const r = spawnSync(
+      "powershell",
+      ["-NoProfile", "-Command",
+       `try { [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; ` +
+       `Invoke-WebRequest -Uri "https://${DOMAIN}" -UseBasicParsing -TimeoutSec 8 | Out-Null; exit 0 } ` +
+       `catch { if ($_.Exception.Response) { exit 0 } else { exit 1 } }`],
+      { stdio: "ignore" }
+    );
+    return r.status === 0;
+  }
+  const r = spawnSync("curl", ["-sSk", "-o", "/dev/null", "--max-time", "8", `https://${DOMAIN}`], { stdio: "ignore" });
+  return r.status === 0;
+}
+
 function certTrusted() {
-  // /dev/null does not exist on Windows; the equivalent sink is NUL
-  const sink = WIN ? "NUL" : "/dev/null";
-  const r = spawnSync("curl", ["-sS", "-o", sink, "--max-time", "10", `https://${DOMAIN}`], { stdio: "ignore", shell: WIN });
+  if (WIN) {
+    // Not curl here. Windows ships a curl that carries its own CA bundle, so it says
+    // "untrusted" for a certificate the browser is perfectly happy with — which is how
+    // a successful certutil install came out the other side reported as a failure.
+    // PowerShell's client uses the Windows trust store, which is the one Edge and
+    // Chrome read.
+    const r = spawnSync(
+      "powershell",
+      ["-NoProfile", "-Command",
+       `try { Invoke-WebRequest -Uri "https://${DOMAIN}" -UseBasicParsing -TimeoutSec 10 | Out-Null; exit 0 } catch { if ($_.Exception.Response) { exit 0 } else { exit 1 } }`],
+      { stdio: "ignore" }
+    );
+    return r.status === 0;
+  }
+  const r = spawnSync("curl", ["-sS", "-o", "/dev/null", "--max-time", "10", `https://${DOMAIN}`], { stdio: "ignore" });
   return r.status === 0;
 }
 
@@ -335,7 +378,22 @@ async function start() {
     process.exit(1);
   }
 
-  const address = setupDropport();
+  let address = setupDropport();
+  // `dropport up` can fail on a machine where the proxy is already serving the name —
+  // a reload that did not take, a permission prompt declined on a second run. The
+  // address answering is the only thing that settles whether it works, so ask it
+  // before falling back to a port the user does not need.
+  if (!address && proxyServing()) {
+    ok(`https://${DOMAIN} is already being served`);
+    address = `https://${DOMAIN}`;
+  }
+  // The installer opens a browser when this finishes and has no way to know whether
+  // the proxy came up, so it was opening localhost while the app was answering on a
+  // real hostname. Write down the address that actually works.
+  try {
+    mkdirSync(resolve(PROJECT, "data"), { recursive: true });
+    writeFileSync(resolve(PROJECT, "data", "address"), address || `http://localhost:${PORT}`);
+  } catch {}
 
   step("Starting the app, and making it come back on its own after a restart");
   // `enable` builds, installs the login agent and starts it. With the proxy up, the
