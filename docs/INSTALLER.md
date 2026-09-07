@@ -244,6 +244,38 @@ than starting over. `installed.json` records what completed and which versions.
 - **It does not manage dropport after installing it.** `dropport` is its own tool with
   its own commands; the installer sets it up once and gets out of the way.
 
+## Building it locally
+
+```bash
+go test ./cmd/...        # unit tests for the pure logic
+go build ./cmd/installer # a binary for this machine
+```
+
+**Go 1.22 does not work on current macOS.** Its internal linker emits binaries with
+no `LC_UUID`, and the system refuses to run them — including the test binary, so
+`go test` aborts before running a single test. Either use a current Go, or pass
+`-ldflags=-linkmode=external`. CI uses `stable` for the same reason, and that matters
+most for releases: the macOS artifacts are built there, and 1.22 would ship a binary
+that cannot start on the machines it is meant for.
+
+### macOS will kill an unsigned binary
+
+Three separate things, found by running the thing rather than reasoning about it:
+
+| build | what macOS 26 does |
+|---|---|
+| Go 1.22, internal linker | no `LC_UUID` — dyld refuses to load it |
+| external linker | loads, then **SIGKILL** — the signature is rejected |
+| external linker + `codesign -s -` | runs |
+
+So the release must ad-hoc sign, **after** `lipo`, which discards its inputs'
+signatures. Skip it and the download is killed on launch with no message at all —
+indistinguishable, to the person who downloaded it, from us shipping a broken file.
+
+Ad-hoc signing is not notarization. It makes the binary runnable; Gatekeeper still
+shows "unidentified developer" the first time, which is the warning `INSTALL.md`
+walks through. Two different problems that look similar.
+
 ## Open questions, before any code
 
 1. **Two lockfiles.** `package-lock.json` and `pnpm-lock.yaml` are both committed with
@@ -264,13 +296,13 @@ than starting over. `installed.json` records what completed and which versions.
 
 | | |
 |---|---|
-| 0 | `LEDGER_SKIP_PROXY` in `ledger.mjs`. A few lines, and the component screen depends on it. |
-| 1 | Go skeleton, macOS only: component screen → preflight → git → vendored Node → clone → `ledger start` → open. This is the whole product for one platform, and it is small because `ledger.mjs` does the work. |
-| 2 | Linux, then Windows. Windows needs milestone 5 to be a fair comparison. |
+| 0 | ~~`LEDGER_SKIP_PROXY` in `ledger.mjs`~~ — done. |
+| 1 | ~~Go skeleton: component screen → preflight → git → vendored Node → clone → `ledger start` → open~~ — done, and it cross-compiles to all four targets rather than macOS only. Not yet run end to end on a clean machine. |
+| 2 | Run it on a clean machine and fix what that finds. Windows still needs milestone 5 to be a fair comparison. |
 | 3 | Resume-a-failed-install markers, and a progress display worth looking at for ten minutes. |
 | 4 | Browser detection and the Chromium branch. Firefox gets option 3 (install Chrome) for free, since it needs no app changes. |
 | 5 | Windows autostart in `serve.mjs`. Unblocks a real Windows release. |
 | 6 | The two new Firefox apply modes in the app, then the rest of the tree. |
-| 7 | Release pipeline: 3 artifacts, checksums, Homebrew tap, Scoop bucket. |
+| 7 | ~~Release pipeline: 3 artifacts, checksums~~ — done, untested until the first tag. Homebrew tap and Scoop bucket still to do. |
 | 8 | The Local AI checkbox — drive the Ollama install the Settings tab already does. |
 | — | Pin one lockfile. Independent of all of the above; do it whenever. |

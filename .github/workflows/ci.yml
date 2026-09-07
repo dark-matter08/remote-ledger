@@ -1,0 +1,63 @@
+# Typecheck and tests on every pull request.
+#
+# These tests already existed and already caught real bugs; nothing ran them
+# automatically, so they only caught what someone remembered to check by hand.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          # the app uses node:sqlite, which does not exist before 22.5
+          node-version: 22
+          cache: pnpm
+
+      # Playwright's postinstall pulls a ~150MB browser that no test drives.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  installer:
+    name: Installer builds for every target
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Not pinned to 1.22: on current macOS its internal linker emits binaries
+          # without LC_UUID, which the system then refuses to run — so a release
+          # built with it would ship a macOS binary that cannot start.
+          go-version: stable
+          cache: false
+      - run: go vet ./cmd/...
+      # a compile check per target, so a Windows-only mistake fails here and not in
+      # front of the one person who downloads the Windows build
+      - name: Cross-compile
+        run: |
+          for t in darwin/arm64 darwin/amd64 linux/amd64 windows/amd64; do
+            echo "  building $t"
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/installer
+          done

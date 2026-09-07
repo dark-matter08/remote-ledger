@@ -158,6 +158,13 @@ function ensureDropport() {
  * nothing for this script to arrange beyond running it once.
  */
 function setupDropport() {
+  // The installer offers the https address as a choice, and a choice you cannot
+  // decline is a label. Everything still works without it — the app just answers on
+  // a port instead of a name.
+  if (process.env.LEDGER_SKIP_PROXY === "1") {
+    step("Skipping the https address, as asked");
+    return null;
+  }
   if (!ensureCaddy() || !ensureDropport()) {
     warn("skipping the https address — the app still runs, just with a port in the URL.");
     return null;
