@@ -215,7 +215,9 @@ async function start({ rebuild = true } = {}) {
     say(`  already running (pid ${existing}) — use "restart" to pick up changes`);
     return url();
   }
-  if (rebuild || !existsSync(SERVER_ENTRY)) build();
+  // the logon launcher sets this: the bundle was built when it was installed
+  const skipBuild = process.env.LEDGER_NO_REBUILD === "1";
+  if ((rebuild && !skipBuild) || !existsSync(SERVER_ENTRY)) build();
   if (!existsSync(SERVER_ENTRY)) {
     say(`  no build output at ${SERVER_ENTRY}`);
     process.exit(1);
@@ -247,9 +249,36 @@ async function start({ rebuild = true } = {}) {
   }
 }
 
+/**
+ * Whatever is listening on our port, whether or not we started it.
+ *
+ * A process launched at logon before this went through serve.mjs never wrote a pid
+ * file, so stop() had nothing to kill and start() then lost the port to it — the old
+ * build serving indefinitely while every restart claimed to have worked. This finds
+ * it the only way left: by the port it is holding.
+ */
+function killByPort() {
+  if (!WIN) return false;
+  const out = spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout || "";
+  const pids = new Set();
+  for (const line of out.split(/\r?\n/)) {
+    if (!/LISTENING/i.test(line)) continue;
+    if (!new RegExp(`[:.]${PORT}\\b`).test(line)) continue;
+    const pid = line.trim().split(/\s+/).pop();
+    if (/^\d+$/.test(pid) && pid !== "0") pids.add(pid);
+  }
+  for (const pid of pids) spawnSync("taskkill", ["/PID", pid, "/T", "/F"], { stdio: "ignore" });
+  return pids.size > 0;
+}
+
 function stop({ quiet = false } = {}) {
   const pid = runningPid();
   if (!pid) {
+    if (killByPort()) {
+      if (!quiet) say(`  stopped whatever was holding port ${PORT}`);
+      rmSync(PID_FILE, { force: true });
+      return;
+    }
     if (!quiet) say("  not running");
     rmSync(PID_FILE, { force: true });
     return;
@@ -375,16 +404,21 @@ function autostartEnabled() {
  * invocation through it is its own kind of misery. A one-line .cmd sidesteps both:
  * the task runs the file, the file sets the directory and the environment.
  */
-function writeWinLauncher(entry) {
+function writeWinLauncher() {
   mkdirSync(dirname(WIN_LAUNCHER), { recursive: true });
   writeFileSync(
     WIN_LAUNCHER,
     [
       "@echo off",
+      "rem Goes through serve.mjs rather than running the server directly, so a pid",
+      "rem file is written. Without one nothing can find this process again: stop()",
+      "rem killed nothing, start() then lost the port to it, and the old build served",
+      "rem forever while every restart reported success.",
       `cd /d "${PROJECT}"`,
       `set "PORT=${PORT}"`,
       "set NODE_ENV=production",
-      `"${process.execPath}" "${entry}" "${SERVER_ENTRY}"`,
+      "set LEDGER_NO_REBUILD=1",
+      `"${process.execPath}" "${resolve(PROJECT, "scripts", "serve.mjs")}" start`,
       "",
     ].join("\r\n")
   );
@@ -464,7 +498,13 @@ function registerWinLogon(launcher) {
 }
 
 async function enable() {
-  if (!existsSync(SERVER_ENTRY)) build();
+  // Always, not just when the output is missing. Re-running the installer over an
+  // existing copy pulls new source and then calls this — and a build that already
+  // existed meant the new code was on disk while the old bundle carried on being
+  // served. From the outside the update simply had not happened.
+  //
+  // start() has always rebuilt by default. This was the one path that did not.
+  build();
 
   // hand the port over: a manually started copy would win the race on the next boot
   // and leave the supervised one flapping against EADDRINUSE
@@ -478,7 +518,7 @@ async function enable() {
   mkdirSync(dirname(AGENT_LOG), { recursive: true });
 
   if (WIN) {
-    const launcher = writeWinLauncher(entry);
+    const launcher = writeWinLauncher();
     if (!registerWinLogon(launcher)) process.exit(1);
   } else {
     mkdirSync(dirname(AUTOSTART_FILE), { recursive: true });
