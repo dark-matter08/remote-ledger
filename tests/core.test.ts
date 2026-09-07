@@ -2258,3 +2258,14 @@ test("windows: a path with a space is one argument, not two", async () => {
   assert.equal(pcmd, "/usr/bin/npm");
   assert.deepEqual(pargs, ["run", "ledger start"]);
 });
+
+test("ollama: every platform has a way to install it from the app", async () => {
+  const { installCommand } = await import("../app/services/ollama.server");
+  // Windows used to return null here, so the wizard fell through to "go to a website
+  // and come back" — the one platform where the Install button did nothing.
+  assert.ok(installCommand(false), "there must always be a command to offer");
+  // and on a Mac with Homebrew it should prefer it over piping a script into a shell
+  const withBrew = installCommand(true);
+  const withoutBrew = installCommand(false);
+  assert.notEqual(withBrew, withoutBrew, "Homebrew should change the answer on macOS");
+});

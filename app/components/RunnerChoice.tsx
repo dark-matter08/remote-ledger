@@ -165,7 +165,8 @@ function LocalPane() {
           </>
         ) : (
           <p className="setup-prose">
-            On Windows, install it from <a href="https://ollama.com/download" target="_blank" rel="noreferrer">ollama.com/download</a>, then come back to this step.
+            Nothing here can install it for you. Get it from{" "}
+            <a href="https://ollama.com/download" target="_blank" rel="noreferrer">ollama.com/download</a>, then come back to this step.
           </p>
         )
       )}
