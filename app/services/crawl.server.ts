@@ -181,12 +181,18 @@ async function invokeAgent(
   return r.text;
 }
 
-let running = false;
-// active run controllers so a Stop can actually kill the underlying agent process
+// active run controllers so a Stop can actually kill the underlying agent process.
+// This map is also the answer to "is a crawl running": a separate boolean drifted
+// from it, and the drift is what made a stopped crawl go on blocking the next one.
 const controllers = new Map<number, AbortController>();
 
 export function abortCrawl(runId: number): boolean {
   const ac = controllers.get(runId);
+  // Forgotten here, not when execute() finally unwinds. Aborting asks the agent to
+  // stop; it can take a long time to agree — the hard stop is at twice the crawl
+  // timeout — and for all of that time isCrawlRunning() went on reporting a crawl the
+  // user had already stopped, so starting another was refused.
+  controllers.delete(runId);
   if (ac) { ac.abort(); return true; }
   return false;
 }
@@ -210,7 +216,7 @@ export function startCrawl(type: CrawlType = "find", trigger = "manual"): number
 }
 
 export function isCrawlRunning(): boolean {
-  return running || !!activeCrawl();
+  return controllers.size > 0 || !!activeCrawl();
 }
 
 // Wrap any short LLM task as a crawl_run so it's monitorable in the Crawl Shell
@@ -715,7 +721,6 @@ async function researchWithTools(
 async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
-  running = true;
   const ac = new AbortController();
   controllers.set(runId, ac);
   const totals = { received: 0, inserted: 0, updated: 0, scraped: 0, errors: 0 };
@@ -886,6 +891,15 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
       }
     }
 
+    // Every stage breaks out of its loops on the abort signal rather than throwing, so
+    // a stopped crawl arrives here just like a finished one — and reported "done",
+    // overwriting the "stopped by user" the Stop button had already written.
+    if (ac.signal.aborted) {
+      L("note", "Crawl stopped.");
+      updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "stopped by user", ...totals });
+      return { ok: false, runId, ...totals, message: "stopped by user" };
+    }
+
     L("note", "Crawl complete.");
     updateCrawlRun(runId, { status: "done", ended_at: new Date().toISOString(), ...totals });
     return { ok: true, runId, ...totals };
@@ -897,7 +911,6 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
     setMeta("last_crawl_status", "error");
     return { ok: false, runId, ...totals, message: e?.message || String(e) };
   } finally {
-    running = false;
     controllers.delete(runId);
   }
 }
