@@ -2347,3 +2347,42 @@ test("starting at logon never stops to ask for a password", async () => {
     "the guard has to come before the elevation, or it guards nothing"
   );
 });
+
+test("stopping a crawl lets the next one start", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("app/services/crawl.server.ts", "utf8");
+
+  // "A crawl is already running" was answered by a module-level boolean that only
+  // cleared when execute() unwound. Aborting asks the agent to stop; it can take up
+  // to twice the crawl timeout to agree, and for all of that time a crawl the user
+  // had already stopped went on refusing the next one.
+  const guard = src.slice(src.indexOf("export function isCrawlRunning"));
+  const guardBody = guard.slice(0, guard.indexOf("\n}"));
+  assert.match(guardBody, /controllers\.size/, "the guard must count live runs, not a flag beside them");
+  assert.ok(
+    !/\brunning\b\s*\|\|/.test(guardBody),
+    "a separate boolean drifts from the map; that drift is the bug"
+  );
+
+  // and the abort has to take effect at once, not when the agent finally notices
+  const abort = src.slice(src.indexOf("export function abortCrawl"));
+  const abortBody = abort.slice(0, abort.indexOf("\n}"));
+  assert.match(abortBody, /controllers\.delete/, "abortCrawl must forget the run immediately");
+
+  // Every stage breaks out of its loops on the signal rather than throwing, so an
+  // aborted run reaches the success path like a finished one — and marked itself
+  // "done" over the "stopped by user" the Stop button had just written.
+  const exec = src.slice(src.indexOf("async function execute("));
+  const doneAt = exec.indexOf('status: "done"');
+  assert.ok(doneAt > 0, "the success path should still exist");
+  // the guard itself, not merely a mention of the signal — the stage loops read
+  // ac.signal.aborted too, so looking for that alone proves nothing
+  const guardAt = exec.indexOf("if (ac.signal.aborted) {");
+  assert.ok(guardAt > 0, "execute must ask whether it was stopped");
+  assert.ok(guardAt < doneAt, "and ask before it reports itself done, not after");
+  assert.match(
+    exec.slice(guardAt, doneAt),
+    /stopped by user/,
+    "and record it as stopped rather than leaving the Stop button's note to be overwritten"
+  );
+});
