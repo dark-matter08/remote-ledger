@@ -16,6 +16,7 @@ import { spawnSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { platform } from "node:os";
+import { winSafe } from "./win.mjs";
 
 const ACTION = (process.argv[2] || "help").toLowerCase();
 const PROJECT = process.cwd();
@@ -39,12 +40,14 @@ const ok = (m) => { say(`  ✓ ${m}`); return true; };
 const warn = (m) => { say(`  ! ${m}`); return false; };
 
 function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { stdio: "inherit", cwd: PROJECT, ...opts });
+  const [c, a] = winSafe(cmd, args);
+  const r = spawnSync(c, a, { stdio: "inherit", cwd: PROJECT, shell: WIN, ...opts });
   return r.status === 0;
 }
 
 function capture(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { encoding: "utf8", cwd: PROJECT, ...opts });
+  const [c, a] = winSafe(cmd, args);
+  const r = spawnSync(c, a, { encoding: "utf8", cwd: PROJECT, shell: WIN, ...opts });
   return r.status === 0 ? String(r.stdout || "") : null;
 }
 
@@ -56,7 +59,9 @@ const nap = (ms) => Atomics.wait(new Int32Array(napBuf), 0, 0, ms);
  * so exit 0 here means a real browser will not warn either.
  */
 function certTrusted() {
-  const r = spawnSync("curl", ["-sS", "-o", "/dev/null", "--max-time", "10", `https://${DOMAIN}`], { stdio: "ignore" });
+  // /dev/null does not exist on Windows; the equivalent sink is NUL
+  const sink = WIN ? "NUL" : "/dev/null";
+  const r = spawnSync("curl", ["-sS", "-o", sink, "--max-time", "10", `https://${DOMAIN}`], { stdio: "ignore", shell: WIN });
   return r.status === 0;
 }
 

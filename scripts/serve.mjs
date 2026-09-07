@@ -148,9 +148,31 @@ function removeHost() {
 
 // ---------- actions ----------
 
+/**
+ * The react-router CLI, as JavaScript rather than as the shim in node_modules/.bin.
+ *
+ * That shim is a .cmd on Windows and a /bin/sh script elsewhere — neither is
+ * something CreateProcess can run, and neither is something `node` can parse. Running
+ * the resolved .js under the interpreter we are already in works everywhere and needs
+ * no shell.
+ */
+function devEntry() {
+  try {
+    return createRequire(import.meta.url).resolve("@react-router/dev/bin.js");
+  } catch {}
+  const guess = resolve(PROJECT, "node_modules", "@react-router", "dev", "bin.js");
+  return existsSync(guess) ? guess : null;
+}
+
 function build() {
   say("  building…");
-  execFileSync(BIN("react-router"), ["build"], { stdio: "inherit", cwd: PROJECT });
+  const entry = devEntry();
+  if (entry) {
+    execFileSync(process.execPath, [entry, "build"], { stdio: "inherit", cwd: PROJECT });
+    return;
+  }
+  // no resolved entry: fall back to the shim, which needs a shell on Windows
+  execFileSync(BIN("react-router"), ["build"], { stdio: "inherit", cwd: PROJECT, shell: WIN });
 }
 
 async function start({ rebuild = true } = {}) {
@@ -166,11 +188,18 @@ async function start({ rebuild = true } = {}) {
   }
 
   const out = openSync(LOG, "a");
-  const child = spawn(BIN("react-router-serve"), [SERVER_ENTRY], {
+  // node + the resolved .js, not the .bin shim: the shim is a .cmd on Windows and a
+  // shell script elsewhere, and spawning either without a shell fails. The login
+  // agent already runs it this way; this is the same reasoning for the manual start.
+  const entry = serveEntry();
+  const cmd = entry ? process.execPath : BIN("react-router-serve");
+  const args = entry ? [entry, SERVER_ENTRY] : [SERVER_ENTRY];
+  const child = spawn(cmd, args, {
     cwd: PROJECT,
     env: { ...process.env, PORT: String(PORT), NODE_ENV: "production" },
     detached: true, // survives this shell closing
     stdio: ["ignore", out, out],
+    shell: entry ? false : WIN,
   });
   child.unref();
   writeFileSync(PID_FILE, String(child.pid));

@@ -2237,3 +2237,24 @@ test("openrouter: tools are offered, and the fallback chain keeps them", async (
   // `web` is a different capability: the provider searching for us, and billing for it
   assert.notEqual(info.tools, info.web, "tools and provider-side web are not the same thing");
 });
+
+test("windows: a path with a space is one argument, not two", async () => {
+  const { winSafe, quoteArg } = await import("../scripts/win.mjs");
+
+  // The reason this exists: npm and friends are .cmd shims, so Windows needs a shell,
+  // and a shell takes a command line rather than an argv. An unquoted home directory
+  // then arrives as two arguments and the command fails somewhere far from the cause.
+  assert.equal(quoteArg("C:\\Users\\Jane Doe\\app"), '"C:\\Users\\Jane Doe\\app"');
+  assert.equal(quoteArg("install"), "install", "a plain word is left alone");
+  assert.equal(quoteArg("a&b"), '"a&b"', "cmd.exe would treat & as a separator");
+  assert.equal(quoteArg('say "hi"'), '"say \\"hi\\""', "embedded quotes are escaped");
+
+  const [cmd, args] = winSafe("C:\\Program Files\\nodejs\\npm.cmd", ["run", "ledger start"], true);
+  assert.equal(cmd, '"C:\\Program Files\\nodejs\\npm.cmd"');
+  assert.deepEqual(args, ["run", '"ledger start"']);
+
+  // and on posix nothing is touched — quoting an argv inserts literal quote characters
+  const [pcmd, pargs] = winSafe("/usr/bin/npm", ["run", "ledger start"], false);
+  assert.equal(pcmd, "/usr/bin/npm");
+  assert.deepEqual(pargs, ["run", "ledger start"]);
+});
