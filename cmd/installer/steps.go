@@ -121,10 +121,6 @@ func cloneOrUpdate(dir string, ui *UI) error {
 // and this would be the one nobody runs.
 func handOff(appDir, nodeExe string, wantProxy bool, ui *UI) error {
 	nodeBin := filepath.Dir(nodeExe)
-	npm := filepath.Join(nodeBin, "npm")
-	if runtime.GOOS == "windows" {
-		npm = filepath.Join(nodeBin, "npm.cmd")
-	}
 
 	env := []string{
 		// put the vendored Node first so every child process finds this one and not
@@ -138,7 +134,12 @@ func handOff(appDir, nodeExe string, wantProxy bool, ui *UI) error {
 	ui.Step("Setting up the app — this is the long part, several minutes")
 	ui.Say("It installs about 900 MB. Everything it prints below is its own.")
 	fmt.Println()
-	return runAt(appDir, npm, []string{"run", "ledger", "start"}, env)
+
+	// `npm run ledger start` would mean executing npm.cmd on Windows, which needs a
+	// shell — CreateProcess cannot run a batch file. The script npm would run is
+	// scripts/ledger.mjs, and we are holding the interpreter, so run it directly and
+	// skip the shim entirely. npm stays on PATH above for ledger.mjs's own use.
+	return runAt(appDir, nodeExe, []string{filepath.Join("scripts", "ledger.mjs"), "start"}, env)
 }
 
 // ---- browser ---------------------------------------------------------------
