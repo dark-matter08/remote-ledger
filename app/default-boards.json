@@ -18,5 +18,10 @@
     "name": "We Work Remotely",
     "url": "https://weworkremotely.com/",
     "note": "one of the oldest remote-only boards; robots.txt allows /remote-jobs and the category listings"
+  },
+  {
+    "name": "InclusivelyRemote",
+    "url": "https://inclusivelyremote.com/",
+    "note": "remote roles open worldwide. Each posting is public at /job/<slug>/ and carries schema.org JobPosting markup with the real hiringOrganization. The /jobs/ index and /alerts-jobs/ redirect to a login (/login/?restricted=page) — never follow or file those. Browse the homepage and the public /job-category/<x>/ and /job-type/<x>/ listings instead, open each /job/<slug>/ page, and follow its Apply Now button (class btn-apply-job-external), which links straight to the employer's own ATS. File that employer URL, never the inclusivelyremote.com page."
   }
 ]
