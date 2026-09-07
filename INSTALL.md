@@ -58,6 +58,23 @@ curl -fsSL https://remoteledger.dev/install.sh | sh
 
 ---
 
+## What you get to choose
+
+Before anything downloads, one screen. The defaults are fine — pressing Enter is a
+reasonable answer to all of it.
+
+**A real web address** *(on by default)* — the Ledger at
+`https://remoteledger.dp.local` instead of `http://localhost:5173`. Easier to
+remember, and no browser warning. It asks for your password three times while
+setting this up, and says why before each one. Turn it off and everything still
+works, just at the longer address.
+
+**Local AI** *(off by default)* — runs the AI on your own machine, so nothing you
+write leaves it, and it costs nothing to use. It is off because it downloads a
+further 2–8 GB on top of the install, and the setup wizard offers free options that
+download nothing. You can turn it on later from Settings → Local, when you are ready
+for the download.
+
 ## What the installer actually does
 
 No surprises, in this order:
@@ -69,8 +86,9 @@ No surprises, in this order:
 4. Downloads the Ledger itself into `~/.remote-ledger/app`
 5. Runs the Ledger's own setup, which installs its dependencies and a browser engine
    for reading job pages, builds it, and sets it to start when you log in
-6. Works out your default browser and sets up the apply flow to match
-7. Opens the Ledger
+6. Sets up the real web address, if you asked for one
+7. Works out your default browser and sets up the apply flow to match
+8. Opens the Ledger
 
 Step 5 is the long one, and it prints what it is doing as it goes.
 

@@ -69,6 +69,39 @@ Everything after that is already written, already tested, and already the path a
 existing user takes. Re-implementing it in Go would mean two things to keep in step,
 and the Go one would be the one nobody runs.
 
+## What gets installed, and what is optional
+
+One screen of checkboxes, before anything downloads. Sensible defaults, so the
+answer to all of it is Enter.
+
+| | Component | Default | Cost |
+|---|---|---|---|
+| ☑ | **The Ledger** | required | ~900 MB |
+| ☑ | **dropport** — a real address, `https://remoteledger.dp.local`, instead of `localhost:5173` | **on** | Caddy, plus three password prompts |
+| ☐ | **Local AI** — Ollama and a model, so the whole thing runs free on this machine | off | 2–8 GB depending on the model |
+
+**dropport is on by default** because `ledger.mjs` already installs and configures it
+as part of `npm run ledger start`, and because a memorable HTTPS address is the
+difference between an app someone returns to and a port number they forget. It needs
+Caddy and three sudo prompts, which is the reason it stays a choice rather than an
+assumption. Turning it off is not a degraded install — the app runs identically, just
+at `localhost:5173`.
+
+Making it *optional* is the new part: `ledger.mjs` currently always attempts it, and
+only skips when Caddy or dropport cannot be installed. It needs a switch —
+`LEDGER_SKIP_PROXY=1`, checked at the top of `setupDropport()`.
+
+**Local AI is off by default**, and that is a judgement worth challenging. Ollama
+plus a usable model is 2–8 GB on top of an install that is already ~900 MB, and the
+`/setup` wizard offers free hosted options that cost nothing and download nothing. So
+the default optimises for finishing the install. The checkbox is there because for
+someone who wants nothing leaving their machine, this is the only answer — and
+Settings → Local can do it later, at a moment when a 5 GB download is expected.
+
+Everything else about AI stays with the `/setup` wizard, which asks the right
+questions and proves each answer with a live call. The installer does not compete
+with it.
+
 ## What it does, in order
 
 Every phase is idempotent. Re-running the installer on a working install repairs it
@@ -113,6 +146,10 @@ Windows implementation — it prints "Windows has no equivalent here" and exits 
 Until that is filled in, the Windows binary installs and launches, but the app will
 not come back after a reboot. That is app work, not installer work, and it is the
 one place where the three platforms are not equal.
+
+**6b · dropport**, if chosen. Already inside `npm run ledger start`; the installer
+only passes the choice through. Caddy is installed first, and the three password
+prompts are announced before they appear.
 
 **7 · Browser.** Below.
 
@@ -197,10 +234,15 @@ than starting over. `installed.json` records what completed and which versions.
 
 ## What it deliberately does not do
 
-- **dropport** keeps its own path: `npm i -g dropport` for anyone with Node.
-  Different audience, different problem, no reason to couple them.
-- **No AI configuration.** The `/setup` wizard already does this, with live proofs.
-- **No system Node, no admin.** If a step needs elevation, that is a bug in the plan.
+- **It does not choose an AI provider.** The `/setup` wizard already asks, and proves
+  each answer with a live call before it lets you past. A second, worse version of
+  that conversation in a terminal helps nobody.
+- **It does not install anything system-wide, and never asks for admin** — except for
+  dropport, which genuinely needs it to bind ports 80 and 443 and to trust a local
+  certificate authority. That is announced, and it is the reason dropport is a
+  checkbox rather than a step.
+- **It does not manage dropport after installing it.** `dropport` is its own tool with
+  its own commands; the installer sets it up once and gets out of the way.
 
 ## Open questions, before any code
 
@@ -214,16 +256,21 @@ than starting over. `installed.json` records what completed and which versions.
 3. **The two Firefox apply modes** are application work, not installer work.
 4. **Updating the installer itself** — re-download, or teach it to self-update? The
    app already updates itself through git, so this only matters for the bootstrap.
+5. **`LEDGER_SKIP_PROXY`** does not exist. `setupDropport()` always runs and only
+   skips when Caddy or dropport cannot be installed — there is no way to decline it.
+   Small, but it is what makes the dropport checkbox real rather than decorative.
 
 ## Milestones
 
 | | |
 |---|---|
-| 1 | Go skeleton, macOS only: preflight → git → vendored Node → clone → `ledger start` → open. This is the whole product for one platform, and it is small because `ledger.mjs` does the work. |
+| 0 | `LEDGER_SKIP_PROXY` in `ledger.mjs`. A few lines, and the component screen depends on it. |
+| 1 | Go skeleton, macOS only: component screen → preflight → git → vendored Node → clone → `ledger start` → open. This is the whole product for one platform, and it is small because `ledger.mjs` does the work. |
 | 2 | Linux, then Windows. Windows needs milestone 5 to be a fair comparison. |
 | 3 | Resume-a-failed-install markers, and a progress display worth looking at for ten minutes. |
 | 4 | Browser detection and the Chromium branch. Firefox gets option 3 (install Chrome) for free, since it needs no app changes. |
 | 5 | Windows autostart in `serve.mjs`. Unblocks a real Windows release. |
 | 6 | The two new Firefox apply modes in the app, then the rest of the tree. |
 | 7 | Release pipeline: 3 artifacts, checksums, Homebrew tap, Scoop bucket. |
+| 8 | The Local AI checkbox — drive the Ollama install the Settings tab already does. |
 | — | Pin one lockfile. Independent of all of the above; do it whenever. |
