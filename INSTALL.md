@@ -42,19 +42,25 @@ Same reason. Click **More info**, then **Run anyway**.
 
 ### If you would rather not click through a warning
 
-Fair. Use a package manager, where the trust is handled for you:
+Download it in a terminal instead. The warning comes from a marker the *browser*
+attaches to anything it downloads — fetch the same file with `curl` and there is no
+marker, so there is nothing to click through:
 
 ```bash
-# macOS
-brew install dark-matter08/tap/remote-ledger
-
-# Windows
-scoop bucket add dark-matter08 https://github.com/dark-matter08/scoop-bucket
-scoop install remote-ledger
+# macOS — one binary, both Apple Silicon and Intel
+curl -fsSL -o ~/remote-ledger \
+  https://github.com/dark-matter08/remote-ledger/releases/latest/download/remote-ledger-macos
+chmod +x ~/remote-ledger && ~/remote-ledger
 
 # Linux
-curl -fsSL https://remoteledger.dev/install.sh | sh
+curl -fsSL -o ~/remote-ledger \
+  https://github.com/dark-matter08/remote-ledger/releases/latest/download/remote-ledger-linux
+chmod +x ~/remote-ledger && ~/remote-ledger
 ```
+
+On Linux this is the only way that works — file managers do not run a binary on a
+double-click, and the installer asks you questions, so it needs a terminal to ask them
+in.
 
 ---
 
