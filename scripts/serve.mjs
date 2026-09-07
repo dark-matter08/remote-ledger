@@ -129,6 +129,16 @@ function addHost() {
   // once it has the proxy working.
   if (process.env.LEDGER_SKIP_HOSTS === "1") return;
   if (hostsHasEntry()) return say(`  hosts: ${HOSTNAME} already maps to 127.0.0.1`);
+  // Never ask for a password when there is no one at the keyboard. The logon
+  // launcher runs this with its window hidden, and the Windows branch below
+  // raises a UAC prompt with -Wait: at every boot it blocked, unanswerable,
+  // before the server was ever spawned. The machine came back and the app did not.
+  //
+  // A hosts entry is install-time work. Missing at logon, the right answer is to
+  // carry on serving the port, not to interrupt someone signing in.
+  if (!process.stdout.isTTY) {
+    return say(`  hosts: no ${HOSTNAME} entry, and nothing to ask — serving http://localhost:${PORT}`);
+  }
   if (WIN) {
     // Telling someone to open an Administrator prompt and edit a system file by hand
     // is not an install step, it is homework. Windows can raise the prompt itself.
@@ -452,6 +462,8 @@ function writeWinLauncher() {
       `set "PORT=${PORT}"`,
       "set NODE_ENV=production",
       "set LEDGER_NO_REBUILD=1",
+      "rem hosts changes need an administrator, and a logon is not the moment to ask",
+      "set LEDGER_SKIP_HOSTS=1",
       `"${process.execPath}" "${resolve(PROJECT, "scripts", "serve.mjs")}" start`,
       "",
     ].join("\r\n")
