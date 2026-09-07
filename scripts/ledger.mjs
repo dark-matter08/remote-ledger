@@ -14,7 +14,7 @@
 // the step that does both, in the right order, and installs what is not there yet.
 import { spawnSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { delimiter, dirname, resolve, join } from "node:path";
 import { platform } from "node:os";
 import { winSafe } from "./win.mjs";
 
@@ -122,13 +122,42 @@ function installDeps({ force = false } = {}) {
 }
 
 /** Caddy does the proxying and the certificates; dropport is a wrapper around it. */
+/**
+ * Where the Windows installers put caddy.exe.
+ *
+ * winget updates the PATH for *future* processes, so a caddy installed a moment ago
+ * is invisible to `where` in this one. Same trap that made the installer report git
+ * as missing right after installing it.
+ */
+function caddyOnDisk() {
+  if (!WIN) return false;
+  const candidates = [
+    resolve(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "caddy.exe"),
+    resolve(process.env.USERPROFILE || "", "scoop", "shims", "caddy.exe"),
+    "C:\\ProgramData\\chocolatey\\bin\\caddy.exe",
+  ];
+  const found = candidates.find((p) => p && existsSync(p));
+  if (!found) return false;
+  process.env.PATH = `${dirname(found)}${delimiter}${process.env.PATH || ""}`;
+  return true;
+}
+
 function ensureCaddy() {
-  if (have("caddy")) return ok("Caddy is installed");
+  if (have("caddy") || caddyOnDisk()) return ok("Caddy is installed");
 
   step("Installing Caddy (it serves the https address)");
   if (MAC && have("brew")) {
     if (run("brew", ["install", "caddy"])) return ok("Caddy installed");
-  } else if (!MAC && !WIN) {
+  } else if (WIN) {
+    // winget ships with Windows 10 and 11; scoop and chocolatey are common enough to
+    // be worth trying before giving up.
+    if (have("winget") && run("winget", ["install", "--id", "CaddyServer.Caddy", "-e", "--source", "winget",
+      "--accept-source-agreements", "--accept-package-agreements"])) {
+      if (have("caddy") || caddyOnDisk()) return ok("Caddy installed");
+    }
+    if (have("scoop") && run("scoop", ["install", "caddy"])) return ok("Caddy installed");
+    if (have("choco") && run("choco", ["install", "caddy", "-y"])) return ok("Caddy installed");
+  } else if (!MAC) {
     // Each of these asks for a password; announce it rather than surprising anyone.
     say("  this needs your password, to install a system package");
     if (have("apt-get") && run("sudo", ["apt-get", "install", "-y", "caddy"])) return ok("Caddy installed");
@@ -138,7 +167,7 @@ function ensureCaddy() {
 
   warn("could not install Caddy automatically.");
   say("    Install it once, then run this command again:");
-  say(MAC ? "      brew install caddy" : "      see https://caddyserver.com/docs/install");
+  say(MAC ? "      brew install caddy" : WIN ? "      winget install CaddyServer.Caddy" : "      see https://caddyserver.com/docs/install");
   return false;
 }
 
@@ -146,6 +175,13 @@ function ensureDropport() {
   if (have("dropport")) return ok("dropport is installed");
   step("Installing dropport (it gives the app its web address)");
   const pm = packageManager() === "pnpm" ? "pnpm" : "npm";
+  const fromGit = pm === "pnpm"
+    ? ["add", "-g", "github:dark-matter08/dropport"]
+    : ["install", "-g", "github:dark-matter08/dropport"];
+  // Windows support landed in the repository before the registry had it, and an
+  // install of the published copy there would fail in a way that looks like a bug in
+  // this script. Take it from source on Windows until the two agree.
+  if (WIN && run(pm, fromGit)) return ok("dropport installed from source");
   const args = pm === "pnpm" ? ["add", "-g", "dropport"] : ["install", "-g", "dropport"];
   if (run(pm, args)) return ok("dropport installed");
   // the registry copy can lag the repo, and a global install can be refused outright
@@ -168,16 +204,6 @@ function setupDropport() {
   // a port instead of a name.
   if (process.env.LEDGER_SKIP_PROXY === "1") {
     step("Skipping the https address, as asked");
-    return null;
-  }
-  // Not attempted on Windows, and saying so beats failing at Caddy and implying that
-  // installing it would help. dropport puts a proxy behind a real hostname by
-  // installing a service — launchd or systemd — and has no Windows implementation, so
-  // Caddy on its own gets you nothing. The app runs on its port there.
-  if (WIN) {
-    step("Skipping the https address on Windows");
-    say("    dropport sets this up by installing a background service, and it only");
-    say("    knows launchd and systemd so far. Installing Caddy would not help yet.");
     return null;
   }
   if (!ensureCaddy() || !ensureDropport()) {
