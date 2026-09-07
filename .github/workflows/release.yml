@@ -57,9 +57,22 @@ jobs:
           # the package directory, so this has to exist before the Windows build and
           # only affects it. Generated here rather than committed so the version in
           # the file properties matches the tag instead of going stale.
-          go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 \
+          # v1.7.0, not v1.4.1: the older one emits COFF relocation type 7, which
+          # current Go linkers refuse with "unknown relocation type 7" — it linked
+          # fine on Go 1.22 and broke the moment CI moved to a current toolchain.
+          # 1.7.0 emits type 2, which is accepted.
+          #
+          # The version is passed without its leading v; goversioninfo wants x.y.z
+          # and silently drops anything else.
+          # The numeric fields are separate from the string ones and goversioninfo
+          # warns rather than reconciling them, so Windows would show one version in
+          # the properties panel and another in the details tab.
+          V="${VERSION#v}"
+          IFS=. read -r MAJ MIN PAT <<< "$V"
+          go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 \
             -icon=public/favicon.ico \
-            -product-version="${VERSION}" \
+            -product-version="$V" -file-version="$V" \
+            -ver-major="${MAJ:-0}" -ver-minor="${MIN:-0}" -ver-patch="${PAT:-0}" -ver-build=0 \
             -o=cmd/installer/resource_windows_amd64.syso \
             cmd/installer/versioninfo.json
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/remote-ledger-windows.exe ./cmd/installer
