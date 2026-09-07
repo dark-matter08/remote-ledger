@@ -100,3 +100,29 @@ func TestBytes(t *testing.T) {
 		t.Errorf("bytes(900MiB) = %q, want megabytes", got)
 	}
 }
+
+func TestGitCandidatesAreUsable(t *testing.T) {
+	// adoptGit prepends the directory of whichever of these exists to PATH, so a
+	// relative entry would put a relative directory on PATH — and every later
+	// command would resolve differently depending on the working directory.
+	c := gitCandidates()
+	if len(c) == 0 {
+		t.Fatal("no candidate locations for git on this platform")
+	}
+	for _, p := range c {
+		if !filepath.IsAbs(p) {
+			t.Errorf("candidate %q is not absolute", p)
+		}
+		if !strings.Contains(strings.ToLower(p), "git") {
+			t.Errorf("candidate %q does not look like a git path", p)
+		}
+	}
+}
+
+func TestOwnsConsoleIsFalseOffWindows(t *testing.T) {
+	// A terminal on macOS and Linux outlives the process, so holding the window open
+	// would just be a prompt in the way of every scripted run.
+	if runtime.GOOS != "windows" && ownsConsole() {
+		t.Error("ownsConsole should be false anywhere but Windows")
+	}
+}

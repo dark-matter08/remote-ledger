@@ -12,3 +12,6 @@
 /tmp/
 .gstack/
 screenshots/_dummy-resume.pdf
+
+# generated for the Windows installer icon; built in CI, not committed
+*.syso

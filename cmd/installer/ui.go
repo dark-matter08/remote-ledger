@@ -37,7 +37,25 @@ func (u *UI) Fail(what string, err error, advice string) {
 		fmt.Printf("\n    %s\n", advice)
 	}
 	fmt.Println()
+	u.HoldOpen()
 	os.Exit(1)
+}
+
+// HoldOpen keeps a double-clicked window open long enough to read.
+//
+// Windows closes the console the moment the process returns. Double-click the
+// installer, hit any error, and the window vanishes with the explanation still in
+// it — which is indistinguishable from the program doing nothing at all. Reported
+// exactly that way.
+//
+// Only when we own the console: run from a terminal, there is nothing to hold and
+// prompting would just be in the way.
+func (u *UI) HoldOpen() {
+	if !ownsConsole() {
+		return
+	}
+	fmt.Print("\n  Press Enter to close this window. ")
+	_, _ = u.in.ReadString('\n')
 }
 
 // Ask returns true unless the answer clearly starts with n.

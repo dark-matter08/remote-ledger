@@ -30,12 +30,41 @@ func runAt(dir, bin string, args []string, env []string) error {
 
 // ---- git -------------------------------------------------------------------
 
+// adoptGit finds git and makes it usable by this process.
+//
+// LookPath searches the PATH this process was started with. An installer that has
+// just installed git is exactly the case where that is stale: winget writes the new
+// PATH to the environment for *future* processes, so git is on disk, on the PATH
+// every new shell will see, and invisible to us. Reported as "installed git, then
+// exited and nothing happened".
+//
+// So when PATH does not have it, look where the installers actually put it, and
+// prepend that directory to our own PATH so everything downstream — including the
+// clone, and npm's own git calls — can find it too.
+func adoptGit(ui *UI) bool {
+	if have("git") {
+		ui.Done("git is installed")
+		return true
+	}
+	for _, candidate := range gitCandidates() {
+		if !fileExists(candidate) {
+			continue
+		}
+		dir := filepath.Dir(candidate)
+		os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if have("git") {
+			ui.Done("git is installed (%s)", candidate)
+			return true
+		}
+	}
+	return false
+}
+
 // ensureGit does not install git itself. Each platform has one blessed way to do it
 // that shows a dialog the user already trusts, and a silent background install of a
 // developer toolchain is not a thing an installer should attempt.
 func ensureGit(ui *UI) error {
-	if have("git") {
-		ui.Done("git is installed")
+	if adoptGit(ui) {
 		return nil
 	}
 	switch runtime.GOOS {
@@ -47,7 +76,15 @@ func ensureGit(ui *UI) error {
 	case "windows":
 		if have("winget") {
 			ui.Step("git is missing — installing it with winget")
-			if err := runAt("", "winget", []string{"install", "--id", "Git.Git", "-e", "--source", "winget"}, nil); err == nil && have("git") {
+			ui.Say("Windows may ask you to approve this. Accept it and wait.")
+			// Not checking winget's exit code: it reports non-zero for cases that are
+			// fine (already installed, a reboot suggested), and the only question that
+			// matters is whether git is on disk afterwards.
+			_ = runAt("", "winget", []string{
+				"install", "--id", "Git.Git", "-e", "--source", "winget",
+				"--accept-source-agreements", "--accept-package-agreements",
+			}, nil)
+			if adoptGit(ui) {
 				return nil
 			}
 		}

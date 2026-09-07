@@ -23,3 +23,9 @@ func freeDiskBytes(path string) uint64 {
 	}
 	return st.Bavail * uint64(st.Bsize)
 }
+
+func gitCandidates() []string {
+	return []string{"/usr/bin/git", "/usr/local/bin/git", "/bin/git"}
+}
+
+func ownsConsole() bool { return false }
