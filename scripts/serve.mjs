@@ -43,6 +43,10 @@ const AUTOSTART_FILE = MAC ? AGENT_PLIST : SYSTEMD_UNIT;
 // it runs in the user's session at logon, needs no admin, and survives a reboot.
 const TASK_NAME = "The Remote Ledger";
 const WIN_LAUNCHER = resolve(PROJECT, "data", "start-ledger.cmd");
+const WIN_STARTUP_VBS = resolve(
+  process.env.APPDATA || homedir(),
+  "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "remote-ledger.vbs"
+);
 const GUI = () => `gui/${process.getuid?.() ?? 501}`;
 
 // launchd opens the job's stdout/stderr itself, before the process exists — and it is
@@ -332,7 +336,8 @@ WantedBy=default.target
 function autostartEnabled() {
   if (WIN) {
     // schtasks exits non-zero when the task does not exist, which is the whole query
-    return spawnSync("schtasks", ["/Query", "/TN", TASK_NAME], { stdio: "ignore" }).status === 0;
+    if (spawnSync("schtasks", ["/Query", "/TN", TASK_NAME], { stdio: "ignore" }).status === 0) return true;
+    return existsSync(WIN_STARTUP_VBS);
   }
   return existsSync(AUTOSTART_FILE);
 }
@@ -383,6 +388,46 @@ function supervisedPid() {
   }
 }
 
+/**
+ * Run at logon, without asking for an administrator.
+ *
+ * `schtasks /SC ONLOGON` with no /RU registers a task that fires for *any* user, and
+ * that needs elevation — it comes back "ERROR: Access is denied." Naming the current
+ * user scopes it to this account, which does not.
+ *
+ * If it still refuses — locked-down machines disable task creation outright — the
+ * Startup folder always works, because it is just a file in your own profile. The
+ * cost is a console window at logon, so it launches through a one-line VBScript that
+ * runs the same launcher hidden.
+ */
+function registerWinLogon(launcher) {
+  spawnSync("schtasks", ["/Delete", "/TN", TASK_NAME, "/F"], { stdio: "ignore" }); // may not exist
+  const who = process.env.USERNAME
+    ? `${process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\` : ""}${process.env.USERNAME}`
+    : null;
+  const args = ["/Create", "/TN", TASK_NAME, "/TR", `"${launcher}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"];
+  if (who) args.push("/RU", who);
+
+  const r = spawnSync("schtasks", args, { stdio: "pipe", encoding: "utf8" });
+  if (r.status === 0) {
+    spawnSync("schtasks", ["/Run", "/TN", TASK_NAME], { stdio: "ignore" }); // it only fires at next logon
+    return true;
+  }
+  say(`  the scheduled task was refused (${String(r.stderr || r.stdout || "").trim().split(/\r?\n/)[0]})`);
+  say("  falling back to the Startup folder, which needs no permissions");
+
+  try {
+    mkdirSync(dirname(WIN_STARTUP_VBS), { recursive: true });
+    // 0 = hidden window, false = do not wait
+    writeFileSync(WIN_STARTUP_VBS, `CreateObject("WScript.Shell").Run """${launcher}""", 0, False\r\n`);
+    spawn("wscript.exe", [WIN_STARTUP_VBS], { detached: true, stdio: "ignore" }).unref();
+    return true;
+  } catch (e) {
+    say(`  could not write to the Startup folder either: ${e.message}`);
+    return false;
+  }
+}
+
 async function enable() {
   if (!existsSync(SERVER_ENTRY)) build();
 
@@ -399,20 +444,7 @@ async function enable() {
 
   if (WIN) {
     const launcher = writeWinLauncher(entry);
-    // ONLOGON rather than ONSTART: ONSTART needs an administrator to register, and
-    // this is a single-user desktop app that has no business asking for one.
-    spawnSync("schtasks", ["/Delete", "/TN", TASK_NAME, "/F"], { stdio: "ignore" }); // may not exist
-    const r = spawnSync(
-      "schtasks",
-      ["/Create", "/TN", TASK_NAME, "/TR", `"${launcher}"`, "/SC", "ONLOGON", "/RL", "LIMITED", "/F"],
-      { stdio: "pipe", encoding: "utf8" }
-    );
-    if (r.status !== 0) {
-      say(`  Windows refused the scheduled task: ${String(r.stderr || r.stdout || "").trim().slice(0, 200)}`);
-      process.exit(1);
-    }
-    // the task only fires at the next logon, so start it now as well
-    spawnSync("schtasks", ["/Run", "/TN", TASK_NAME], { stdio: "ignore" });
+    if (!registerWinLogon(launcher)) process.exit(1);
   } else {
     mkdirSync(dirname(AUTOSTART_FILE), { recursive: true });
     writeFileSync(AUTOSTART_FILE, MAC ? agentPlist(entry) : systemdUnit(entry));
@@ -453,7 +485,9 @@ function disable() {
   if (WIN) {
     spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
     spawnSync("schtasks", ["/Delete", "/TN", TASK_NAME, "/F"], { stdio: "ignore" });
+    rmSync(WIN_STARTUP_VBS, { force: true });
     rmSync(WIN_LAUNCHER, { force: true });
+    stop({ quiet: true }); // the Startup route has no supervisor to stop it for us
     say("  automatic start disabled, and the server stopped.");
     return;
   }

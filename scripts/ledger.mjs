@@ -132,9 +132,12 @@ function installDeps({ force = false } = {}) {
 function caddyOnDisk() {
   if (!WIN) return false;
   const candidates = [
+    // winget's "Command line alias added" lands here
     resolve(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "caddy.exe"),
     resolve(process.env.USERPROFILE || "", "scoop", "shims", "caddy.exe"),
     "C:\\ProgramData\\chocolatey\\bin\\caddy.exe",
+    resolve(process.env.ProgramFiles || "C:\\Program Files", "Caddy", "caddy.exe"),
+    resolve(process.env.LOCALAPPDATA || "", "Programs", "Caddy", "caddy.exe"),
   ];
   const found = candidates.find((p) => p && existsSync(p));
   if (!found) return false;
@@ -151,12 +154,25 @@ function ensureCaddy() {
   } else if (WIN) {
     // winget ships with Windows 10 and 11; scoop and chocolatey are common enough to
     // be worth trying before giving up.
-    if (have("winget") && run("winget", ["install", "--id", "CaddyServer.Caddy", "-e", "--source", "winget",
-      "--accept-source-agreements", "--accept-package-agreements"])) {
+    //
+    // Its exit code is not the answer to "did this work". It reports non-zero for
+    // "Path environment variable modified; restart your shell", which is what it says
+    // after a *successful* install — so gating on the status threw away a Caddy that
+    // was sitting right there. Run it, then look on disk, which is the only thing
+    // that actually settles it.
+    if (have("winget")) {
+      run("winget", ["install", "--id", "CaddyServer.Caddy", "-e", "--source", "winget",
+        "--accept-source-agreements", "--accept-package-agreements"]);
       if (have("caddy") || caddyOnDisk()) return ok("Caddy installed");
     }
-    if (have("scoop") && run("scoop", ["install", "caddy"])) return ok("Caddy installed");
-    if (have("choco") && run("choco", ["install", "caddy", "-y"])) return ok("Caddy installed");
+    if (have("scoop")) {
+      run("scoop", ["install", "caddy"]);
+      if (have("caddy") || caddyOnDisk()) return ok("Caddy installed");
+    }
+    if (have("choco")) {
+      run("choco", ["install", "caddy", "-y"]);
+      if (have("caddy") || caddyOnDisk()) return ok("Caddy installed");
+    }
   } else if (!MAC) {
     // Each of these asks for a password; announce it rather than surprising anyone.
     say("  this needs your password, to install a system package");
