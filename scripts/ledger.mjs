@@ -134,7 +134,7 @@ function ensureTrust() {
   // trusted — nothing to do" and skipped the work on exactly the machines that
   // needed it. If that is what you just saw above, this is why.
   say("    If it said \"already trusted — nothing to do\" each time, dropport is out of date:");
-  say("      npm install -g github:dark-matter08/dropport && npm run ledger trust");
+  say("      npm install -g dropport@latest && npm run ledger trust");
   say("    Otherwise `dropport doctor` will say why.");
   return false;
 }
@@ -234,16 +234,9 @@ function ensureDropport() {
   if (have("dropport")) return ok("dropport is installed");
   step("Installing dropport (it gives the app its web address)");
   const pm = packageManager() === "pnpm" ? "pnpm" : "npm";
-  const fromGit = pm === "pnpm"
-    ? ["add", "-g", "github:dark-matter08/dropport"]
-    : ["install", "-g", "github:dark-matter08/dropport"];
-  // Windows support landed in the repository before the registry had it, and an
-  // install of the published copy there would fail in a way that looks like a bug in
-  // this script. Take it from source on Windows until the two agree.
-  if (WIN && run(pm, fromGit)) return ok("dropport installed from source");
   const args = pm === "pnpm" ? ["add", "-g", "dropport"] : ["install", "-g", "dropport"];
   if (run(pm, args)) return ok("dropport installed");
-  // the registry copy can lag the repo, and a global install can be refused outright
+  // a global install can be refused outright, and the registry can briefly lag a release
   if (run(pm, pm === "pnpm" ? ["add", "-g", "github:dark-matter08/dropport"] : ["install", "-g", "github:dark-matter08/dropport"]))
     return ok("dropport installed from source");
   warn("could not install dropport automatically.");
