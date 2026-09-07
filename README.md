@@ -1,11 +1,12 @@
 # The Remote &amp; Ledger
 
-Your job hunt, printed like a newspaper — and worked like a copilot.
+**An open-source, local-first job tracker that tailors your résumé to every job with
+your own AI — printed like a newspaper.**
 
-A **local-first, open-source** job-application tool you run on your own machine. It
-crawls remote roles into SQLite, tailors your résumé per job with **your own AI**
-(an existing CLI subscription *or* your own API keys), generates downloadable PDFs,
-and tracks the whole pipeline — rendered as a hand-set **Heritage Press** broadsheet.
+No SaaS, no subscription, no account. It crawls remote roles into SQLite, rewrites
+your résumé per posting using an AI subscription you already pay for *or* your own
+API key, renders the PDFs, and tracks the whole pipeline — worked like a copilot and
+set as a hand-made **Heritage Press** broadsheet.
 
 **Privacy is the point:** your data and keys never leave your machine. The only thing
 that goes out is the call to the AI provider you chose.
@@ -267,4 +268,13 @@ React Router 7 (SSR) · node:sqlite (built in, no native deps) · Playwright · 
 (read-only email) · d3-force + react-force-graph (knowledge graph) · lucide-react ·
 TypeScript · zero telemetry.
 
-MIT licensed — see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
+MIT licensed — see [LICENSE](LICENSE).
+
+| | |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | how to set up, and what a good pull request looks like |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | the bar for how people treat each other here |
+| [SECURITY.md](SECURITY.md) | what leaves your machine, where keys live, how to report a hole |
+| [DESIGN.md](DESIGN.md) | the Heritage Press design system |
+| [ROADMAP.md](ROADMAP.md) | what is planned, and what is deliberately not |
+| [INSTALL.md](INSTALL.md) | the one-file installer, for people who do not use a terminal |
