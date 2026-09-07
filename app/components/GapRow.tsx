@@ -38,8 +38,11 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
   // Asks the server for words and puts them in the field. Deliberately not a form
   // action: submitting would re-render the page and lose every other row's ticks.
   async function draft(from: "blank" | "notes") {
-    if (!picked.size) {
-      setProblem("Tick where you did this first — the draft is written from those entries.");
+    // A skill does not have to belong to a job on the résumé — it is routinely from a
+    // volunteer role, a job left off, a course or their own time. Requiring an entry
+    // first was either a dead end or a nudge to file it somewhere it did not happen.
+    if (!picked.size && !note.trim()) {
+      setProblem("Tick where you did this, or write a line about it — either one is enough.");
       return;
     }
     setProblem("");
@@ -64,7 +67,11 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
     ? "set aside"
     : picked.size
       ? `${picked.size} place${picked.size === 1 ? "" : "s"}${note.trim() ? " · described" : ""}`
-      : "not answered";
+      : note.trim()
+        // Answered without an employer. Worth saying out loud, because it is the case
+        // the row used to refuse outright.
+        ? "described · not tied to a job"
+        : "not answered";
 
   return (
     <details className="gap-row">
@@ -77,7 +84,12 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
       <div className="gap-body">
         {/* the action walks these to know which skills were on the form at all */}
         <input type="hidden" name="gapSkill" value={skill} />
-        <label className="gap-label">Where did you do this? Tick every place.</label>
+        {/* Nothing ticked but something written: a skill they have that belongs to no
+            entry. Without this it was submitted as an unanswered gap and thrown away. */}
+        {!picked.size && !dismissed && note.trim() ? (
+          <input type="hidden" name={`gapLoose:${skill}`} value="1" />
+        ) : null}
+        <label className="gap-label">Where did you do this? Tick every place — or none, if it was somewhere not on your résumé.</label>
         <div className="gap-picks">
           {candidates.map((c) => (
             <label key={c.id} className="gap-pick">
@@ -98,7 +110,10 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
         </div>
 
         <label className="gap-label" style={{ marginTop: 14 }}>
-          How did you use it? <span style={{ textTransform: "none", letterSpacing: 0 }}>(optional, and the best thing you can give it)</span>
+          How did you use it?{" "}
+          <span style={{ textTransform: "none", letterSpacing: 0 }}>
+            {picked.size ? "(optional, and the best thing you can give it)" : "(with nothing ticked above, this is the whole answer)"}
+          </span>
         </label>
         <textarea
           name={`gapNote:${skill}`}
@@ -110,7 +125,7 @@ export function GapRow({ skill, candidates }: { skill: string; candidates: GapCa
         <div className="gap-actions">
           <button type="button" className="ghost-btn gap-btn" disabled={!!drafting} onClick={() => draft("blank")}>
             <Sparkles size={13} strokeWidth={1.8} />
-            {drafting === "blank" ? "Drafting…" : "Draft it for me"}
+            {drafting === "blank" ? "Drafting…" : picked.size ? "Draft it for me" : "Draft from my notes"}
           </button>
           <button type="button" className="ghost-btn gap-btn" disabled={!!drafting || !note.trim()} onClick={() => draft("notes")}>
             <Wand2 size={13} strokeWidth={1.8} />

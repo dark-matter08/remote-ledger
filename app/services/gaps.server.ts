@@ -207,12 +207,20 @@ export interface FillResult {
 export async function fillGaps(
   jobId: string,
   picks: { skill: string; itemId: number; note?: string }[],
-  dismiss: string[]
+  dismiss: string[],
+  /**
+   * Skills the candidate has but cannot attach to anything on their résumé, each
+   * with whatever they wrote about it. There was no path for these at all: itemId
+   * was required, so a skill picked up in a volunteer role, a job left off the CV,
+   * a course or their own time had nowhere to go and the gap stayed open forever.
+   */
+  loose: { skill: string; note: string }[] = []
 ): Promise<FillResult> {
   for (const s of dismiss) dismissGap(jobId, s);
-  if (!picks.length) return { filled: [], dismissed: dismiss };
-
   const db = getDb();
+  const filledLoose = recordLooseSkills(loose);
+  if (!picks.length) return { filled: filledLoose, dismissed: dismiss };
+
   const rows = new Map<number, any>();
   for (const p of picks) {
     if (rows.has(p.itemId)) continue;
@@ -310,7 +318,47 @@ export async function fillGaps(
     for (const s of skills) filled.push({ skill: s, entry: row.title });
   }
 
-  return { filled, dismissed: dismiss };
+  return { filled: [...filledLoose, ...filled], dismissed: dismiss };
+}
+
+/**
+ * Keep a skill that belongs to the person, not to a job.
+ *
+ * One `kind: "skill"` entry per skill, holding their own words as its summary and
+ * the skill as its tag — so `coveredGaps` recognises it next time and it stops being
+ * a gap on every future posting. Deliberately not a model call: they wrote the
+ * sentence, and there is no employer, project or outcome here to word anything
+ * around. Attaching it to a company they did not name is the one thing this must
+ * never do, and the safest way not to is never to involve a company.
+ */
+function recordLooseSkills(loose: { skill: string; note: string }[]): FillResult["filled"] {
+  const out: FillResult["filled"] = [];
+  if (!loose.length) return out;
+  const db = getDb();
+  const now = new Date().toISOString();
+  const find = db.prepare("SELECT id, tags, summary FROM kb_items WHERE kind='skill' AND lower(title)=lower(?)");
+
+  for (const l of loose) {
+    const skill = String(l.skill || "").trim();
+    if (!skill) continue;
+    const note = String(l.note || "").trim();
+    const existing = find.get(skill) as { id: number; tags: string; summary: string } | undefined;
+
+    if (existing) {
+      // Adding to what is already there rather than replacing it: the note they wrote
+      // for this posting is not a correction of the one they wrote for the last.
+      const summary = note && !String(existing.summary || "").includes(note)
+        ? [existing.summary, note].filter(Boolean).join(" ").slice(0, 4000)
+        : existing.summary;
+      db.prepare("UPDATE kb_items SET summary=?, updated_at=? WHERE id=?").run(summary, now, existing.id);
+    } else {
+      db.prepare(
+        "INSERT INTO kb_items (kind,title,summary,tags,source,created_at,updated_at) VALUES ('skill',?,?,?,'gap',?,?)"
+      ).run(skill, note, JSON.stringify([skill]), now, now);
+    }
+    out.push({ skill, entry: "your own skills" });
+  }
+  return out;
 }
 
 /**
@@ -330,12 +378,26 @@ export async function draftGapUsage(o: {
   const entries = o.itemIds
     .map((id) => db.prepare("SELECT title, role, summary FROM kb_items WHERE id=?").get(id) as any)
     .filter(Boolean);
-  if (!entries.length) return { text: "", error: "pick where you did this first" };
 
   const own = String(o.notes || "").trim();
-  const where = entries
-    .map((e: any) => `- ${e.title}${e.role ? ` (${e.role})` : ""}: ${(e.summary || "no summary recorded").slice(0, 500)}`)
-    .join("\n");
+
+  // A skill does not have to belong to a job on your résumé. It is routinely
+  // something learned in a volunteer role, a previous job you left off, a course or
+  // your own time — and demanding you attribute it to a listed employer before the
+  // draft would run was either a dead end or an invitation to put it somewhere it
+  // did not happen. With notes, the notes are the whole content and no entry is
+  // needed; with neither there is genuinely nothing to write from.
+  if (!entries.length && !own)
+    return {
+      text: "",
+      error: "Tick where you did this, or write a line about it — either one is enough, but there has to be one.",
+    };
+
+  const where = entries.length
+    ? entries
+        .map((e: any) => `- ${e.title}${e.role ? ` (${e.role})` : ""}: ${(e.summary || "no summary recorded").slice(0, 500)}`)
+        .join("\n")
+    : "(not tied to anything on their résumé — they picked up this skill elsewhere)";
 
   const r = await runLLM({
     purpose: "misc",
@@ -352,6 +414,10 @@ export async function draftGapUsage(o: {
       (own
         ? `THEIR NOTES (this is the content — tidy it, do not add to it):\n${own.slice(0, 2000)}\n\n`
         : `They have not written notes. Say only what the entries above support, and keep it short rather than filling space.\n\n`) +
+      (!entries.length
+        ? `There is no entry behind this, so their notes are the ONLY source. Do not name an employer, a ` +
+          `project or a team they did not name themselves, and do not imply where it happened.\n\n`
+        : "") +
       `Write the description. Prose only — no preamble, no bullet marker, no quotes.`,
   });
 

@@ -1468,6 +1468,47 @@ test("kb: an entry already scanned from its folder is adopted, not duplicated", 
   );
 });
 
+test("gaps: a skill you did not learn at a listed employer still gets kept", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { fillGaps } = await import("../app/services/gaps.server");
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare("DELETE FROM kb_items WHERE kind='skill'").run();
+
+  // The case the flow used to refuse outright: a customer support specialist asked
+  // for Zendesk who used it at a call centre that is not on their résumé. itemId was
+  // required, so there was nowhere to put it and the gap re-opened on every posting.
+  const r = await fillGaps("acme--support", [], [], [
+    { skill: "Zendesk", note: "Two years on Zendesk at a call centre, about 60 tickets a day." },
+  ]);
+  assert.equal(r.filled.length, 1);
+  assert.equal(r.filled[0].skill, "Zendesk");
+
+  const row = db.prepare("SELECT * FROM kb_items WHERE kind='skill' AND title='Zendesk'").get() as any;
+  assert.ok(row, "it has its own entry");
+  assert.match(row.summary, /call centre/, "their own words, kept verbatim");
+  assert.deepEqual(JSON.parse(row.tags), ["Zendesk"], "and tagged, so it stops being a gap next time");
+  // No model call and no employer: attaching this to a company they never named is
+  // the one thing this path must never do.
+  assert.equal(row.source, "gap");
+
+  // Said again on a later posting, it adds to what is there rather than replacing it.
+  await fillGaps("other--job", [], [], [{ skill: "zendesk", note: "Also built the macros." }]);
+  const after = db.prepare("SELECT * FROM kb_items WHERE kind='skill' AND lower(title)='zendesk'").all() as any[];
+  assert.equal(after.length, 1, "matched case-insensitively, not duplicated");
+  assert.match(after[0].summary, /call centre/);
+  assert.match(after[0].summary, /macros/);
+});
+
+test("gaps: a draft needs either a place or a note, and says which is missing", async () => {
+  const { draftGapUsage } = await import("../app/services/gaps.server");
+  // Neither: there is genuinely nothing to write from, and it must not invent one.
+  const empty = await draftGapUsage({ skill: "Zendesk", itemIds: [], notes: "" });
+  assert.equal(empty.text, "");
+  assert.match(empty.error || "", /Tick where you did this, or write a line/);
+  assert.doesNotMatch(empty.error || "", /^pick where/, "the old message demanded an entry and offered no alternative");
+});
+
 test("fields: relevance comes from the profile, not from a hardcoded trade", async () => {
   const { fieldById, inField, keywordTokens, keywordHit } = await import("../app/fields");
   const support = fieldById("support")!;

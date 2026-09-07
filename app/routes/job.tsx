@@ -113,8 +113,10 @@ export async function action({ request, params }: Route.ActionArgs) {
       return { ok: true, msg: "Saved. Prefill again and it will use this answer." };
     }
     if (intent === "kb-gap") {
-      // one row per gap: a chosen entry, or "dismiss" for this posting
+      // one row per gap: chosen entries, a description with no entry at all, or
+      // "dismiss" for this posting
       const picks: { skill: string; itemId: number; note?: string }[] = [];
+      const loose: { skill: string; note: string }[] = [];
       const dismiss: string[] = [];
       for (const skill of form.getAll("gapSkill").map(String)) {
         if (form.get(`gapDismiss:${skill}`)) {
@@ -123,15 +125,16 @@ export async function action({ request, params }: Route.ActionArgs) {
         }
         const note = String(form.get(`gapNote:${skill}`) || "").trim();
         // one skill can belong to several places, and each gets its own bullet
-        for (const raw of form.getAll(`gapEntry:${skill}`)) {
-          const itemId = Number(raw);
-          if (itemId) picks.push({ skill, itemId, note: note || undefined });
-        }
+        const entries = form.getAll(`gapEntry:${skill}`).map(Number).filter(Boolean);
+        for (const itemId of entries) picks.push({ skill, itemId, note: note || undefined });
+        // Described, but not at any job on the résumé — a volunteer role, a job left
+        // off, a course. It kept its own entry rather than being thrown away.
+        if (!entries.length && form.get(`gapLoose:${skill}`) && note) loose.push({ skill, note });
       }
-      if (!picks.length && !dismiss.length) return { error: "Nothing selected." };
+      if (!picks.length && !loose.length && !dismiss.length) return { error: "Nothing selected." };
       const r = await loggedTask("kb-gap", `Knowledge gaps · ${job.company} — ${job.role}`, async (L) => {
-        L("step", `${picks.length} skill(s) to attach, ${dismiss.length} set aside for this posting.`);
-        const out = await fillGaps(job.id, picks, dismiss);
+        L("step", `${picks.length} skill(s) to attach, ${loose.length} kept on their own, ${dismiss.length} set aside for this posting.`);
+        const out = await fillGaps(job.id, picks, dismiss, loose);
         for (const f of out.filled) L("result", `${f.skill} → ${f.entry}`);
         return out;
       });
