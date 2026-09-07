@@ -22,13 +22,20 @@ const WIN = platform() === "win32";
 
 // launchd/GUI apps do not share the shell's PATH, and neither does a server started
 // from Finder — look where the installers actually put it.
-const BIN_CANDIDATES = [
-  "/usr/local/bin/ollama",
-  "/opt/homebrew/bin/ollama",
-  "/usr/bin/ollama",
-  `${process.env.HOME}/.local/bin/ollama`,
-  "/Applications/Ollama.app/Contents/Resources/ollama",
-];
+const BIN_CANDIDATES = WIN
+  ? [
+      // where the official installer and winget put it
+      `${process.env.LOCALAPPDATA}\\Programs\\Ollama\\ollama.exe`,
+      `${process.env.ProgramFiles}\\Ollama\\ollama.exe`,
+      `${process.env.LOCALAPPDATA}\\Microsoft\\WinGet\\Links\\ollama.exe`,
+    ]
+  : [
+      "/usr/local/bin/ollama",
+      "/opt/homebrew/bin/ollama",
+      "/usr/bin/ollama",
+      `${process.env.HOME}/.local/bin/ollama`,
+      "/Applications/Ollama.app/Contents/Resources/ollama",
+    ];
 
 export interface OllamaStatus {
   installed: boolean;
@@ -48,8 +55,10 @@ export interface OllamaStatus {
 
 async function which(bin: string): Promise<string | null> {
   try {
-    const { stdout } = await pexecFile("/usr/bin/which", [bin]);
-    const p = stdout.trim();
+    const { stdout } = WIN
+      ? await pexecFile("where", [bin], { shell: true })
+      : await pexecFile("/usr/bin/which", [bin]);
+    const p = stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
     return p && existsSync(p) ? p : null;
   } catch {
     return null;
@@ -94,9 +103,9 @@ export async function listLocal(): Promise<{ name: string; sizeBytes: number; mo
  * piping a downloaded script into a shell. The official installer is the fallback, and
  * the UI prints it in full so nobody runs it without reading it.
  */
-export function installCommand(hasBrew: boolean): string | null {
-  if (MAC) return hasBrew ? "brew install ollama" : "curl -fsSL https://ollama.com/install.sh | sh";
-  if (WIN) return null; // an .exe installer — we can only send them to the download page
+export function installCommand(hasBrew: boolean, os: string = platform()): string | null {
+  if (os === "darwin") return hasBrew ? "brew install ollama" : "curl -fsSL https://ollama.com/install.sh | sh";
+  if (os === "win32") return "winget install Ollama.Ollama";
   return "curl -fsSL https://ollama.com/install.sh | sh";
 }
 
@@ -143,7 +152,26 @@ export async function ollamaStatus(): Promise<OllamaStatus> {
 
 /** Install it. Long-running, so the caller streams or polls rather than awaiting a render. */
 export async function installOllama(): Promise<{ ok: boolean; output: string }> {
-  if (WIN) return { ok: false, output: "Download the installer from https://ollama.com/download" };
+  if (WIN) {
+    if (!(await which("winget"))) {
+      return { ok: false, output: "winget is not available. Install Ollama from https://ollama.com/download instead." };
+    }
+    // winget's exit code does not answer "did this work": it reports non-zero for a
+    // PATH change it made itself, and for "already installed". Run it, then look on
+    // disk, which is the only thing that settles it.
+    let output = "";
+    try {
+      const { stdout, stderr } = await pexec(
+        "winget install --id Ollama.Ollama -e --source winget --accept-source-agreements --accept-package-agreements",
+        { timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }
+      );
+      output = `${stdout}\n${stderr}`;
+    } catch (e: any) {
+      output = String(e?.stdout || "") + String(e?.stderr || e?.message || e);
+    }
+    return { ok: !!(await ollamaBin()), output: output.trim().slice(-4000) };
+  }
+
   const hasBrew = !!(await which("brew"));
   const cmd = installCommand(hasBrew);
   if (!cmd) return { ok: false, output: "No install command for this platform." };

@@ -2258,3 +2258,22 @@ test("windows: a path with a space is one argument, not two", async () => {
   assert.equal(pcmd, "/usr/bin/npm");
   assert.deepEqual(pargs, ["run", "ledger start"]);
 });
+
+test("ollama: every platform has a way to install it from the app", async () => {
+  const { installCommand } = await import("../app/services/ollama.server");
+
+  // Windows used to return null here, so the wizard fell through to "go to a website
+  // and come back" — the one platform where the Install button did nothing.
+  assert.match(String(installCommand(false, "win32")), /winget/, "Windows installs through winget");
+
+  // macOS prefers Homebrew over piping a downloaded script into a shell
+  assert.equal(installCommand(true, "darwin"), "brew install ollama");
+  assert.match(String(installCommand(false, "darwin")), /install\.sh/, "without brew, the official installer");
+
+  // Linux has one route either way; Homebrew is not part of the question
+  assert.equal(installCommand(true, "linux"), installCommand(false, "linux"));
+
+  for (const os of ["darwin", "win32", "linux"]) {
+    assert.ok(installCommand(false, os), `${os} must have something to offer`);
+  }
+});

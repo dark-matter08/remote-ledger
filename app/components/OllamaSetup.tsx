@@ -168,7 +168,8 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
               </>
             ) : (
               <p className="hint" style={{ marginTop: 12 }}>
-                On Windows, install it from <a href="https://ollama.com/download" target="_blank" rel="noreferrer">ollama.com/download</a>, then come back.
+                Nothing here can install it for you. Get it from{" "}
+                <a href="https://ollama.com/download" target="_blank" rel="noreferrer">ollama.com/download</a>, then come back.
               </p>
             )}
           </>
