@@ -130,8 +130,34 @@ function addHost() {
   if (process.env.LEDGER_SKIP_HOSTS === "1") return;
   if (hostsHasEntry()) return say(`  hosts: ${HOSTNAME} already maps to 127.0.0.1`);
   if (WIN) {
-    say(`  Windows: open an Administrator prompt and add this line to ${HOSTS_FILE}`);
-    say(`    127.0.0.1  ${HOSTNAME}`);
+    // Telling someone to open an Administrator prompt and edit a system file by hand
+    // is not an install step, it is homework. Windows can raise the prompt itself.
+    say(`  hosts: adding ${HOSTNAME} -> 127.0.0.1 (Windows will ask for administrator access)`);
+    const staged = resolve(PROJECT, "data", "hosts.staged");
+    try {
+      mkdirSync(dirname(staged), { recursive: true });
+      const current = readFileSync(HOSTS_FILE, "utf8");
+      writeFileSync(staged, `${current.replace(/\s*$/, "")}\r\n127.0.0.1\t${HOSTNAME}\t${MARKER}\r\n`);
+      // Copy the staged file in one go rather than appending in place, so a refused
+      // prompt or a failed write cannot leave a half-written hosts file.
+      const r = spawnSync(
+        "powershell",
+        [
+          "-NoProfile", "-Command",
+          `Start-Process -FilePath powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList ` +
+            `'-NoProfile','-Command','Copy-Item -LiteralPath ''${staged}'' -Destination ''${HOSTS_FILE}'' -Force'`,
+        ],
+        { stdio: "inherit" }
+      );
+      rmSync(staged, { force: true });
+      if (r.status !== 0) throw new Error("administrator access was refused");
+      spawnSync("ipconfig", ["/flushdns"], { stdio: "ignore" });
+    } catch (e) {
+      say(`  hosts: could not update it (${e.message})`);
+      say(`    the app still works at http://localhost:${PORT}`);
+      return;
+    }
+    say(hostsHasEntry() ? "  hosts: added" : `  hosts: not added — the app still works at http://localhost:${PORT}`);
     return;
   }
   say(`  hosts: adding ${HOSTNAME} -> 127.0.0.1 (sudo will ask for your password)`);
