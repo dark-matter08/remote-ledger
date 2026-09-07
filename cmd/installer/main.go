@@ -123,7 +123,11 @@ func ask(ui *UI) choices {
 	c := choices{proxy: true}
 
 	ui.Say("A real web address — https://remoteledger.dp.local instead of a port number.")
-	ui.Say("Needs Caddy, and asks for your password three times while setting it up.")
+	if runtime.GOOS == "windows" {
+		ui.Say("Windows will ask for administrator access once, for the hosts file.")
+	} else {
+		ui.Say("Asks for your password a few times while setting it up.")
+	}
 	c.proxy = ui.Ask("Set that up?", true)
 
 	fmt.Println()

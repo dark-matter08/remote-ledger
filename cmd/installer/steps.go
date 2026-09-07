@@ -133,6 +133,14 @@ func handOff(appDir, nodeExe string, wantProxy bool, ui *UI) error {
 
 	ui.Step("Setting up the app — this is the long part, several minutes")
 	ui.Say("It installs about 900 MB. Everything it prints below is its own.")
+	if wantProxy && runtime.GOOS == "windows" {
+		// A permission prompt several minutes into a ten-minute install is the one that
+		// gets missed, because by then nobody is watching. Say when it is coming.
+		ui.Say("")
+		ui.Say("Partway through, Windows will ask once for administrator access — that is")
+		ui.Say("the hosts file, and it is the only thing here that needs it. Nothing else")
+		ui.Say("runs elevated: not the download, not the install, not the app itself.")
+	}
 	fmt.Println()
 
 	// `npm run ledger start` would mean executing npm.cmd on Windows, which needs a
