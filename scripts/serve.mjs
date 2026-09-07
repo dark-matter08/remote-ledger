@@ -215,6 +215,18 @@ async function start({ rebuild = true } = {}) {
     say(`  already running (pid ${existing}) — use "restart" to pick up changes`);
     return url();
   }
+  // No pid file, but the port can still be held — by a server this did not start and
+  // cannot name. reachable() below would be answered by *that* process, so start()
+  // spawned a doomed second one, saw the first reply, and reported success while the
+  // old build carried on serving. An update looked applied when nothing had changed.
+  if (await reachable(1200)) {
+    if (killByPort()) say(`  cleared an untracked server on port ${PORT}`);
+    else {
+      say(`  port ${PORT} is held by something this cannot stop — free it and retry`);
+      process.exit(1);
+    }
+  }
+
   // the logon launcher sets this: the bundle was built when it was installed
   const skipBuild = process.env.LEDGER_NO_REBUILD === "1";
   if ((rebuild && !skipBuild) || !existsSync(SERVER_ENTRY)) build();
@@ -257,18 +269,40 @@ async function start({ rebuild = true } = {}) {
  * build serving indefinitely while every restart claimed to have worked. This finds
  * it the only way left: by the port it is holding.
  */
-function killByPort() {
-  if (!WIN) return false;
-  const out = spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout || "";
+function pidsOnPort() {
   const pids = new Set();
-  for (const line of out.split(/\r?\n/)) {
-    if (!/LISTENING/i.test(line)) continue;
-    if (!new RegExp(`[:.]${PORT}\\b`).test(line)) continue;
-    const pid = line.trim().split(/\s+/).pop();
-    if (/^\d+$/.test(pid) && pid !== "0") pids.add(pid);
+  if (WIN) {
+    const out = spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout || "";
+    for (const line of out.split(/\r?\n/)) {
+      if (!/LISTENING/i.test(line)) continue;
+      if (!new RegExp(`[:.]${PORT}\\b`).test(line)) continue;
+      const pid = line.trim().split(/\s+/).pop();
+      if (/^\d+$/.test(pid) && pid !== "0") pids.add(Number(pid));
+    }
+  } else {
+    const out = spawnSync("lsof", ["-ti", `tcp:${PORT}`, "-sTCP:LISTEN"], { encoding: "utf8" }).stdout || "";
+    for (const line of out.split(/\n/)) if (/^\d+$/.test(line.trim())) pids.add(Number(line.trim()));
   }
-  for (const pid of pids) spawnSync("taskkill", ["/PID", pid, "/T", "/F"], { stdio: "ignore" });
-  return pids.size > 0;
+  pids.delete(process.pid);
+  return [...pids];
+}
+
+/**
+ * Stop whatever holds our port, whether or not we started it.
+ *
+ * The old Windows logon launcher ran the server bundle directly, so serve.mjs never
+ * wrote a pid file for it. That left a process holding the port that nothing could
+ * name: stop() killed nothing and start() lost the race to it. Off Windows we can
+ * still check the process really is ours before killing it; on Windows the pid file
+ * was always the only evidence, and it is precisely what is missing here.
+ */
+function killByPort() {
+  const doomed = pidsOnPort().filter((pid) => WIN || isOurServer(pid));
+  for (const pid of doomed) {
+    if (WIN) spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    else try { process.kill(pid, "SIGKILL"); } catch {}
+  }
+  return doomed.length > 0;
 }
 
 function stop({ quiet = false } = {}) {
