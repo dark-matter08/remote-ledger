@@ -537,21 +537,42 @@ function disable() {
 }
 
 /** Restart whatever is supervising it, rather than fighting KeepAlive. */
+/** Is there actually a scheduled task, or did we fall back to the Startup folder? */
+function winTaskExists() {
+  return spawnSync("schtasks", ["/Query", "/TN", TASK_NAME], { stdio: "ignore" }).status === 0;
+}
+
+/**
+ * Ask whatever supervises the process to cycle it.
+ *
+ * Returns false when nothing does, so the caller restarts it directly instead of
+ * reporting a restart that never happened — which is what the Startup-folder route on
+ * Windows did: schtasks commands aimed at a task that was never created, failing
+ * silently because their output is discarded, while the old build carried on serving.
+ * An update then looked like it had done nothing, because it had.
+ */
 function supervisedRestart() {
   if (WIN) {
+    if (!winTaskExists()) return false; // Startup folder: nothing is watching it
     spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
     spawnSync("schtasks", ["/Run", "/TN", TASK_NAME], { stdio: "ignore" });
-  } else if (MAC) {
+    return true;
+  }
+  if (MAC) {
     spawnSync("launchctl", ["kickstart", "-k", `${GUI()}/${AGENT_LABEL}`], { stdio: "ignore" });
   } else {
     spawnSync("systemctl", ["--user", "restart", "remote-ledger"], { stdio: "ignore" });
   }
+  return true;
 }
 
 /** Stop it now. It still comes back at login unless `disable` is run. */
 function supervisedStop() {
-  if (WIN) spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
-  else if (MAC) spawnSync("launchctl", ["bootout", GUI(), AUTOSTART_FILE], { stdio: "ignore" });
+  // same asymmetry as restart: with no task there is nothing to end, so end it here
+  if (WIN) {
+    if (winTaskExists()) spawnSync("schtasks", ["/End", "/TN", TASK_NAME], { stdio: "ignore" });
+    else stop({ quiet: true });
+  } else if (MAC) spawnSync("launchctl", ["bootout", GUI(), AUTOSTART_FILE], { stdio: "ignore" });
   else spawnSync("systemctl", ["--user", "stop", "remote-ledger"], { stdio: "ignore" });
 }
 
@@ -581,9 +602,15 @@ switch (ACTION) {
   case "restart":
     if (supervisedPid()) {
       build(); // the supervisor restarts the process, but not the bundle it serves
-      supervisedRestart();
-      say((await reachable()) ? "  restarted." : `  restarted, but nothing answered on ${PORT} — check ${LOG}`);
-      url();
+      // A supervisor that quietly did nothing leaves the old build serving, and
+      // "restarted." would then be a lie indistinguishable from a broken update.
+      if (supervisedRestart()) {
+        say((await reachable()) ? "  restarted." : `  restarted, but nothing answered on ${PORT} — check ${LOG}`);
+        url();
+      } else {
+        stop({ quiet: true });
+        await start({ rebuild: false });
+      }
     } else {
       stop({ quiet: true });
       await start();
