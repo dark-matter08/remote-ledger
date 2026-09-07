@@ -2324,3 +2324,26 @@ test("no server-side child process may pop a console window on Windows", async (
 
   assert.deepEqual(offenders, [], `these spawn a visible console window on Windows:\n${offenders.join("\n")}`);
 });
+
+test("starting at logon never stops to ask for a password", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("scripts/serve.mjs", "utf8");
+
+  // The launcher that runs at logon goes through serve.mjs, which adds the hosts entry
+  // if it is missing — on Windows by raising a UAC prompt with -Wait, from a window
+  // that is hidden. After a reboot that blocked forever, unanswerable, before the
+  // server was ever spawned: the machine came back and the app did not.
+  const launcher = src.slice(src.indexOf("function writeWinLauncher"));
+  const body = launcher.slice(0, launcher.indexOf("\n}"));
+  assert.match(body, /LEDGER_SKIP_HOSTS=1/, "the logon launcher must not attempt hosts changes");
+
+  // and the same guard in the code itself, so launchers already written to disk — which
+  // run this very file — are repaired by an update rather than a reinstall
+  const addHost = src.slice(src.indexOf("function addHost"));
+  const guard = addHost.slice(0, addHost.indexOf("\n}"));
+  assert.match(guard, /isTTY/, "addHost must not prompt when no one is at the keyboard");
+  assert.ok(
+    guard.indexOf("isTTY") < guard.indexOf("RunAs"),
+    "the guard has to come before the elevation, or it guards nothing"
+  );
+});
