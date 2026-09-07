@@ -303,7 +303,7 @@ const DEAD = /(posting|job|position|page|role|listing)\s+(you('?re| are) looking
 
 // Aggregator / job-board hosts whose pages are NOT a real application — they link
 // out to the employer's ATS. We must follow through to that final page.
-const AGGREGATOR = /(^|\.)(remotive\.com|weworkremotely\.com|remoteok\.(com|io)|wellfound\.com|angel\.co|linkedin\.com|indeed\.com|glassdoor\.[a-z.]+|remote\.co|jobspresso\.co|nodesk\.co|himalayas\.app|workingnomads\.com|jobicy\.com|dailyremote\.com|remoteok\.com|builtin\.com|otta\.com|dice\.com|ziprecruiter\.com|simplyhired\.com|google\.com)$/i;
+const AGGREGATOR = /(^|\.)(remotive\.com|weworkremotely\.com|remoteok\.(com|io)|wellfound\.com|angel\.co|linkedin\.com|indeed\.com|glassdoor\.[a-z.]+|remote\.co|jobspresso\.co|nodesk\.co|himalayas\.app|workingnomads\.com|jobicy\.com|trulyremotework\.com|dailyremote\.com|remoteok\.com|builtin\.com|otta\.com|dice\.com|ziprecruiter\.com|simplyhired\.com|google\.com)$/i;
 
 // Real ATS hosts — a strong signal that an outbound link is the true apply page.
 const ATS_HOST = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|breezy\.hr|smartrecruiters\.com|jobvite\.com|bamboohr\.com|myworkdayjobs\.com|workday\.com|recruitee\.com|teamtailor\.com|pinpointhq\.com|join\.com|rippling\.com|gem\.com|paylocity\.com|icims\.com|ashby|greenhouse|lever)/i;

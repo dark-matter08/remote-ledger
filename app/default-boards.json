@@ -28,5 +28,15 @@
     "name": "Jobspresso",
     "url": "https://jobspresso.co/",
     "note": "curated remote board that is not tech-only — it keeps separate public category pages at /remote-customer-service-jobs/, /remote-marketing-jobs/, /remote-sales-jobs/, /remote-writing-jobs/, /remote-design-jobs/, /remote-product-management-jobs/, /remote-non-tech-jobs/ and /remote-software-jobs/. Browse the category that matches the candidate's line of work and follow the /job/<slug>/ links; each posting is public and carries the employer's own application link. robots.txt: everything above is allowed, but /*? is disallowed — do NOT build search-query URLs — and it asks for a 3-second crawl delay."
+  },
+  {
+    "name": "BruntWork Careers",
+    "url": "https://bruntworkcareers.co/",
+    "note": "BruntWork is the EMPLOYER, not an aggregator — it staffs remote roles for its own clients and applications happen on its candidate portal. Do NOT try to follow a posting through to some other company's ATS and do NOT drop it for not having one; the bruntworkcareers.co/jobs/<id> link IS the application page. Heavily non-tech: its own categories are Accounting and Finance, Administration, Customer Support, Marketing and Content, and Sales. The listing is rendered by JavaScript, so the page must be opened rather than fetched. Filter with /jobs/search?category=<Name> (e.g. category=Customer%20Support). robots.txt disallows /api/ only."
+  },
+  {
+    "name": "Truly Remote Work",
+    "url": "https://trulyremotework.com/",
+    "note": "Curated worldwide-remote board — its whole premise is no location locks and no timezone traps, so postings here are unusually likely to be workable from anywhere. Each posting at /jobs/<slug> is public, carries the full description, and links out to the employer's own ATS (Lever, Greenhouse and similar) — follow that link and file the employer's URL, not this one. Public category pages, roughly 30 postings each: /remote-support-jobs, /remote-sales-jobs, /remote-marketing-jobs, /remote-finance-jobs, /remote-hr-jobs, /remote-operations-jobs, /remote-design-jobs, /remote-data-jobs, /remote-product-jobs, /remote-engineering-jobs, /remote-devops-jobs, /remote-security-jobs. Rendered by JavaScript, so open the page rather than fetching it. robots.txt disallows /api/, /partials/ and /newsletter/ only."
   }
 ]
