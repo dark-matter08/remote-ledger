@@ -64,15 +64,13 @@ jobs:
           #
           # The version is passed without its leading v; goversioninfo wants x.y.z
           # and silently drops anything else.
-          # The numeric fields are separate from the string ones and goversioninfo
-          # warns rather than reconciling them, so Windows would show one version in
-          # the properties panel and another in the details tab.
-          V="${VERSION#v}"
-          IFS=. read -r MAJ MIN PAT <<< "$V"
+          # -propagate-ver-strings fills the numeric fields from the string ones.
+          # Without it they are set independently, and Windows shows one version in
+          # the properties panel and a different one in the details tab.
           go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 \
             -icon=public/favicon.ico \
-            -product-version="$V" -file-version="$V" \
-            -ver-major="${MAJ:-0}" -ver-minor="${MIN:-0}" -ver-patch="${PAT:-0}" -ver-build=0 \
+            -product-version="${VERSION#v}" -file-version="${VERSION#v}" \
+            -propagate-ver-strings \
             -o=cmd/installer/resource_windows_amd64.syso \
             cmd/installer/versioninfo.json
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/remote-ledger-windows.exe ./cmd/installer
