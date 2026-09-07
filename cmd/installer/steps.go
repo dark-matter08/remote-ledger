@@ -211,3 +211,36 @@ func finalAddress(appDir string) string {
 	}
 	return addr
 }
+
+// writeLauncher leaves behind a way to run the Ledger's own commands.
+//
+// Node is vendored on purpose — nothing is added to PATH, nothing on the machine is
+// touched. The cost is that `npm run ledger restart`, which every instruction and
+// every README reaches for, does not work: there is no npm on PATH to find. This is
+// the shim that closes that, pointing at the interpreter we installed.
+func writeLauncher(root, appDir, nodeExe string) (string, error) {
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(root, "ledger.cmd")
+		body := strings.Join([]string{
+			"@echo off",
+			"rem The Remote Ledger. Uses the Node installed alongside it, not one on PATH.",
+			`cd /d "` + appDir + `"`,
+			`set "PATH=` + filepath.Dir(nodeExe) + `;%PATH%"`,
+			`"` + nodeExe + `" "` + filepath.Join(appDir, "scripts", "ledger.mjs") + `" %*`,
+			"",
+		}, "\r\n")
+		return path, os.WriteFile(path, []byte(body), 0o755)
+	}
+
+	path := filepath.Join(root, "ledger")
+	body := strings.Join([]string{
+		"#!/bin/sh",
+		"# The Remote Ledger. Uses the Node installed alongside it, not one on PATH.",
+		`cd "` + appDir + `" || exit 1`,
+		`PATH="` + filepath.Dir(nodeExe) + `:$PATH"`,
+		"export PATH",
+		`exec "` + nodeExe + `" "` + filepath.Join(appDir, "scripts", "ledger.mjs") + `" "$@"`,
+		"",
+	}, "\n")
+	return path, os.WriteFile(path, []byte(body), 0o755)
+}

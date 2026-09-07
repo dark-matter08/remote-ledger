@@ -95,6 +95,27 @@ Step 5 is the long one, and it prints what it is doing as it goes.
 Everything lives under `~/.remote-ledger`. Deleting that folder removes the Ledger
 completely.
 
+## Running its commands afterwards
+
+The Ledger brings its own copy of Node and does not put it on your PATH, so `npm`
+commands will not work in a normal terminal. Use the launcher the installer leaves
+behind, which knows where everything is:
+
+```bash
+# macOS and Linux
+~/.remote-ledger/ledger restart     # take an update and come back up
+~/.remote-ledger/ledger status
+~/.remote-ledger/ledger logs
+```
+
+```powershell
+# Windows
+%USERPROFILE%\.remote-ledger\ledger.cmd restart
+```
+
+You rarely need these — the app updates itself from the sidebar. They are here for
+when it cannot.
+
 ## About your browser
 
 The Ledger can fill in job applications for you, which means driving a real browser.

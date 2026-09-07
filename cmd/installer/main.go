@@ -111,6 +111,14 @@ func main() {
 	// ---- done --------------------------------------------------------------
 	ui.Title("Ready")
 	ui.Say("The Ledger is running, and starts again every time you log in.")
+
+	// Without this there is no way to run its commands: Node is vendored, so npm is
+	// not on PATH, and every instruction that says "npm run ledger ..." is unusable.
+	if launcher, err := writeLauncher(root, appDir, nodeExe); err == nil {
+		ui.Say("")
+		ui.Say("To update or restart it later, from anywhere:")
+		ui.Say("  %s restart", launcher)
+	}
 	ui.Say("")
 	addr := finalAddress(appDir)
 	ui.Say("Opening %s — the first screen asks what work you are looking for.", addr)
