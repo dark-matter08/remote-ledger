@@ -55,9 +55,14 @@ export interface OllamaStatus {
 
 async function which(bin: string): Promise<string | null> {
   try {
+    // windowsHide, and no shell. The server runs detached and so owns no console, and
+    // Windows hands a console-mode child a brand new *visible* window when its parent
+    // has none — this probe alone is polled every twelve seconds, which is why black
+    // windows kept flashing on screen. `shell: true` made it worse by putting a whole
+    // cmd.exe in front of where.exe, which needs no shell to begin with.
     const { stdout } = WIN
-      ? await pexecFile("where", [bin], { shell: true })
-      : await pexecFile("/usr/bin/which", [bin]);
+      ? await pexecFile("where.exe", [bin], { windowsHide: true })
+      : await pexecFile("/usr/bin/which", [bin], { windowsHide: true });
     const p = stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
     return p && existsSync(p) ? p : null;
   } catch {
@@ -103,9 +108,15 @@ export async function listLocal(): Promise<{ name: string; sizeBytes: number; mo
  * piping a downloaded script into a shell. The official installer is the fallback, and
  * the UI prints it in full so nobody runs it without reading it.
  */
+const WIN_INSTALL =
+  'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://ollama.com/install.ps1 | iex"';
+
 export function installCommand(hasBrew: boolean, os: string = platform()): string | null {
   if (os === "darwin") return hasBrew ? "brew install ollama" : "curl -fsSL https://ollama.com/install.sh | sh";
-  if (os === "win32") return "winget install Ollama.Ollama";
+  // The command Ollama documents for Windows. winget was tried first and failed on a
+  // real machine with nothing to show for it: its package can lag the release, and it
+  // needs App Installer present to work at all. This script is the vendor's own.
+  if (os === "win32") return WIN_INSTALL;
   return "curl -fsSL https://ollama.com/install.sh | sh";
 }
 
@@ -132,7 +143,7 @@ export async function ollamaStatus(): Promise<OllamaStatus> {
       // With the daemon down, `ollama --version` still answers but prefixes warnings
       // ("could not connect to a running Ollama instance"). Take the number, not the
       // paragraph, or the UI prints a wall of text where a version belongs.
-      const { stdout, stderr } = await pexecFile(binPath, ["--version"], { timeout: 4000 });
+      const { stdout, stderr } = await pexecFile(binPath, ["--version"], { timeout: 4000, windowsHide: true });
       version = parseVersion(`${stdout}\n${stderr}`);
     } catch {}
   }
@@ -153,30 +164,49 @@ export async function ollamaStatus(): Promise<OllamaStatus> {
 /** Install it. Long-running, so the caller streams or polls rather than awaiting a render. */
 export async function installOllama(): Promise<{ ok: boolean; output: string }> {
   if (WIN) {
-    if (!(await which("winget"))) {
-      return { ok: false, output: "winget is not available. Install Ollama from https://ollama.com/download instead." };
-    }
-    // winget's exit code does not answer "did this work": it reports non-zero for a
-    // PATH change it made itself, and for "already installed". Run it, then look on
-    // disk, which is the only thing that settles it.
-    let output = "";
-    try {
-      const { stdout, stderr } = await pexec(
+    // Ollama's own script first, then winget. It used to be winget alone, which failed
+    // on a real machine and reported "Install failed" with nothing under it — winget
+    // prints its refusals to stdout and exits zero, so there was nothing to show.
+    //
+    // Neither exit code settles it either way: winget returns non-zero for a PATH
+    // change it made itself and for "already installed". Only the binary on disk does.
+    const attempts: Array<[string, string]> = [
+      ["ollama.com/install.ps1", WIN_INSTALL],
+      [
+        "winget",
         "winget install --id Ollama.Ollama -e --source winget --accept-source-agreements --accept-package-agreements",
-        { timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }
-      );
-      output = `${stdout}\n${stderr}`;
-    } catch (e: any) {
-      output = String(e?.stdout || "") + String(e?.stderr || e?.message || e);
+      ],
+    ];
+    const log: string[] = [];
+    for (const [label, cmd] of attempts) {
+      let output = "";
+      try {
+        const { stdout, stderr } = await pexec(cmd, {
+          timeout: 15 * 60 * 1000,
+          maxBuffer: 8 * 1024 * 1024,
+          windowsHide: true,
+        });
+        output = `${stdout}\n${stderr}`;
+      } catch (e: any) {
+        output = String(e?.stdout || "") + String(e?.stderr || e?.message || e);
+      }
+      log.push(`--- ${label} ---\n${output.trim()}`);
+      // ollamaBin() is uncached, and falls back to the known install locations — the
+      // fresh PATH entry is not visible to this process, only to ones started after.
+      if (await ollamaBin()) return { ok: true, output: log.join("\n\n").trim().slice(-4000) };
     }
-    return { ok: !!(await ollamaBin()), output: output.trim().slice(-4000) };
+    return {
+      ok: false,
+      output:
+        `${log.join("\n\n").trim()}\n\nNeither worked. Install it by hand from https://ollama.com/download`.slice(-4000),
+    };
   }
 
   const hasBrew = !!(await which("brew"));
   const cmd = installCommand(hasBrew);
   if (!cmd) return { ok: false, output: "No install command for this platform." };
   try {
-    const { stdout, stderr } = await pexec(cmd, { timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout, stderr } = await pexec(cmd, { timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
     return { ok: !!(await ollamaBin()), output: `${stdout}\n${stderr}`.trim().slice(-4000) };
   } catch (e: any) {
     return { ok: false, output: String(e?.stderr || e?.message || e).slice(-4000) };
@@ -195,7 +225,7 @@ export async function startDaemon(waitMs = 15000): Promise<boolean> {
   const bin = await ollamaBin();
   if (!bin) return false;
   try {
-    const child = spawn(bin, ["serve"], { detached: true, stdio: "ignore" });
+    const child = spawn(bin, ["serve"], { detached: true, stdio: "ignore", windowsHide: true });
     child.unref();
   } catch {
     return false;

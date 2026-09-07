@@ -73,7 +73,7 @@ const venvPython = () => resolve(VENV, "bin", "python");
 
 async function which(bin: string): Promise<string | null> {
   try {
-    const { stdout } = await pexecFile("/usr/bin/which", [bin]);
+    const { stdout } = await pexecFile("/usr/bin/which", [bin], { windowsHide: true });
     const p = stdout.trim();
     return p && existsSync(p) ? p : null;
   } catch {
@@ -95,6 +95,7 @@ async function pythonMinor(bin: string): Promise<number | null> {
     const { stdout } = await pexecFile(bin, ["-c", "import sys; print(sys.version_info[0], sys.version_info[1])"], {
       timeout: 5000,
       env: { ...process.env, VIRTUAL_ENV: "", PYTHONHOME: "", PYTHONPATH: "" },
+      windowsHide: true,
     });
     const m = stdout.trim().match(/^(\d+)\s+(\d+)/);
     if (m && m[1] === "3") minor = Number(m[2]);
@@ -326,6 +327,7 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
       const { stdout, stderr } = await pexecFile(bin, args, {
         cwd,
         timeout: 20 * 60 * 1000,
+      windowsHide: true,
         maxBuffer: 16 * 1024 * 1024,
         // a clean environment: inheriting VIRTUAL_ENV or a PATH pointing into another
         // project's venv is how this ends up installing somewhere surprising
@@ -411,6 +413,7 @@ export async function startSearxng(waitMs = 40000): Promise<boolean> {
     cwd: SRC,
     detached: true,
     stdio: ["ignore", out, out],
+    windowsHide: true,
     env: {
       ...process.env,
       SEARXNG_SETTINGS_PATH: SETTINGS,
