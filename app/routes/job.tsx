@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { redirect } from "react-router";
-import { Form, Link, useNavigation, useFetcher } from "react-router";
+import { Form, Link, useNavigation, useFetcher, useSearchParams } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -361,7 +361,18 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
   const { job, events, versions, profiles, gaps, gapsCovered, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
-  const [tab, setTab] = useState<Tab>("Overview");
+  // Same as Settings: the tab lives in the URL, so a reload, a shared link or the back
+  // button keeps you on the tab you were reading rather than snapping to Overview.
+  const [params, setParams] = useSearchParams();
+  const asked = params.get("tab");
+  const tab: Tab = (TABS as readonly string[]).includes(asked || "") ? (asked as Tab) : "Overview";
+  const setTab = (t: Tab) => {
+    const next = new URLSearchParams(params);
+    if (t === "Overview") next.delete("tab");
+    else next.set("tab", t);
+    // replace, not push: flicking through tabs should not fill the back button
+    setParams(next, { replace: true, preventScrollReset: true });
+  };
   const [step, setStep] = useState(1);
   const nav = useNavigation();
   const busy = nav.state !== "idle";
