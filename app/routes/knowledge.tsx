@@ -345,21 +345,30 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
         {kb.items.length === 0 ? (
           <p className="hint">Nothing yet. Capture a note or scan a folder above to begin.</p>
         ) : (
+          /*
+            Folded. Eighteen entries ran to eight thousand pixels — three quarters of a
+            twelve-screen page — and every one of them was open whether or not you had
+            any interest in it. The summary line is what you scan; the body is what you
+            came for once you have found the right one.
+          */
           kb.items.map((it: any) => (
-            <div key={it.id} className="version" style={{ marginTop: 8 }}>
-              <div className="version-head" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <details key={it.id} className="kb-entry">
+              <summary>
                 <strong>{it.title}</strong>
                 <span className="badge off">{it.kind}</span>
-                <span className="hint" style={{ margin: 0 }}>{it.source}</span>
-                <ConfirmForm method="post" style={{ marginLeft: "auto" }} title="Remove from knowledge base?" confirm={`"${it.title}" and its drafted bullets/questions will be removed.`} confirmLabel="Remove">
+                <span className="kb-entry-src">{it.source}</span>
+                {it.tags?.length ? <span className="kb-entry-tags">{it.tags.length} tag{it.tags.length === 1 ? "" : "s"}</span> : null}
+              </summary>
+              <div className="kb-entry-body">
+                <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
+                {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
+                <ItemContext item={it} busy={busy} />
+                <ConfirmForm method="post" title="Remove from knowledge base?" confirm={`"${it.title}" and its drafted bullets/questions will be removed.`} confirmLabel="Remove">
                   <input type="hidden" name="intent" value="kb-delete" /><input type="hidden" name="id" value={it.id} />
                   <button className="back-link">remove</button>
                 </ConfirmForm>
               </div>
-              <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
-              {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
-              <ItemContext item={it} busy={busy} />
-            </div>
+            </details>
           ))
         )}
       </div>

@@ -938,6 +938,25 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 }
 .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
 /* the release this copy is on — quiet, but findable without opening a tab */
+/* one knowledge-base entry, folded. The summary is the scannable line; opening one
+   gives you the summary text, its tags, the context questions and the remove control. */
+.kb-entry { border: 1px solid var(--rule-faint); margin-top: 8px; background: var(--paper); }
+.kb-entry > summary {
+  cursor: pointer; list-style: none; padding: 11px 14px;
+  display: flex; align-items: baseline; gap: 10px; min-width: 0;
+}
+.kb-entry > summary::-webkit-details-marker { display: none; }
+.kb-entry > summary::before { content: "▸"; color: var(--vermillion); flex: none; }
+.kb-entry[open] > summary::before { content: "▾"; }
+.kb-entry > summary:hover { background: var(--paper-2); }
+.kb-entry > summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.kb-entry-src, .kb-entry-tags {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink-faint);
+  white-space: nowrap;
+}
+.kb-entry-tags { margin-left: auto; }
+.kb-entry-body { padding: 0 14px 14px; border-top: 1px solid var(--rule-faint); }
+
 /* the per-profile knowledge-base selection, folded away until wanted */
 .profile-kb { margin-top: 12px; border-top: 1px solid var(--rule-faint); padding-top: 10px; }
 .profile-kb > summary {
