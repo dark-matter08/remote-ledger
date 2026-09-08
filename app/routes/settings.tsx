@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { useState } from "react";
-import { Form, redirect, useNavigation } from "react-router";
+import { Form, redirect, useNavigation, useSearchParams } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -308,7 +308,19 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
   const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
-  const [tab, setTab] = useState<Tab>("Runners");
+  // The tab lives in the URL, so a link can open one directly — the sidebar's
+  // "Add another" points straight at ?tab=Profiles — and so reloading or sharing the
+  // page keeps you where you were rather than snapping back to Runners.
+  const [params, setParams] = useSearchParams();
+  const asked = params.get("tab");
+  const tab: Tab = (TABS as readonly string[]).includes(asked || "") ? (asked as Tab) : "Runners";
+  const setTab = (t: Tab) => {
+    const next = new URLSearchParams(params);
+    if (t === "Runners") next.delete("tab");
+    else next.set("tab", t);
+    // replace, not push: flicking through tabs should not fill the back button
+    setParams(next, { replace: true, preventScrollReset: true });
+  };
   const [crawlMode, setCrawlMode] = useState(settings.crawlMode);
   const cliRunners = runners.filter((r) => r.kind === "cli");
   const availRunners = runners.filter((r) => r.available);

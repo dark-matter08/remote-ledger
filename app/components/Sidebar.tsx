@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { NavLink, Link } from "react-router";
 import {
   Newspaper,
@@ -139,6 +140,22 @@ export function Sidebar() {
 
   const [profiles, setProfiles] = useState<{ id: string; name: string; active: boolean }[]>([]);
   const [currentProfile, setCurrent] = useState<string>("");
+  const [profOpen, setProfOpen] = useState(false);
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
+  const profBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!profOpen) return;
+    const shut = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement)?.closest?.(".sb-prof-pop, .sb-prof-menu")) setProfOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setProfOpen(false);
+    document.addEventListener("click", shut);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("click", shut);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [profOpen]);
   useEffect(() => {
     let alive = true;
     fetch("/api/profiles")
@@ -157,39 +174,6 @@ export function Sidebar() {
       <div className="sb-top">
         <Link to="/" className="sb-brand" title="The Remote & Ledger">❦</Link>
         <span className="sb-word">The Remote <span className="sb-amp">&amp;</span> Ledger</span>
-      </div>
-
-      {/*
-        The switcher is here as much to say the feature exists as to be used: with one
-        profile it still shows, worded as an invitation, because a control that only
-        appears once you already know about it teaches nobody.
-      */}
-      <div className="sb-profiles">
-        <div className="sb-group-title">Searching for</div>
-        {profiles.map((p) => (
-          <a
-            key={p.id}
-            href={`/?profile=${p.id}`}
-            onClick={() => { void fetch("/api/profiles", { method: "POST", body: new URLSearchParams({ id: p.id }) }); }}
-            className={`sb-prof ${p.id === currentProfile ? "on" : ""} ${p.active ? "" : "paused"}`}
-            title={p.active ? p.name : `${p.name} — paused, not searched`}
-          >
-            {/* the initial, not a bare dot: collapsed to a rail of icons, an unlabelled
-                square reads as an artefact rather than a control you can press */}
-            <span className="sb-prof-dot">{p.name.trim().charAt(0).toUpperCase() || "?"}</span>
-            <span className="sb-label">{p.name}</span>
-          </a>
-        ))}
-        {profiles.length > 1 && (
-          <a href="/?profile=all" className={`sb-prof ${currentProfile === "all" ? "on" : ""}`} title="Every profile at once">
-            <span className="sb-prof-dot all">∗</span>
-            <span className="sb-label">All profiles</span>
-          </a>
-        )}
-        <a href="/settings" className="sb-prof add" title="Add or edit profiles">
-          <span className="sb-prof-dot plus">+</span>
-          <span className="sb-label">{profiles.length > 1 ? "Manage" : "Add another"}</span>
-        </a>
       </div>
 
       <nav className="sb-nav">
@@ -233,6 +217,65 @@ export function Sidebar() {
             {!updating && <span className="sb-badge" />}
           </button>
         )}
+        {/*
+          A menu rather than a list. Down here it sits with the other things you set
+          once, and one row costs the rail no height however many profiles you keep —
+          which was the problem with listing them all up top.
+        */}
+        <div className={`sb-prof-menu ${profOpen ? "open" : ""}`}>
+          <button
+            className="sb-item"
+            ref={profBtn}
+            onClick={() => {
+              const r = profBtn.current?.getBoundingClientRect();
+              // measured on open, so it follows the rail whether it is collapsed or pinned
+              if (r) setAnchor({ left: Math.round(r.right + 8), top: Math.round(r.bottom - 8) });
+              setProfOpen((v) => !v);
+            }}
+            title={`Searching for ${profiles.find((x) => x.id === currentProfile)?.name || "…"} — click to switch`}
+          >
+            <span className="sb-ico">
+              <span className="sb-prof-dot on">
+                {(profiles.find((x) => x.id === currentProfile)?.name || "?").trim().charAt(0).toUpperCase()}
+              </span>
+            </span>
+            <span className="sb-label">{profiles.find((x) => x.id === currentProfile)?.name || "Profiles"}</span>
+          </button>
+          {/*
+            Portalled to the body. The rail is position:fixed with a transform, which
+            makes it the containing block even for a fixed child, and it clips its own
+            overflow for the collapse animation — so a menu rendered inside it is cut
+            off at the rail's edge however it is positioned. Same reason ConfirmForm
+            portals its dialog.
+          */}
+          {profOpen && anchor && createPortal(
+            <div className="sb-prof-pop" style={{ left: anchor.left, top: anchor.top }}>
+              <div className="sb-prof-pop-title">Searching for</div>
+              {profiles.map((x) => (
+                <a
+                  key={x.id}
+                  href={`/?profile=${x.id}`}
+                  className={`sb-prof ${x.id === currentProfile ? "on" : ""} ${x.active ? "" : "paused"}`}
+                  title={x.active ? x.name : `${x.name} — paused, not searched`}
+                >
+                  <span className="sb-prof-dot">{x.name.trim().charAt(0).toUpperCase() || "?"}</span>
+                  <span>{x.name}</span>
+                </a>
+              ))}
+              {profiles.length > 1 && (
+                <a href="/?profile=all" className="sb-prof">
+                  <span className="sb-prof-dot all">∗</span>
+                  <span>All profiles</span>
+                </a>
+              )}
+              <a href="/settings?tab=Profiles" className="sb-prof add">
+                <span className="sb-prof-dot plus">+</span>
+                <span>{profiles.length > 1 ? "Manage profiles" : "Add another"}</span>
+              </a>
+            </div>,
+            document.body
+          )}
+        </div>
         <button className="sb-item" onClick={toggleTheme} title="Toggle day / night">
           <span className="sb-ico">{theme === "night" ? <Sun size={18} strokeWidth={1.7} /> : <Moon size={18} strokeWidth={1.7} />}</span>
           <span className="sb-label">{theme === "night" ? "Day Press" : "Night Press"}</span>

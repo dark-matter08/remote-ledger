@@ -947,13 +947,25 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 /* which search you are looking at. Only rendered when there is more than one. */
 /* the profile switcher in the rail. Shown even with one profile, worded as an
    invitation — a control that only appears once you know about it teaches nobody. */
-.sb-profiles { padding: 10px 0 4px; border-bottom: 1px solid var(--rule-faint); margin-bottom: 6px; }
+/* The switcher is one row in the bottom rail that opens a menu, so the number of
+   profiles you keep costs the sidebar no height. It pops upward because it sits at
+   the foot of a full-height rail and there is nothing below it to open into. */
+.sb-prof-menu { position: relative; }
+.sb-prof-pop {
+  position: fixed; transform: translateY(-100%); z-index: 60; min-width: 210px;
+  background: var(--paper); border: 1.5px solid var(--ink); box-shadow: 4px 4px 0 var(--rule-faint);
+  padding: 6px 0;
+}
+.sb-prof-pop-title {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--vermillion); padding: 6px 12px 8px;
+}
 .sb-prof {
   display: flex; align-items: center; gap: 10px; padding: 7px 12px; text-decoration: none;
   color: var(--ink-soft); font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
   white-space: nowrap; overflow: hidden;
 }
-.sb-prof:hover { color: var(--vermillion); }
+.sb-prof:hover { color: var(--vermillion); background: var(--paper-2); }
 .sb-prof.on { color: var(--ink); background: var(--paper-2); }
 .sb-prof.paused .sb-label { opacity: .5; text-decoration: line-through; }
 .sb-prof-dot {
