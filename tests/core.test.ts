@@ -2557,3 +2557,26 @@ test("a new profile starts with the whole knowledge base, and can be narrowed", 
   deleteProfile(fresh.id, { deleteJobs: true });
   deleteProfile(second.id, { deleteJobs: true });
 });
+
+test("a posting is one job whether or not the link repeats its id in the query", async () => {
+  const { urlKey } = await import("../app/job-identity");
+
+  // Consensys arrived both ways on different days. Two keys meant two rows, so a job
+  // already at screening came back under "new jobs" — which is what this fixes.
+  assert.equal(
+    urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475"),
+    urlKey("https://consensys.io/open-roles/8138475")
+  );
+
+  // The query is still kept where it is the only thing carrying an id: that is the
+  // case the original rule was written for, and dropping it there would merge every
+  // posting on the board into one.
+  assert.equal(urlKey("https://jobs.example.com/apply?gh_jid=449912"), "jobs.example.com/apply?gh_jid=449912");
+  assert.notEqual(
+    urlKey("https://jobs.example.com/apply?gh_jid=449912"),
+    urlKey("https://jobs.example.com/apply?gh_jid=778001")
+  );
+
+  // and a page with no id at all still refuses to be an identity
+  assert.equal(urlKey("https://example.com/careers"), null);
+});

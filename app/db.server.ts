@@ -51,6 +51,7 @@ const TODAY = () => new Date().toISOString().slice(0, 10);
  * separate copy under each, so the combined view is where you notice that.
  */
 export function getLedger(profileId?: string): LedgerData {
+  drainPendingFolds();
   const scope = profileId ? " AND j.profile_id = ?" : "";
   const rows = getDb()
     .prepare(
@@ -904,7 +905,7 @@ function jobWeight(id: string): { stage: number; resumes: number; events: number
 }
 
 /** Of two rows for one posting, the one that has actually been worked on. */
-function betterJob(a: string, b: string): [keep: string, drop: string] {
+export function betterJob(a: string, b: string): [keep: string, drop: string] {
   const wa = jobWeight(a);
   const wb = jobWeight(b);
   const aWins =
@@ -924,7 +925,32 @@ function betterJob(a: string, b: string): [keep: string, drop: string] {
  * Caller owns the transaction — this runs inside the crawl's upsert as well as the
  * repair script, and node:sqlite has no nested transactions.
  */
-function foldInto(keep: string, drop: string): number {
+/**
+ * Fold the duplicate pairs the re-key migration found.
+ *
+ * The migration runs inside sqlite.server, which cannot import this module — the job
+ * logic lives here and importing it there would be a cycle. So it leaves the pairs on
+ * the global and this drains them the first time anything touches the ledger.
+ */
+export function drainPendingFolds(): number {
+  const pairs = global.__ledgerPendingFolds;
+  if (!pairs?.length) return 0;
+  global.__ledgerPendingFolds = undefined;
+  let n = 0;
+  transaction(() => {
+    for (const [a, b] of pairs) {
+      try {
+        const [keep, drop] = betterJob(a, b);
+        foldInto(keep, drop);
+        n++;
+      } catch {}
+    }
+  });
+  if (n) console.log(`[jobs] folded ${n} duplicate posting(s) after re-keying`);
+  return n;
+}
+
+export function foldInto(keep: string, drop: string): number {
   const db = getDb();
   let moved = 0;
   for (const t of JOB_CHILD_TABLES) {

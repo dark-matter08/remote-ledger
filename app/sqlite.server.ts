@@ -29,6 +29,10 @@ export interface Db {
 declare global {
   // eslint-disable-next-line no-var
   var __ledgerDb: Db | undefined;
+  // duplicate pairs the re-key found, folded by db.server once it is loaded — the fold
+  // lives there with the rest of the job logic and cannot be imported from here
+  // eslint-disable-next-line no-var
+  var __ledgerPendingFolds: [string, string][] | undefined;
 }
 
 function ensureColumn(db: Db, table: string, col: string, type: string) {
@@ -108,6 +112,45 @@ export function getDb(): Db {
         `INSERT INTO profiles (id, name, field, location, stack, active, sort_order, created_at, updated_at)
          VALUES ('default', ?, ?, ?, ?, 1, 0, ?, ?)`
       ).run(get("profile_stack") ? "My search" : "My search", field, get("profile_location"), get("profile_stack"), now, now);
+    }
+  } catch {}
+
+  // Re-key jobs whose url_key was computed before the path/query rule, and fold the
+  // pairs that split. Consensys arrived as both
+  //   consensys.io/open-roles/8138475?gh_jid=8138475
+  //   consensys.io/open-roles/8138475
+  // on different days — one posting, two keys, so a job already at screening came back
+  // as a new one. Fixing urlKey stops it recurring; this repairs what it already did.
+  //
+  // Guarded by a marker so it runs once. It merges rows, and merging is not something
+  // to redo on every boot.
+  try {
+    const done = db.prepare("SELECT value FROM settings WHERE key='rekeyed_url_query'").get() as
+      | { value?: string }
+      | undefined;
+    if (!done?.value) {
+      const rows = db.prepare("SELECT id, apply_url, url_key FROM jobs").all() as {
+        id: string;
+        apply_url: string;
+        url_key: string | null;
+      }[];
+      const set = db.prepare("UPDATE jobs SET url_key=? WHERE id=?");
+      const byKey = new Map<string, string>();
+      const merges: [string, string][] = [];
+      for (const r of rows) {
+        const k = urlKey(String(r.apply_url || ""));
+        if (!k) continue;
+        if (k !== r.url_key) set.run(k, String(r.id));
+        const seen = byKey.get(k);
+        if (seen) merges.push([seen, String(r.id)]);
+        else byKey.set(k, String(r.id));
+      }
+      db.prepare("INSERT INTO settings (key,value) VALUES ('rekeyed_url_query','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
+      if (merges.length) {
+        // done through the same fold the crawl uses, so the row that carries the
+        // application wins and its children come with it
+        global.__ledgerPendingFolds = merges;
+      }
     }
   } catch {}
 
