@@ -2588,3 +2588,52 @@ test("a posting is one job whether or not the link repeats its id in the query",
   // and a page with no id at all still refuses to be an identity
   assert.equal(urlKey("https://example.com/careers"), null);
 });
+
+test("mail scanned before you marked the job applied is not lost", async () => {
+  const { proposedStage, reconsiderRecentlyApplied } = await import("../app/services/email.server");
+  const { getDb, setSetting } = await import("../app/sqlite.server");
+  const { upsertJobs, setStage } = await import("../app/db.server");
+
+  // A receipt normally says "you applied" — it is often the first thing that tells the
+  // ledger an application exists. Against a job you have already marked applied it means
+  // something else: the company has acknowledged it.
+  assert.equal(proposedStage("receipt", "saved"), "applied");
+  assert.equal(proposedStage("receipt", "applied"), "screening");
+  assert.equal(proposedStage("recruiter", "applied"), "screening");
+  assert.equal(proposedStage("alert", "applied"), null, "a job alert is not a stage change");
+
+  const db = getDb();
+  upsertJobs(
+    [
+      {
+        company: "Racecorp",
+        role: "Engineer",
+        category: "high",
+        fit_score: 70,
+        apply_url: "https://boards.greenhouse.io/racecorp/jobs/5150001",
+      },
+    ],
+    undefined,
+    "default"
+  );
+  const jobId = (db.prepare("SELECT id FROM jobs WHERE company='Racecorp'").get() as { id: string }).id;
+
+  // the scan wins the race: mail read and held while the job is still just saved
+  db.prepare(
+    `INSERT INTO email_messages (account_id, uid, from_addr, subject, job_id, category, confidence,
+       proposed_stage, status, created_at)
+     VALUES (1, 991, 'careers@racecorp.com', 'We received your application', ?, 'receipt', 90, 'applied', 'deferred', 'n')`
+  ).run(jobId);
+
+  // ...then you mark it applied. Nothing re-opens that mail on its own.
+  setSetting("last_email_scan", "2000-01-01T00:00:00.000Z");
+  setStage(jobId, "applied");
+
+  const r = reconsiderRecentlyApplied();
+  assert.ok(r.jobs >= 1, "the job it was applied to is in the window");
+  const after = db.prepare("SELECT stage FROM applications WHERE job_id=?").get(jobId) as { stage: string };
+  assert.equal(after.stage, "screening", "the held receipt now means the company has acknowledged it");
+
+  db.prepare("DELETE FROM email_messages WHERE uid=991").run();
+  db.prepare("DELETE FROM jobs WHERE id=?").run(jobId);
+});
