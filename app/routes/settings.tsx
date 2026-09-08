@@ -19,6 +19,7 @@ import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
 import { listBackups } from "../services/backup.server";
 import { listProfiles, createProfile, updateProfile, deleteProfile } from "../profiles.server";
+import { readExport, importData, OMITTED } from "../services/portability.server";
 import { currentVersion } from "../services/updates.server";
 import {
   listCompanies,
@@ -119,6 +120,23 @@ export async function loader() {
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
+
+  if (intent === "import-data") {
+    // Deliberately the only write path that takes a file. Everything about it is
+    // "refuse rather than guess": the version check, the column filter, and merge
+    // as the default so a mistaken import adds nothing it cannot also skip.
+    const upload = form.get("file");
+    if (!(upload instanceof File) || !upload.size) return { ok: false, msg: "Choose an export file first." };
+    if (upload.size > 200 * 1024 * 1024) return { ok: false, msg: "That file is over 200 MB — it is not one of ours." };
+    try {
+      const buf = Buffer.from(await upload.arrayBuffer());
+      const file = readExport(buf);
+      const r = importData(file, form.get("mode") === "replace" ? "replace" : "merge");
+      return { ok: true, msg: r.message };
+    } catch (e: any) {
+      return { ok: false, msg: e?.message || "That file could not be read." };
+    }
+  }
 
   if (intent === "profile-create") {
     const name = String(form.get("name") || "").trim();
@@ -261,7 +279,7 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profiles", "Profile", "Prompt", "Danger"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profiles", "Profile", "Prompt", "Data", "Danger"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
@@ -294,6 +312,67 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         ))}
       </div>
 
+      {tab === "Data" && (
+        <>
+          <div className="panel">
+            <h3>Move to another machine</h3>
+            <p className="hint">
+              One file with your profiles, postings, applications, résumés, knowledge base and
+              answers. Download it here, install the Ledger on the new machine, and read it back
+              in below.
+            </p>
+            <p className="hint">
+              <strong>Your keys are not in it.</strong> API keys and email passwords stay on this
+              machine — they are not written to the file even though you asked for one. Re-enter
+              them under Keys on the other side.
+            </p>
+            <div className="field-row">
+              <a className="btn" href="/api/export">Download everything</a>
+              {profiles.length > 1 && (
+                <Select
+                  name="export_profile"
+                  defaultValue=""
+                  onChange={(e: any) => {
+                    const v = e.target.value;
+                    if (v) window.location.href = `/api/export?profile=${encodeURIComponent(v)}`;
+                  }}
+                  options={[{ value: "", label: "…or just one profile" }, ...profiles.map((p: any) => ({ value: p.id, label: p.name }))]}
+                />
+              )}
+            </div>
+            <p className="hint mono tiny">
+              Left out: {Object.values(OMITTED).join(" · ")}
+            </p>
+          </div>
+      
+          <Form method="post" encType="multipart/form-data" className="panel">
+            <input type="hidden" name="intent" value="import-data" />
+            <h3>Read an export back in</h3>
+            <p className="hint">
+              Merge adds what is not already here and leaves the rest alone, so running the same
+              file twice does nothing the second time. Replace empties these tables first — it
+              takes a backup before it does, but it is the one thing here you cannot undo by
+              importing again.
+            </p>
+            <div className="field-row">
+              <label className="lab">File<input className="field" type="file" name="file" accept=".gz,.json" required /></label>
+              <label className="lab">
+                How
+                <Select
+                  name="mode"
+                  defaultValue="merge"
+                  options={[
+                    { value: "merge", label: "Merge — add what is missing" },
+                    { value: "replace", label: "Replace — wipe first (backs up)" },
+                  ]}
+                />
+              </label>
+            </div>
+            <button className="btn" disabled={saving}>Import</button>
+          </Form>
+        </>
+      )}
+      
       {tab === "Profiles" && (
         <>
           <div className="panel">

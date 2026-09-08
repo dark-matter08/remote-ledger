@@ -2451,3 +2451,44 @@ test("profiles: a second line of work no longer overwrites the first", async () 
   deleteProfile(eng.id, { deleteJobs: true });
   deleteProfile("design-2", { deleteJobs: true });
 });
+
+test("export carries your work and never your keys", async () => {
+  const { exportData, readExport, importData, EXPORT_VERSION, OMITTED } = await import(
+    "../app/services/portability.server"
+  );
+  const { gzipSync } = await import("node:zlib");
+  const { setSecret } = await import("../app/secrets.server");
+
+  // A real secret in the store. The export must not contain it — and not because
+  // something downstream strips it: the secrets table is never read.
+  setSecret("anthropic_api_key", "sk-ant-do-not-export-me-0123456789");
+
+  const dump = exportData();
+  const text = JSON.stringify(dump);
+  assert.ok(!("secrets" in dump.tables), "no secrets table in the file");
+  assert.ok(!text.includes("sk-ant-do-not-export-me"), "and the value is nowhere else in it either");
+  assert.ok(OMITTED.secrets, "the file says what it left out, so the other machine knows to re-enter it");
+
+  // An email account travels without its password rather than being dropped, so the
+  // account is there to re-authorise instead of being silently missing.
+  for (const a of dump.tables.email_accounts || []) assert.equal(a.password, null);
+
+  // A file from a newer version is refused, not guessed at. Writing columns this
+  // code has never seen is how an import corrupts a database instead of declining.
+  assert.throws(
+    () => readExport(Buffer.from(JSON.stringify({ ...dump, version: EXPORT_VERSION + 1 }))),
+    /newer version/i
+  );
+  assert.throws(() => readExport(Buffer.from(JSON.stringify({ hello: "world" }))), /not a Remote Ledger export/i);
+
+  // gzip and plain JSON both read
+  assert.equal(readExport(gzipSync(Buffer.from(text))).version, EXPORT_VERSION);
+
+  // and a merge is repeatable: the second run adds nothing
+  const again = importData(dump, "merge");
+  assert.equal(
+    Object.values(again.inserted).reduce((a, b) => a + b, 0),
+    0,
+    "importing what is already here must be a no-op"
+  );
+});
