@@ -259,7 +259,7 @@ export function Sidebar() {
                   title={x.active ? x.name : `${x.name} — paused, not searched`}
                 >
                   <span className="sb-prof-dot">{x.name.trim().charAt(0).toUpperCase() || "?"}</span>
-                  <span>{x.name}</span>
+                  <span title={x.name}>{x.name}</span>
                 </a>
               ))}
               {profiles.length > 1 && (

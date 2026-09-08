@@ -83,7 +83,7 @@ export const STEPS: AutopilotStep[] = [
       // tab ranks them when you pick by hand. With nothing relevant it is not worth
       // assembling anything — the tailor step will work from your base résumé, which
       // is what happens today if you skip this step yourself.
-      const ranked = rankKbForJob(`${job.role} ${job.company} ${job.stack || ""} ${job.jd || ""}`, 8);
+      const ranked = rankKbForJob(`${job.role} ${job.company} ${job.stack || ""} ${job.jd || ""}`, 8, job.profile_id);
       if (!ranked.length) return "nothing in the knowledge base matched this posting — using your base résumé";
       log(`Assembling from ${ranked.length} piece(s) of your own work…`);
       const built = buildResumeFromKb({

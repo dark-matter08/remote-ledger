@@ -19,8 +19,9 @@ import { discoverModels, openRouterShortlist } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
+import { kbBuildSources } from "../resume/build.server";
 import { listBackups, takeBackup, backupDir, backupKeep, backupEveryHours, writeScheduledExport } from "../services/backup.server";
-import { listProfiles, createProfile, updateProfile, deleteProfile } from "../profiles.server";
+import { listProfiles, createProfile, updateProfile, deleteProfile, profileKbIds, setProfileKb, copyProfileKb } from "../profiles.server";
 import { readExport, importData, OMITTED } from "../services/portability.server";
 import { currentVersion } from "../services/updates.server";
 import {
@@ -76,7 +77,8 @@ export async function loader() {
   );
   return {
     version: currentVersion(),
-    profiles: listProfiles(),
+    profiles: listProfiles().map((p) => ({ ...p, kb: profileKbIds(p.id) })),
+    kbItems: kbBuildSources().map((k) => ({ id: k.id, kind: k.kind, title: k.title, tags: k.tags })),
     backup: {
       everyHours: backupEveryHours(),
       keep: backupKeep(),
@@ -166,6 +168,23 @@ export async function action({ request }: Route.ActionArgs) {
     }
   }
 
+  if (intent === "profile-kb") {
+    const id = String(form.get("id"));
+    setProfileKb(id, form.getAll("item").map((v) => Number(v)));
+    const n = profileKbIds(id).length;
+    return { ok: true, msg: n ? `${n} entr${n === 1 ? "y" : "ies"} selected for this profile.` : "Using the whole knowledge base." };
+  }
+  if (intent === "profile-kb-copy") {
+    const from = String(form.get("from"));
+    const to = String(form.get("id"));
+    // Nothing selected upstream means "everything", so copying it would look like it
+    // did nothing. Say that instead of silently writing an empty set.
+    if (!profileKbIds(from).length) {
+      return { ok: false, msg: "That profile has no selection of its own — it already uses the whole knowledge base." };
+    }
+    const n = copyProfileKb(from, to);
+    return { ok: true, msg: `Copied ${n} entr${n === 1 ? "y" : "ies"} across.` };
+  }
   if (intent === "profile-create") {
     const name = String(form.get("name") || "").trim();
     if (!name) return { ok: false, msg: "Give the profile a name." };
@@ -305,7 +324,7 @@ const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup, kbItems } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   // The tab lives in the URL, so a link can open one directly — the sidebar's
@@ -490,45 +509,87 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               one costs — each is searched a little less deeply. Pause one and it is kept, just not searched.
             </p>
             {profiles.map((p: any) => (
-              <div key={p.id} className="profile-row">
-                <Form method="post" className="profile-edit">
-                  <input type="hidden" name="intent" value="profile-save" />
-                  <input type="hidden" name="id" value={p.id} />
-                  <div className="row2">
-                    <div className="field"><label>Name</label><input type="text" name="name" defaultValue={p.name} /></div>
-                    <div className="field"><label>Field</label>
-                      <Select name="field" defaultValue={p.field} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
-                    </div>
-                  </div>
-                  <div className="row2">
-                    <div className="field"><label>Where</label><input type="text" name="location" defaultValue={p.location} placeholder="Remote" /></div>
-                    <div className="field"><label>What you do</label><input type="text" name="stack" defaultValue={p.stack} placeholder="what you do" /></div>
-                  </div>
-                  <div className="profile-foot">
-                    <span className="hint mono tiny">
-                      {p.active ? "searched" : "paused"} · last searched {p.last_crawled_at ? p.last_crawled_at.slice(0, 10) : "never"}
-                    </span>
-                    <button className="btn small" disabled={saving}>Save</button>
-                  </div>
-                </Form>
-                <div className="profile-acts">
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="profile-active" />
+              <div key={p.id} className="profile-block">
+                <div className="profile-row">
+                  <Form method="post" className="profile-edit">
+                    <input type="hidden" name="intent" value="profile-save" />
                     <input type="hidden" name="id" value={p.id} />
-                    {p.active ? null : <input type="hidden" name="active" value="1" />}
-                    <button className="btn small ghost" disabled={saving}>{p.active ? "Pause" : "Resume"}</button>
+                    <div className="row2">
+                      <div className="field"><label>Name</label><input type="text" name="name" defaultValue={p.name} /></div>
+                      <div className="field"><label>Field</label>
+                        <Select name="field" defaultValue={p.field} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
+                      </div>
+                    </div>
+                    <div className="row2">
+                      <div className="field"><label>Where</label><input type="text" name="location" defaultValue={p.location} placeholder="Remote" /></div>
+                      <div className="field"><label>What you do</label><input type="text" name="stack" defaultValue={p.stack} placeholder="what you do" /></div>
+                    </div>
+                    <div className="profile-foot">
+                      <span className="hint mono tiny">
+                        {p.active ? "searched" : "paused"} · last searched {p.last_crawled_at ? p.last_crawled_at.slice(0, 10) : "never"}
+                      </span>
+                      <button className="btn small" disabled={saving}>Save</button>
+                    </div>
                   </Form>
-                  {profiles.length > 1 && (
-                    <ConfirmForm
-                      method="post"
-                      confirm={`Delete "${p.name}" and every posting found under it? Its applications and notes go too.`}
-                    >
-                      <input type="hidden" name="intent" value="profile-delete" />
+
+                  <div className="profile-acts">
+                    <Form method="post">
+                      <input type="hidden" name="intent" value="profile-active" />
                       <input type="hidden" name="id" value={p.id} />
-                      <button className="btn small danger" disabled={saving}>Delete</button>
-                    </ConfirmForm>
-                  )}
+                      {p.active ? null : <input type="hidden" name="active" value="1" />}
+                      <button className="btn small ghost" disabled={saving}>{p.active ? "Pause" : "Resume"}</button>
+                    </Form>
+                    {profiles.length > 1 && (
+                      <ConfirmForm
+                        method="post"
+                        confirm={`Delete "${p.name}" and every posting found under it? Its applications and notes go too.`}
+                      >
+                        <input type="hidden" name="intent" value="profile-delete" />
+                        <input type="hidden" name="id" value={p.id} />
+                        <button className="btn small danger" disabled={saving}>Delete</button>
+                      </ConfirmForm>
+                    )}
+                  </div>
                 </div>
+                  <details className="profile-kb">
+                    <summary>
+                      Knowledge base — {p.kb.length ? `${p.kb.length} of ${kbItems.length} selected` : `all ${kbItems.length}`}
+                    </summary>
+                    <p className="hint">
+                      The knowledge base is shared: everything you have ever added is available to every
+                      profile, so a new one never starts empty. Selecting here narrows what <em>this</em>
+                      {" "}profile builds résumés from. Select nothing and it uses all of it.
+                    </p>
+                    <Form method="post" className="profile-kb-form">
+                      <input type="hidden" name="intent" value="profile-kb" />
+                      <input type="hidden" name="id" value={p.id} />
+                      <div className="kb-pick">
+                        {kbItems.map((k: any) => (
+                          <label key={k.id} className="kb-pick-item">
+                            <input type="checkbox" name="item" value={k.id} defaultChecked={p.kb.includes(k.id)} />
+                            <span className="kb-pick-kind">{k.kind}</span>
+                            <span className="kb-pick-title">{k.title}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <button className="btn small" disabled={saving}>Save selection</button>
+                    </Form>
+                    {profiles.length > 1 && (
+                      <Form method="post" className="profile-kb-copy">
+                        <input type="hidden" name="intent" value="profile-kb-copy" />
+                        <input type="hidden" name="id" value={p.id} />
+                        <Select
+                          name="from"
+                          defaultValue=""
+                          options={[
+                            { value: "", label: "Copy a selection from…" },
+                            ...profiles.filter((o: any) => o.id !== p.id).map((o: any) => ({ value: o.id, label: o.name })),
+                          ]}
+                        />
+                        <button className="btn small ghost" disabled={saving}>Copy</button>
+                      </Form>
+                    )}
+                  </details>
               </div>
             ))}
           </div>

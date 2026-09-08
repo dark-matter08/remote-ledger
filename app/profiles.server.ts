@@ -194,6 +194,35 @@ export function touchProfileCrawled(id: string) {
   getDb().prepare("UPDATE profiles SET last_crawled_at=? WHERE id=?").run(new Date().toISOString(), id);
 }
 
+/**
+ * The knowledge-base entries this profile builds from.
+ *
+ * Empty means all of them, not none: a profile you have not curated should draw on
+ * everything you have done, and that is also what makes this table safe to add without
+ * touching a single existing row.
+ */
+export function profileKbIds(profileId: string): number[] {
+  return (
+    getDb().prepare("SELECT item_id FROM profile_kb WHERE profile_id=?").all(profileId) as { item_id: number }[]
+  ).map((r) => Number(r.item_id));
+}
+
+export function setProfileKb(profileId: string, itemIds: number[]) {
+  const db = getDb();
+  transaction(() => {
+    db.prepare("DELETE FROM profile_kb WHERE profile_id=?").run(profileId);
+    const ins = db.prepare("INSERT OR IGNORE INTO profile_kb (profile_id, item_id) VALUES (?, ?)");
+    for (const id of itemIds) if (Number.isFinite(id)) ins.run(profileId, Math.round(id));
+  });
+}
+
+/** Start a profile from another one's selection, rather than picking it all again. */
+export function copyProfileKb(fromId: string, toId: string): number {
+  const ids = profileKbIds(fromId);
+  setProfileKb(toId, ids);
+  return ids.length;
+}
+
 export function syncLegacySettings(p: Profile) {
   setSetting("profile_field", p.field);
   setSetting("profile_location", p.location);

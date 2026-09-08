@@ -2516,3 +2516,44 @@ test("autopilot skips what is done and never submits", async () => {
   assert.ok(!/\.click\(|submit\(\)|type="submit"/.test(src), "autopilot must never submit an application");
   assert.match(src, /stops before submitting/i, "and must say so where the next person will read it");
 });
+
+test("a new profile starts with the whole knowledge base, and can be narrowed", async () => {
+  const { createProfile, deleteProfile, profileKbIds, setProfileKb, copyProfileKb } = await import(
+    "../app/profiles.server"
+  );
+  const { kbBuildSources } = await import("../app/resume/build.server");
+  const { getDb } = await import("../app/sqlite.server");
+
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO kb_items (kind,title,summary,tags,created_at,updated_at) VALUES ('project','Ledger','built a thing','[]','n','n')"
+  ).run();
+  db.prepare(
+    "INSERT INTO kb_items (kind,title,summary,tags,created_at,updated_at) VALUES ('project','Poster','drew a thing','[]','n','n')"
+  ).run();
+  const all = kbBuildSources();
+  assert.ok(all.length >= 2);
+
+  // The base is shared. This is the thing worth asserting: making a profile does not
+  // mean rebuilding what you have done, and an uncurated profile sees all of it.
+  const fresh = createProfile({ name: "KB Test", field: "software" });
+  assert.deepEqual(profileKbIds(fresh.id), [], "a new profile has no selection…");
+  assert.equal(kbBuildSources(fresh.id).length, all.length, "…which means everything, not nothing");
+
+  // narrowing it
+  setProfileKb(fresh.id, [all[0].id]);
+  assert.equal(kbBuildSources(fresh.id).length, 1);
+  assert.equal(kbBuildSources().length, all.length, "and the shared base is untouched");
+
+  // and starting another from it rather than picking again
+  const second = createProfile({ name: "KB Test Two", field: "design" });
+  assert.equal(copyProfileKb(fresh.id, second.id), 1);
+  assert.deepEqual(profileKbIds(second.id), [all[0].id]);
+
+  // clearing goes back to "all", not "none"
+  setProfileKb(fresh.id, []);
+  assert.equal(kbBuildSources(fresh.id).length, all.length);
+
+  deleteProfile(fresh.id, { deleteJobs: true });
+  deleteProfile(second.id, { deleteJobs: true });
+});

@@ -20,6 +20,21 @@ CREATE TABLE IF NOT EXISTS profiles (
     updated_at  TEXT NOT NULL
 );
 
+-- Which knowledge-base entries a profile draws on.
+--
+-- The knowledge base itself is shared and always was: it records what you have
+-- actually done, and that does not change because you are applying for a different
+-- kind of role. What changes is which parts of it are relevant, so this says which.
+--
+-- No rows for a profile means "all of it". That is the useful default — a profile you
+-- have not curated should build from everything rather than from nothing — and it also
+-- means nothing had to be backfilled when this table arrived.
+CREATE TABLE IF NOT EXISTS profile_kb (
+    profile_id TEXT NOT NULL,
+    item_id    INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, item_id)
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
   id           TEXT PRIMARY KEY,          -- stable slug: company--role
   company      TEXT NOT NULL,

@@ -933,13 +933,34 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 }
 .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
 /* the release this copy is on — quiet, but findable without opening a tab */
+/* the per-profile knowledge-base selection, folded away until wanted */
+.profile-kb { margin-top: 12px; border-top: 1px solid var(--rule-faint); padding-top: 10px; }
+.profile-kb > summary {
+  cursor: pointer; font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--ink-faint); list-style: none;
+}
+.profile-kb > summary::-webkit-details-marker { display: none; }
+.profile-kb > summary::before { content: "▸ "; color: var(--vermillion); }
+.profile-kb[open] > summary::before { content: "▾ "; }
+.profile-kb > summary:hover { color: var(--vermillion); }
+.kb-pick { max-height: 240px; overflow-y: auto; border: 1px solid var(--rule-faint); padding: 8px; margin: 10px 0; }
+.kb-pick-item { display: flex; align-items: center; gap: 9px; padding: 5px 4px; font-size: 13.5px; }
+.kb-pick-item:hover { background: var(--paper-2); }
+.kb-pick-kind {
+  flex: none; font-family: var(--mono); font-size: 8.5px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--vermillion); border: 1px solid var(--rule-faint); padding: 1px 5px;
+}
+.kb-pick-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-kb-copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+
 /* autopilot sits above the steps it runs, so it reads as "or do all of this" */
 .autopilot { border-left: 3px solid var(--vermillion); }
 .autopilot-done { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule-faint); }
 
 /* one profile per block: each row is its own form, so saving one cannot submit another */
-.profile-row { display: flex; gap: 18px; align-items: flex-start; padding: 18px 0; border-bottom: 1px solid var(--rule-faint); }
-.profile-row:last-child { border-bottom: 0; }
+.profile-row { display: flex; gap: 18px; align-items: flex-start; padding: 18px 0 0; }
+.profile-block { border-bottom: 1px solid var(--rule-faint); }
+.profile-block:last-child { border-bottom: 0; }
 .profile-edit { flex: 1; min-width: 0; }
 .profile-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
 .profile-acts { display: flex; flex-direction: column; gap: 8px; flex: none; padding-top: 4px; }
@@ -951,8 +972,15 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
    profiles you keep costs the sidebar no height. It pops upward because it sits at
    the foot of a full-height rail and there is nothing below it to open into. */
 .sb-prof-menu { position: relative; }
+/* A long profile name is normal — "Nde Lucien — Engineering" is a reasonable thing to
+   call one — and it was running out of the menu's right edge. Truncate rather than
+   wrap: these rows are one line each and the full name is in the title attribute. */
+.sb-prof-pop .sb-prof { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sb-prof-pop .sb-prof > span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
 .sb-prof-pop {
-  position: fixed; transform: translateY(-100%); z-index: 60; min-width: 210px;
+  position: fixed; transform: translateY(-100%); z-index: 60; min-width: 210px; max-width: 280px;
   background: var(--paper); border: 1.5px solid var(--ink); box-shadow: 4px 4px 0 var(--rule-faint);
   padding: 6px 0;
 }
