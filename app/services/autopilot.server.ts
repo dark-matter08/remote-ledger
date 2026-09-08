@@ -32,7 +32,7 @@ import { createVersion, listVersions } from "../resume/versions.server";
 import { assistApply, detectFormFields, questionFields, applyFormUrl } from "./apply.server";
 import type { JobCtx } from "../resume/ai.server";
 
-export type StepId = "match" | "build" | "tailor" | "cover" | "form" | "answers";
+export type StepId = "match" | "gate" | "build" | "tailor" | "cover" | "form" | "answers";
 
 export interface AutopilotStep {
   id: StepId;
@@ -40,6 +40,14 @@ export interface AutopilotStep {
   /** Already done — by an earlier run, or by hand. Skipped without spending anything. */
   done: (job: any) => boolean;
   run: (job: any, log: (m: string) => void) => Promise<string>;
+}
+
+/** Thrown by the gate so the caller can offer Force apply rather than just an error. */
+export class AutopilotBelowMinimum extends Error {
+  constructor(readonly score: number, readonly minimum: number) {
+    super(`Match ${score} is below your minimum of ${minimum}`);
+    this.name = "AutopilotBelowMinimum";
+  }
 }
 
 const ctx = (job: any): JobCtx => ({
@@ -72,6 +80,31 @@ export const STEPS: AutopilotStep[] = [
       const m = await analyzeMatch(base, ctx(job));
       setMeta(`match:${job.id}`, JSON.stringify(m.match));
       return `scored ${m.match.score}`;
+    },
+  },
+  {
+    // The gate, deliberately here: after the one call that produces a score and before
+    // the three that cost real money. Below the line it stops with the match kept, and
+    // Force apply resumes from the next step because every step skips what is done.
+    id: "gate",
+    title: "Check the match against your minimum",
+    done: () => false,
+    run: async (job, log) => {
+      const min = Number(getSetting("min_match_score") || "0") || 0;
+      if (min <= 0) return "no minimum set — carrying on";
+
+      const stored = getMeta(`match:${job.id}`);
+      const score = stored ? Number(JSON.parse(stored)?.score ?? 0) : 0;
+      if (score >= min) return `${score} is at or above your minimum of ${min}`;
+
+      // Advise mode reports and continues, so a threshold can be watched for a week
+      // before it is allowed to stop anything. A floor stricter than you expected that
+      // silently halts every run looks like a broken feature, not a working one.
+      if (getSetting("min_match_advise") === "true") {
+        log(`${score} is below your minimum of ${min} — advise mode, so carrying on anyway.`);
+        return `${score} below ${min} (advised, not blocked)`;
+      }
+      throw new AutopilotBelowMinimum(score, min);
     },
   },
   {
@@ -185,6 +218,8 @@ export interface AutopilotResult {
   done: StepId[];
   skipped: StepId[];
   failedAt?: StepId;
+  /** Set when the run stopped at the gate rather than at a fault. */
+  belowMinimum?: { score: number; minimum: number };
   message: string;
 }
 
@@ -213,7 +248,7 @@ export function stopAutopilot(jobId: string): boolean {
  * the real crawl types so this cannot block the scheduler, and the log shell on the
  * crawl page renders it with nothing new written.
  */
-export async function runAutopilot(jobId: string): Promise<AutopilotResult> {
+export async function runAutopilot(jobId: string, opts: { force?: boolean } = {}): Promise<AutopilotResult> {
   const job = getJob(jobId);
   if (!job) return { ok: false, runId: 0, done: [], skipped: [], message: "no such posting" };
   if (running.has(jobId)) return { ok: false, runId: 0, done: [], skipped: [], message: "already running for this posting" };
@@ -238,6 +273,11 @@ export async function runAutopilot(jobId: string): Promise<AutopilotResult> {
         updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "stopped by user" });
         return { ok: false, runId, done, skipped, message: "stopped" };
       }
+      if (step.id === "gate" && opts.force) {
+        skipped.push(step.id);
+        L("note", "Minimum overridden for this job.");
+        continue;
+      }
       if (step.done(job)) {
         skipped.push(step.id);
         L("note", `${step.title} — already done, skipping`);
@@ -249,6 +289,19 @@ export async function runAutopilot(jobId: string): Promise<AutopilotResult> {
         done.push(step.id);
         L("result", `${step.title}: ${said}`);
       } catch (e: any) {
+        if (e instanceof AutopilotBelowMinimum) {
+          L("note", `${e.message}. Nothing further was run, and nothing was spent on it.`);
+          updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "below minimum" });
+          return {
+            ok: false,
+            runId,
+            done,
+            skipped,
+            failedAt: "gate",
+            belowMinimum: { score: e.score, minimum: e.minimum },
+            message: e.message,
+          };
+        }
         const why = e?.message || String(e);
         L("error", `${step.title} failed: ${why}`);
         L(

@@ -2509,7 +2509,16 @@ test("autopilot skips what is done and never submits", async () => {
   const { readFileSync } = await import("node:fs");
 
   const ids = STEPS.map((s) => s.id);
-  assert.deepEqual(ids, ["match", "build", "tailor", "cover", "form", "answers"], "the guided order, in order");
+  assert.deepEqual(
+    ids,
+    ["match", "gate", "build", "tailor", "cover", "form", "answers"],
+    "the guided order, in order"
+  );
+  // The gate earns its place by being cheap to fail at: after the one call that produces
+  // a score, and before the three that write a résumé and a cover letter. Moving it
+  // later would mean paying for work on a job the threshold was going to refuse.
+  assert.equal(ids.indexOf("gate"), ids.indexOf("match") + 1, "the gate comes straight after the match");
+  assert.ok(ids.indexOf("gate") < ids.indexOf("tailor"), "and before anything expensive");
 
   // Re-running on a job you part-did by hand must not pay to redo it. Every step that
   // produces something durable has to be able to say "already done".
@@ -2697,4 +2706,36 @@ test("a profile is a workspace: its own résumés, apply history and mail", asyn
   getDb().prepare("DELETE FROM email_accounts WHERE id=?").run(acctId);
   deleteProfile(a.id, { deleteJobs: true });
   deleteProfile(b.id, { deleteJobs: true });
+});
+
+test("the match score is arithmetic, not a number the model chose", async () => {
+  const { RUBRIC, RUBRIC_TOTAL, scoreFromDimensions, normaliseDimensions, RUBRIC_VERSION } = await import(
+    "../app/resume/rubric"
+  );
+
+  assert.equal(RUBRIC_TOTAL, 100, "the weights have to add up to the scale they are reported on");
+  assert.ok(RUBRIC_VERSION >= 1, "a score has to say which rubric produced it, or old and new get compared");
+
+  const all = (f: (max: number) => number) =>
+    RUBRIC.map((d) => ({ key: d.key, label: d.label, max: d.max, score: f(d.max), evidence: "" }));
+  assert.equal(scoreFromDimensions(all((m) => m)), 100);
+  assert.equal(scoreFromDimensions(all(() => 0)), 0);
+
+  // The same input twice is the same score — which is the whole reason a threshold can
+  // be set on it. Before the rubric the model returned a holistic number and this was
+  // not true.
+  const once = scoreFromDimensions(all((m) => Math.round(m * 0.6)));
+  const twice = scoreFromDimensions(all((m) => Math.round(m * 0.6)));
+  assert.equal(once, twice);
+
+  // A model that misreads the scale must not be able to invent a score above the cap,
+  // nor sink the whole analysis by returning nonsense.
+  assert.equal(scoreFromDimensions([{ key: "must_have", label: "", max: 40, score: 999, evidence: "" }]), 40);
+  assert.equal(scoreFromDimensions(normaliseDimensions("not an array" as never)), 0);
+  assert.equal(scoreFromDimensions(normaliseDimensions([{ key: "unknown_key", score: 50 }])), 0);
+
+  // every dimension survives normalisation, so the breakdown always has five rows
+  const norm = normaliseDimensions([{ key: "seniority", score: 20, evidence: "5+ years" }]);
+  assert.equal(norm.length, RUBRIC.length);
+  assert.equal(norm.find((d) => d.key === "seniority")!.evidence, "5+ years");
 });

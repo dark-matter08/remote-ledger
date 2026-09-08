@@ -78,6 +78,10 @@ export async function loader() {
   return {
     version: currentVersion(),
     profiles: listProfiles().map((p) => ({ ...p, kb: profileKbIds(p.id) })),
+    matchGate: {
+      min: Number(getSetting("min_match_score") || "0") || 0,
+      advise: getSetting("min_match_advise") === "true",
+    },
     kbItems: kbBuildSources().map((k) => ({ id: k.id, kind: k.kind, title: k.title, tags: k.tags })),
     backup: {
       everyHours: backupEveryHours(),
@@ -168,6 +172,11 @@ export async function action({ request }: Route.ActionArgs) {
     }
   }
 
+  if (intent === "match-minimum") {
+    setSetting("min_match_score", String(Number(form.get("min_match_score") || "0") || 0));
+    setSetting("min_match_advise", form.get("min_match_advise") ? "true" : "false");
+    return { ok: true, msg: "Minimum match score saved." };
+  }
   if (intent === "profile-kb") {
     const id = String(form.get("id"));
     setProfileKb(id, form.getAll("item").map((v) => Number(v)));
@@ -324,7 +333,7 @@ const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup, kbItems } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup, kbItems, matchGate } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   // The tab lives in the URL, so a link can open one directly — the sidebar's
@@ -714,6 +723,47 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
 
       {tab === "Search" && <SearchSetup />}
 
+      {tab === "Scheduler" && (
+        <Form method="post" className="panel">
+          <input type="hidden" name="intent" value="match-minimum" />
+          <h3>Minimum match score</h3>
+          <p className="hint">
+            Autopilot analyses the match first. Below this, it stops there and offers &ldquo;Apply
+            anyway&rdquo; rather than writing a résumé and a cover letter for a job you were never
+            going to send. The check costs one call; the four steps after it are the expensive ones.
+          </p>
+          <div className="row2">
+            <div className="field">
+              <label>Do not apply below</label>
+              <Select
+                name="min_match_score"
+                defaultValue={String(matchGate.min)}
+                options={[
+                  { value: "0", label: "No minimum — apply to anything" },
+                  { value: "50", label: "50 — only skip poor matches" },
+                  { value: "60", label: "60" },
+                  { value: "70", label: "70 — a reasonable bar" },
+                  { value: "80", label: "80 — strong matches only" },
+                ]}
+              />
+            </div>
+            <div className="field">
+              <label>While you are getting a feel for it</label>
+              <label className="checkrow" style={{ marginTop: 8 }}>
+                <input type="checkbox" name="min_match_advise" defaultChecked={matchGate.advise} />
+                <span>Advise only — say what it would have stopped, but carry on</span>
+              </label>
+            </div>
+          </div>
+          <p className="hint">
+            The score is added up from five weighted dimensions, each quoted against the posting —
+            open &ldquo;How this score was reached&rdquo; on any analysed job to see the working. A
+            threshold is only worth setting because that number means the same thing twice.
+          </p>
+          <button className="btn" disabled={saving}>Save minimum</button>
+        </Form>
+      )}
+      
       {tab === "Scheduler" && (
         <Form method="post" className="panel">
           <input type="hidden" name="intent" value="save-scheduler" />

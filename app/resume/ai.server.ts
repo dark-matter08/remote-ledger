@@ -2,6 +2,7 @@
 // guard), match/gap analysis, cover letter, interview prep.
 import { runLLM } from "../llm/runner.server";
 import { HUMAN_STYLE, stripAiTells, cleanResumeProse } from "../llm/style";
+import { RUBRIC_VERSION, rubricPrompt, normaliseDimensions, scoreFromDimensions } from "./rubric";
 import { RESUME_JSON_SHAPE, type Resume, type MatchAnalysis, type TailorFlag } from "./types";
 
 export interface JobCtx {
@@ -131,10 +132,31 @@ export async function analyzeMatch(base: Resume, job: JobCtx): Promise<{ match: 
     json: true,
     temperature: 0.2,
     maxTokens: 1500,
-    system: "You assess how well a candidate's resume matches a job. Be concrete and honest.",
-    prompt: `RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}\n\nReturn ONLY JSON: { "score": 0, "matched": ["..."], "missing": ["..."], "atsKeywords": ["..."] }`,
+    system:
+      "You assess how well a candidate's resume matches a job against a fixed rubric. " +
+      "Be concrete and honest, and quote the posting rather than characterising it.",
+    prompt:
+      `RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}\n\n` +
+      `${rubricPrompt()}\n\n` +
+      `Return ONLY JSON: { "dimensions": [{ "key": "must_have", "score": 0, "evidence": "..." }], ` +
+      `"matched": ["..."], "missing": ["..."], "atsKeywords": ["..."] }`,
   });
-  return { match: r.json || { score: 0, matched: [], missing: [], atsKeywords: [] }, callId: r.callId };
+
+  const raw = (r.json || {}) as Record<string, unknown>;
+  const dimensions = normaliseDimensions(raw.dimensions);
+  return {
+    match: {
+      // Summed here, not taken from the model: that is what makes the number
+      // reproducible enough to gate an application on.
+      score: scoreFromDimensions(dimensions),
+      matched: Array.isArray(raw.matched) ? (raw.matched as string[]) : [],
+      missing: Array.isArray(raw.missing) ? (raw.missing as string[]) : [],
+      atsKeywords: Array.isArray(raw.atsKeywords) ? (raw.atsKeywords as string[]) : [],
+      dimensions,
+      rubricVersion: RUBRIC_VERSION,
+    },
+    callId: r.callId,
+  };
 }
 
 // ---- cover letter ---------------------------------------------------------

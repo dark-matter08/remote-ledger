@@ -504,6 +504,20 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 {(actionData.autopilot.skipped || []).length} already done
                 {actionData.autopilot.failedAt ? ` · stopped at ${actionData.autopilot.failedAt}` : ""}
               </p>
+              {actionData.autopilot.belowMinimum && (
+                <div className="autopilot-blocked">
+                  <p className="hint">
+                    This posting scored <strong>{actionData.autopilot.belowMinimum.score}</strong>, under the
+                    minimum of <strong>{actionData.autopilot.belowMinimum.minimum}</strong> you set in Settings
+                    &rarr; Scheduler. Nothing after the match was run, so nothing was spent on it.
+                  </p>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="autopilot" />
+                    <input type="hidden" name="force" value="1" />
+                    <button className="btn ghost" disabled={busy}>Apply anyway</button>
+                  </Form>
+                </div>
+              )}
               {actionData.autopilot.ok && (
                 <div className="row2">
                   <a className="btn" href={job.apply_url} target="_blank" rel="noreferrer">
@@ -912,6 +926,35 @@ function MatchPanel({ match, busy, running, profiles, defaultProfileId }: any) {
           <p className="hint" style={{ display: "flex", gap: 6, alignItems: "baseline" }}><Check size={13} style={{ flex: "none", transform: "translateY(2px)", color: "var(--ink)" }} /> <span>{match.matched.join(", ") || "—"}</span></p>
           <p className="hint" style={{ display: "flex", gap: 6, alignItems: "baseline" }}><X size={13} style={{ flex: "none", transform: "translateY(2px)", color: "var(--vermillion)" }} /> <span>{match.missing.join(", ") || "—"}</span></p>
           <p className="hint">ATS keywords: {match.atsKeywords?.join(", ") || "—"}</p>
+
+          {/*
+            How the number was reached. Older matches predate the rubric and carry no
+            dimensions, so this is absent rather than empty for them — a score with no
+            working shown is still the score it was.
+          */}
+          {match.dimensions?.length ? (
+            <details className="rubric">
+              <summary>How this score was reached</summary>
+              <table className="rubric-table">
+                <tbody>
+                  {match.dimensions.map((d: any) => (
+                    <tr key={d.key}>
+                      <td className="rubric-label">{d.label}</td>
+                      <td className="rubric-bar">
+                        <span className="rubric-fill" style={{ width: `${Math.round((d.score / d.max) * 100)}%` }} />
+                      </td>
+                      <td className="rubric-num">{d.score}<small>/{d.max}</small></td>
+                      <td className="rubric-why">{d.evidence || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="hint">
+                The total is added up here, not chosen by the model — so the same résumé
+                against the same posting scores the same twice.
+              </p>
+            </details>
+          ) : null}
         </>
       ) : (
         <p className="hint">Run an analysis to see how your résumé matches this role.</p>
