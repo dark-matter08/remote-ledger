@@ -75,6 +75,10 @@ export async function loader() {
   return {
     version: currentVersion(),
     profiles: listProfiles(),
+    // through the loader, not imported in the component: a *.server module referenced
+    // from client code drags the whole thing into the browser bundle, and the build
+    // stops rather than shipping it.
+    omitted: Object.values(OMITTED),
     reset: { scopes: resetPreview(), backups: listBackups() },
     companies: listCompanies(),
     community: {
@@ -283,7 +287,7 @@ const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -341,7 +345,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               )}
             </div>
             <p className="hint mono tiny">
-              Left out: {Object.values(OMITTED).join(" · ")}
+              Left out: {omitted.join(" · ")}
             </p>
           </div>
       
