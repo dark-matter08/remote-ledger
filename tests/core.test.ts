@@ -1898,8 +1898,16 @@ test("job identity: a posting is its url, not its title", async () => {
     urlKey("https://jobot.com/details/software-engineer/ecab52b501?utm_source=DigestAlert"),
     urlKey("https://JOBOT.com/details/software-engineer/ecab52b501")
   );
-  // …but a query id is part of the address on some boards, so it is kept
-  assert.ok(urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475")!.includes("gh_jid=8138475"));
+  // A query id is part of the address on boards that have no id in the path, so it is
+  // kept there — but NOT when the path already names the posting. This example used to
+  // assert the opposite, and that is exactly what split Consensys into two rows: the
+  // same job arrived with and without the ?gh_jid repeat and became two keys, so one
+  // already at screening came back as new.
+  assert.equal(
+    urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475"),
+    urlKey("https://consensys.io/open-roles/8138475")
+  );
+  assert.ok(urlKey("https://jobs.example.com/apply?gh_jid=449912")!.includes("gh_jid=449912"));
   assert.notEqual(
     urlKey("https://job-boards.greenhouse.io/x/jobs/7673273003"),
     urlKey("https://job-boards.greenhouse.io/x/jobs/7673273004")
