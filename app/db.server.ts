@@ -5,6 +5,7 @@ import { getDb, transaction } from "./sqlite.server";
 import { STAGES, type Stage, type Category, type Job } from "./stages";
 import { REASON_RULE, NON_JUDGEMENT_REASONS, hostOf, type BlockScope } from "./trash";
 import { urlKey } from "./job-identity";
+import { currentProfile } from "./profiles.server";
 
 export { STAGES, QUICK_STAGES, STAGE_LABEL } from "./stages";
 export type { Stage, Category, Job } from "./stages";
@@ -43,12 +44,21 @@ const SELECT_JOB = `
 
 const TODAY = () => new Date().toISOString().slice(0, 10);
 
-export function getLedger(): LedgerData {
+/**
+ * The board.
+ *
+ * `profileId` narrows it to one search; undefined shows every profile at once, which
+ * is a real thing to want — a posting can suit two of your profiles and you keep a
+ * separate copy under each, so the combined view is where you notice that.
+ */
+export function getLedger(profileId?: string): LedgerData {
+  drainPendingFolds();
+  const scope = profileId ? " AND j.profile_id = ?" : "";
   const rows = getDb()
     .prepare(
-      `${SELECT_JOB} WHERE j.active = 1 AND (j.closes_at IS NULL OR j.closes_at >= ?) ORDER BY j.fit_score DESC, j.company ASC`
+      `${SELECT_JOB} WHERE j.active = 1 AND (j.closes_at IS NULL OR j.closes_at >= ?)${scope} ORDER BY j.fit_score DESC, j.company ASC`
     )
-    .all(TODAY()) as Job[];
+    .all(...(profileId ? [TODAY(), profileId] : [TODAY()])) as Job[];
 
   const prevCrawl = getMeta("prev_crawl");
   const soonCutoff = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
@@ -560,20 +570,24 @@ function text(v: unknown): string {
 
 export function upsertJobs(
   jobs: any[],
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  profileId = "default"
 ): { inserted: number; updated: number; blocked: number; folded: number; errors: { job: string; error: string }[] } {
   const db = getDb();
   const isBlocked = blockIndex();
-  const existing = db.prepare("SELECT id FROM jobs WHERE id=?");
-  // the board's own id for the posting, which survives a reworded title
-  const byUrlKey = db.prepare("SELECT id FROM jobs WHERE url_key=? LIMIT 1");
+  const existing = db.prepare("SELECT id FROM jobs WHERE id=? AND profile_id=?");
+  // The board's own id for the posting, which survives a reworded title — looked up
+  // within this profile only. Two profiles are allowed to hold the same posting, each
+  // with its own stage and notes, so a match under one must not be folded into the
+  // other or the second profile could never collect it at all.
+  const byUrlKey = db.prepare("SELECT id FROM jobs WHERE url_key=? AND profile_id=? LIMIT 1");
   const insert = db.prepare(`
-    INSERT INTO jobs (id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,url_key,source,closes_at,active,first_seen,last_seen,updated_at)
-    VALUES (@id,@company,@role,@category,@fit_score,@stack,@eligibility,@seniority,@apply_url,@url_key,@source,@closes_at,1,@now,@now,@now)`);
+    INSERT INTO jobs (id,profile_id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,url_key,source,closes_at,active,first_seen,last_seen,updated_at)
+    VALUES (@id,@profile_id,@company,@role,@category,@fit_score,@stack,@eligibility,@seniority,@apply_url,@url_key,@source,@closes_at,1,@now,@now,@now)`);
   const update = db.prepare(`
     UPDATE jobs SET company=@company, role=@role, category=@category, fit_score=@fit_score, stack=@stack,
       eligibility=@eligibility, seniority=@seniority, apply_url=@apply_url, url_key=@url_key, source=@source, closes_at=@closes_at,
-      active=1, last_seen=@now, updated_at=@now WHERE id=@id`);
+      active=1, last_seen=@now, updated_at=@now WHERE id=@id AND profile_id=@profile_id`);
   let inserted = 0,
     updated = 0,
     blocked = 0,
@@ -594,9 +608,18 @@ export function upsertJobs(
         // alone let the same posting come back as a brand-new row — with none of the
         // application against it. Prefer the board's id for the posting.
         const url_key = urlKey(apply_url);
-        const slugId = raw.id || jobId(company, role);
-        const byUrl = (url_key ? byUrlKey.get(url_key) : null) as { id: string } | undefined | null;
-        const bySlug = existing.get(slugId) as { id: string } | undefined | null;
+        // Namespaced by profile, because jobs.id is the primary key and two profiles
+        // are meant to be able to hold the same posting — unprefixed, the second
+        // profile's copy collided with the first and was silently counted as an error.
+        //
+        // The default profile keeps bare ids. Every install that existed before
+        // profiles has its rows under it, and rewriting 160-odd primary keys would
+        // cascade into applications, resume_versions and apply_session_jobs to make
+        // nothing look different.
+        const bare = raw.id || jobId(company, role);
+        const slugId = profileId === "default" ? bare : `${profileId}--${bare}`;
+        const byUrl = (url_key ? byUrlKey.get(url_key, profileId) : null) as { id: string } | undefined | null;
+        const bySlug = existing.get(slugId, profileId) as { id: string } | undefined | null;
 
         // The posting id beats the slug: the slug is built from a title the crawl
         // model rewords, the url carries the board's own id for the job.
@@ -634,6 +657,7 @@ export function upsertJobs(
           url_key,
           source: text(raw.source) || null,
           closes_at: text(raw.closes_at) || null,
+          profile_id: profileId,
           now,
         };
         if (hit) {
@@ -696,8 +720,8 @@ export interface ApplySession {
 
 export function createSession(mode: string, rules: any): number {
   const info = getDb()
-    .prepare("INSERT INTO apply_sessions (started_at,status,mode,rules_json,owner_pid) VALUES (?,?,?,?,?)")
-    .run(new Date().toISOString(), "running", mode, JSON.stringify(rules), process.pid);
+    .prepare("INSERT INTO apply_sessions (started_at,status,mode,rules_json,owner_pid,profile_id) VALUES (?,?,?,?,?,?)")
+    .run(new Date().toISOString(), "running", mode, JSON.stringify(rules), process.pid, currentProfile().id);
   return Number(info.lastInsertRowid);
 }
 export function updateSession(id: number, patch: Partial<ApplySession>): void {
@@ -709,8 +733,11 @@ export function updateSession(id: number, patch: Partial<ApplySession>): void {
 export function getSession(id: number): ApplySession | null {
   return (getDb().prepare("SELECT * FROM apply_sessions WHERE id=?").get(id) as ApplySession) || null;
 }
-export function listSessions(limit = 20): ApplySession[] {
-  return getDb().prepare("SELECT * FROM apply_sessions ORDER BY id DESC LIMIT ?").all(limit) as ApplySession[];
+export function listSessions(limit = 20, profileId?: string): ApplySession[] {
+  const scope = profileId ?? currentProfile().id;
+  return getDb()
+    .prepare("SELECT * FROM apply_sessions WHERE profile_id=? ORDER BY id DESC LIMIT ?")
+    .all(scope, limit) as ApplySession[];
 }
 
 export function addSessionJob(sessionId: number, jobId: string): number {
@@ -810,13 +837,31 @@ export function crawlLog(runId: number, kind: string, text: string): void {
 export function getCrawlRun(id: number): CrawlRun | null {
   return (getDb().prepare("SELECT * FROM crawl_runs WHERE id=?").get(id) as CrawlRun) || null;
 }
-export function listCrawlRuns(limit = 25): CrawlRun[] {
-  return getDb().prepare("SELECT * FROM crawl_runs ORDER BY id DESC LIMIT ?").all(limit) as CrawlRun[];
+/**
+ * Runs belong to the profile that asked for them.
+ *
+ * Runs made before profiles existed carry no profile_id; they are shown everywhere
+ * rather than nowhere, because hiding an install's entire history behind a column it
+ * predates would look like the history had been lost.
+ */
+export function listCrawlRuns(limit = 25, profileId?: string): CrawlRun[] {
+  const scope = profileId ?? currentProfile().id;
+  return getDb()
+    .prepare("SELECT * FROM crawl_runs WHERE profile_id IS NULL OR profile_id=? ORDER BY id DESC LIMIT ?")
+    .all(scope, limit) as CrawlRun[];
 }
-export function activeCrawl(): CrawlRun | null {
-  // only true crawls gate the crawl buttons / scheduler — folder scans (type='scan')
-  // also live in crawl_runs for the shell, but must not block crawling.
-  return (getDb().prepare("SELECT * FROM crawl_runs WHERE status='running' AND type IN ('find','update','full') ORDER BY id DESC LIMIT 1").get() as CrawlRun) || null;
+export function activeCrawl(profileId?: string): CrawlRun | null {
+  // Only true crawls gate the buttons — folder scans (type='scan') also live here for
+  // the shell but must not block crawling. Scoped, so one profile crawling does not
+  // grey out another's button: they are separate searches on separate schedules.
+  const scope = profileId ?? currentProfile().id;
+  return (
+    (getDb()
+      .prepare(
+        "SELECT * FROM crawl_runs WHERE status='running' AND type IN ('find','update','full') AND (profile_id IS NULL OR profile_id=?) ORDER BY id DESC LIMIT 1"
+      )
+      .get(scope) as CrawlRun) || null
+  );
 }
 export function crawlLogs(runId: number): { id: number; ts: string; kind: string; text: string }[] {
   return getDb().prepare("SELECT id,ts,kind,text FROM crawl_logs WHERE run_id=? ORDER BY id").all(runId) as any[];
@@ -882,7 +927,7 @@ function jobWeight(id: string): { stage: number; resumes: number; events: number
 }
 
 /** Of two rows for one posting, the one that has actually been worked on. */
-function betterJob(a: string, b: string): [keep: string, drop: string] {
+export function betterJob(a: string, b: string): [keep: string, drop: string] {
   const wa = jobWeight(a);
   const wb = jobWeight(b);
   const aWins =
@@ -902,7 +947,32 @@ function betterJob(a: string, b: string): [keep: string, drop: string] {
  * Caller owns the transaction — this runs inside the crawl's upsert as well as the
  * repair script, and node:sqlite has no nested transactions.
  */
-function foldInto(keep: string, drop: string): number {
+/**
+ * Fold the duplicate pairs the re-key migration found.
+ *
+ * The migration runs inside sqlite.server, which cannot import this module — the job
+ * logic lives here and importing it there would be a cycle. So it leaves the pairs on
+ * the global and this drains them the first time anything touches the ledger.
+ */
+export function drainPendingFolds(): number {
+  const pairs = global.__ledgerPendingFolds;
+  if (!pairs?.length) return 0;
+  global.__ledgerPendingFolds = undefined;
+  let n = 0;
+  transaction(() => {
+    for (const [a, b] of pairs) {
+      try {
+        const [keep, drop] = betterJob(a, b);
+        foldInto(keep, drop);
+        n++;
+      } catch {}
+    }
+  });
+  if (n) console.log(`[jobs] folded ${n} duplicate posting(s) after re-keying`);
+  return n;
+}
+
+export function foldInto(keep: string, drop: string): number {
   const db = getDb();
   let moved = 0;
   for (const t of JOB_CHILD_TABLES) {

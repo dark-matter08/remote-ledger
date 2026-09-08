@@ -60,6 +60,18 @@ export function urlKey(raw: string): string | null {
     .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
 
   const query = params.map(([k, v]) => `${k}=${v}`).join("&");
+
+  // When the path already names the posting, the query cannot add identity — only
+  // disagreement. Consensys links arrived both ways on different days:
+  //
+  //   consensys.io/open-roles/8138475?gh_jid=8138475
+  //   consensys.io/open-roles/8138475
+  //
+  // Same posting, same id, twice over — and two keys meant two rows, so a job already
+  // at screening came back as a new one. The query is kept only where it is carrying
+  // the id itself, which is the case this was written for.
+  if (identifying(path)) return `${host}${path}`;
+
   if (!identifying(`${path}${query ? `?${query}` : ""}`)) return null;
   return `${host}${path}${query ? `?${query}` : ""}`;
 }

@@ -8,6 +8,8 @@ import { DirPicker } from "../components/DirPicker";
 import { ConfirmForm } from "../components/ConfirmForm";
 import { GraphView } from "../components/graph/GraphView";
 import { buildGraph } from "../services/graph.server";
+import { currentProfile } from "../profiles.server";
+import { profileKbIds } from "../profiles.server";
 import {
   kbItems,
   kbOpenQuestions,
@@ -50,7 +52,19 @@ export async function loader() {
   return {
     hasRunner: runners.length > 0,
     hasProfile: !!getDefaultProfile(),
-    items: kbItems(),
+    // What THIS profile draws on. The base is shared — every entry stays available to
+    // every profile — but a page showing all of it is not the page you want once you
+    // have said which parts a search actually uses.
+    items: (() => {
+      const chosen = new Set(profileKbIds(currentProfile().id));
+      const all = kbItems();
+      return chosen.size ? all.filter((i: any) => chosen.has(Number(i.id))) : all;
+    })(),
+    kbScope: {
+      profile: currentProfile().name,
+      selected: profileKbIds(currentProfile().id).length,
+      total: kbItems().length,
+    },
     questions: kbOpenQuestions(),
     suggestions: kbSuggestions("pending"),
     suggestionGroups: kbSuggestionClusters(),
@@ -342,24 +356,40 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
 
       <div className="panel">
         <h3>What the agent knows {kb.items.length ? <span className="badge ok">{kb.items.length}</span> : <span className="badge off">empty</span>}</h3>
+        {kb.kbScope.selected > 0 && (
+          <p className="hint">
+            Showing the {kb.kbScope.selected} of {kb.kbScope.total} entries that <strong>{kb.kbScope.profile}</strong>{" "}
+            draws on. The rest are still here and still yours — change the selection in{" "}
+            <a href="/settings?tab=Profiles">Settings → Profiles</a>.
+          </p>
+        )}
         {kb.items.length === 0 ? (
           <p className="hint">Nothing yet. Capture a note or scan a folder above to begin.</p>
         ) : (
+          /*
+            Folded. Eighteen entries ran to eight thousand pixels — three quarters of a
+            twelve-screen page — and every one of them was open whether or not you had
+            any interest in it. The summary line is what you scan; the body is what you
+            came for once you have found the right one.
+          */
           kb.items.map((it: any) => (
-            <div key={it.id} className="version" style={{ marginTop: 8 }}>
-              <div className="version-head" style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <details key={it.id} className="kb-entry">
+              <summary>
                 <strong>{it.title}</strong>
                 <span className="badge off">{it.kind}</span>
-                <span className="hint" style={{ margin: 0 }}>{it.source}</span>
-                <ConfirmForm method="post" style={{ marginLeft: "auto" }} title="Remove from knowledge base?" confirm={`"${it.title}" and its drafted bullets/questions will be removed.`} confirmLabel="Remove">
+                <span className="kb-entry-src">{it.source}</span>
+                {it.tags?.length ? <span className="kb-entry-tags">{it.tags.length} tag{it.tags.length === 1 ? "" : "s"}</span> : null}
+              </summary>
+              <div className="kb-entry-body">
+                <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
+                {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
+                <ItemContext item={it} busy={busy} />
+                <ConfirmForm method="post" title="Remove from knowledge base?" confirm={`"${it.title}" and its drafted bullets/questions will be removed.`} confirmLabel="Remove">
                   <input type="hidden" name="intent" value="kb-delete" /><input type="hidden" name="id" value={it.id} />
                   <button className="back-link">remove</button>
                 </ConfirmForm>
               </div>
-              <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13 }}>{it.summary}</p>
-              {it.tags?.length ? <div className="kb-tags">{it.tags.map((t: string, i: number) => <span key={i} className="kb-tag">{t}</span>)}</div> : null}
-              <ItemContext item={it} busy={busy} />
-            </div>
+            </details>
           ))
         )}
       </div>

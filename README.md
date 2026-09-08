@@ -8,6 +8,11 @@ your résumé per posting using an AI subscription you already pay for *or* your
 API key, renders the PDFs, and tracks the whole pipeline — worked like a copilot and
 set as a hand-made **Heritage Press** broadsheet.
 
+**New in v0.2.0** — [job profiles](docs/V0.2.0.md) so one install can search for more than
+one line of work at once; **autopilot**, which runs the whole guided application from one
+button and stops before submitting; and **export/import**, so moving to another laptop is one
+file. Your keys are never in that file.
+
 **Privacy is the point:** your data and keys never leave your machine. The only thing
 that goes out is the call to the AI provider you chose.
 
@@ -278,3 +283,4 @@ MIT licensed — see [LICENSE](LICENSE).
 | [DESIGN.md](DESIGN.md) | the Heritage Press design system |
 | [ROADMAP.md](ROADMAP.md) | what is planned, and what is deliberately not |
 | [INSTALL.md](INSTALL.md) | the one-file installer, for people who do not use a terminal |
+| [CHANGELOG.md](CHANGELOG.md) | what changed in each release, and why |

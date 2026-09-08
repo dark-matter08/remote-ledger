@@ -29,6 +29,10 @@ export interface Db {
 declare global {
   // eslint-disable-next-line no-var
   var __ledgerDb: Db | undefined;
+  // duplicate pairs the re-key found, folded by db.server once it is loaded — the fold
+  // lives there with the rest of the job logic and cannot be imported from here
+  // eslint-disable-next-line no-var
+  var __ledgerPendingFolds: [string, string][] | undefined;
 }
 
 function ensureColumn(db: Db, table: string, col: string, type: string) {
@@ -70,6 +74,100 @@ export function getDb(): Db {
       }
     }
   } catch {}
+  // ── profiles ────────────────────────────────────────────────────────────────
+  //
+  // One profile per line of work. Before this there was one search, held as three
+  // settings rows, and a second line of work meant overwriting the first.
+  //
+  // The migration is careful in one specific way: it adopts the existing search
+  // rather than inventing a profile beside it. Every job and every company already
+  // on this machine belongs to that adopted profile, so nothing an install has
+  // collected becomes unreachable the moment it updates.
+  try {
+    ensureColumn(db, "jobs", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "companies", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "profiles", "last_crawled_at", "TEXT");
+    // A profile is a whole workspace, not just a search: its own résumés and its own
+    // apply history, as well as its own postings. Mail is not listed here because it
+    // does not need a column — an email belongs to whichever profile owns the job it
+    // matched, and one that has matched nothing yet belongs to all of them, because
+    // which search it concerns is precisely what is not known yet.
+    ensureColumn(db, "resume_profiles", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "apply_sessions", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    // Nullable on purpose, and null by default: one job-application mailbox serving
+    // every search is the ordinary setup, and forcing a mailbox per profile would mean
+    // connecting the same account twice and syncing it twice for nothing. Set it and
+    // the account belongs to one search — which is what you want if you use a separate
+    // alias per search (you+eng@, you+design@).
+    ensureColumn(db, "email_accounts", "profile_id", "TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_resume_profiles_profile ON resume_profiles(profile_id)");
+    ensureColumn(db, "crawl_runs", "profile_id", "TEXT");
+    ensureColumn(db, "crawl_runs", "job_id", "TEXT"); // autopilot runs belong to a posting
+    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_profile ON jobs(profile_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_companies_profile ON companies(profile_id)");
+    // Deliberately NOT unique. Two profiles may hold the same posting — that is the
+    // chosen model — and within one profile upsertJobs already guarantees one row per
+    // url_key. A unique index would add nothing there and take something away: it
+    // makes the legacy-duplicate state unrepresentable, and installs from before
+    // url_key existed still carry it. On those, creating the index throws, this catch
+    // swallows it, and the result is no enforcement and no warning — while the fold
+    // that exists to repair them can no longer run either.
+    //
+    // Application code can heal a duplicate. An index can only refuse to admit one.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_profile_url_key ON jobs(profile_id, url_key)");
+
+    const have = db.prepare("SELECT count(*) AS n FROM profiles").get() as { n: number };
+    if (!have.n) {
+      const get = (k: string) =>
+        (db.prepare("SELECT value FROM settings WHERE key=?").get(k) as { value?: string } | undefined)?.value || "";
+      const field = get("profile_field") || "software";
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO profiles (id, name, field, location, stack, active, sort_order, created_at, updated_at)
+         VALUES ('default', ?, ?, ?, ?, 1, 0, ?, ?)`
+      ).run(get("profile_stack") ? "My search" : "My search", field, get("profile_location"), get("profile_stack"), now, now);
+    }
+  } catch {}
+
+  // Re-key jobs whose url_key was computed before the path/query rule, and fold the
+  // pairs that split. Consensys arrived as both
+  //   consensys.io/open-roles/8138475?gh_jid=8138475
+  //   consensys.io/open-roles/8138475
+  // on different days — one posting, two keys, so a job already at screening came back
+  // as a new one. Fixing urlKey stops it recurring; this repairs what it already did.
+  //
+  // Guarded by a marker so it runs once. It merges rows, and merging is not something
+  // to redo on every boot.
+  try {
+    const done = db.prepare("SELECT value FROM settings WHERE key='rekeyed_url_query'").get() as
+      | { value?: string }
+      | undefined;
+    if (!done?.value) {
+      const rows = db.prepare("SELECT id, apply_url, url_key FROM jobs").all() as {
+        id: string;
+        apply_url: string;
+        url_key: string | null;
+      }[];
+      const set = db.prepare("UPDATE jobs SET url_key=? WHERE id=?");
+      const byKey = new Map<string, string>();
+      const merges: [string, string][] = [];
+      for (const r of rows) {
+        const k = urlKey(String(r.apply_url || ""));
+        if (!k) continue;
+        if (k !== r.url_key) set.run(k, String(r.id));
+        const seen = byKey.get(k);
+        if (seen) merges.push([seen, String(r.id)]);
+        else byKey.set(k, String(r.id));
+      }
+      db.prepare("INSERT INTO settings (key,value) VALUES ('rekeyed_url_query','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
+      if (merges.length) {
+        // done through the same fold the crawl uses, so the row that carries the
+        // application wins and its children come with it
+        global.__ledgerPendingFolds = merges;
+      }
+    }
+  } catch {}
+
   // company-experience metadata (a company scan = ONE experience entry, not N projects)
   for (const t of ["kb_items", "kb_sources"]) {
     try { ensureColumn(db, t, "role", "TEXT"); } catch {}

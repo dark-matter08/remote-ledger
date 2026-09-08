@@ -10,6 +10,7 @@
 // /knowledge appended it to whichever profile happened to be default, with no
 // selection and no preview. This makes it something you drive.
 import { getDb } from "../sqlite.server";
+import { profileKbIds } from "../profiles.server";
 import { getProfile, getDefaultProfile, saveProfile, listProfiles } from "./profiles.server";
 import type { Resume, ResumeExperience, ResumeProject } from "./types";
 
@@ -39,9 +40,19 @@ const safeTags = (raw: unknown): string[] => {
  * Everything in the KB that could go on a résumé, with the bullets already drafted
  * for it. Dismissed bullets are excluded: you already said no to those.
  */
-export function kbBuildSources(): KbBuildSource[] {
+/**
+ * The knowledge base, optionally narrowed to what one profile draws on.
+ *
+ * The base itself is shared across profiles — it is what you have done, and that does
+ * not change with the kind of role you are chasing. A profile that has curated a
+ * selection sees only that; one that has not sees everything, which is the right
+ * default for a profile you just made.
+ */
+export function kbBuildSources(profileId?: string): KbBuildSource[] {
   const db = getDb();
-  const items = db.prepare("SELECT * FROM kb_items ORDER BY updated_at DESC").all() as any[];
+  const chosen = profileId ? new Set(profileKbIds(profileId)) : null;
+  const all = db.prepare("SELECT * FROM kb_items ORDER BY updated_at DESC").all() as any[];
+  const items = chosen && chosen.size ? all.filter((i) => chosen.has(Number(i.id))) : all;
   const bulletsFor = db.prepare(
     "SELECT bullet FROM kb_suggestions WHERE item_id=? AND status <> 'dismissed' ORDER BY status='accepted' DESC, id"
   );
@@ -232,11 +243,12 @@ function tokens(s: string): Set<string> {
  */
 export function rankKbForJob(
   jobText: string,
-  limit = 6
+  limit = 6,
+  profileId?: string
 ): { source: KbBuildSource; score: number }[] {
   const jd = tokens(jobText);
   if (!jd.size) return [];
-  const scored = kbBuildSources().map((source) => {
+  const scored = kbBuildSources(profileId).map((source) => {
     // plain, explicit overlap counts — nothing here should need debugging later
     let score = 0;
     for (const t of source.tags) for (const w of tokens(t)) if (jd.has(w)) score += 3;

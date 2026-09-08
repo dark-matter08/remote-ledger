@@ -1898,8 +1898,16 @@ test("job identity: a posting is its url, not its title", async () => {
     urlKey("https://jobot.com/details/software-engineer/ecab52b501?utm_source=DigestAlert"),
     urlKey("https://JOBOT.com/details/software-engineer/ecab52b501")
   );
-  // …but a query id is part of the address on some boards, so it is kept
-  assert.ok(urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475")!.includes("gh_jid=8138475"));
+  // A query id is part of the address on boards that have no id in the path, so it is
+  // kept there — but NOT when the path already names the posting. This example used to
+  // assert the opposite, and that is exactly what split Consensys into two rows: the
+  // same job arrived with and without the ?gh_jid repeat and became two keys, so one
+  // already at screening came back as new.
+  assert.equal(
+    urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475"),
+    urlKey("https://consensys.io/open-roles/8138475")
+  );
+  assert.ok(urlKey("https://jobs.example.com/apply?gh_jid=449912")!.includes("gh_jid=449912"));
   assert.notEqual(
     urlKey("https://job-boards.greenhouse.io/x/jobs/7673273003"),
     urlKey("https://job-boards.greenhouse.io/x/jobs/7673273004")
@@ -2358,11 +2366,14 @@ test("stopping a crawl lets the next one start", async () => {
   // had already stopped went on refusing the next one.
   const guard = src.slice(src.indexOf("export function isCrawlRunning"));
   const guardBody = guard.slice(0, guard.indexOf("\n}"));
-  assert.match(guardBody, /controllers\.size/, "the guard must count live runs, not a flag beside them");
-  assert.ok(
-    !/\brunning\b\s*\|\|/.test(guardBody),
-    "a separate boolean drifts from the map; that drift is the bug"
-  );
+  // The guard asks the run record, which the Stop button writes to directly — so a
+  // stopped crawl stops blocking the moment it is stopped. It must NOT be a flag kept
+  // alongside: that is what drifted, and the drift was the bug.
+  assert.match(guardBody, /activeCrawl\(/, "the guard must ask the runs, not a flag beside them");
+  assert.ok(!/\brunning\b\s*\|\|/.test(guardBody), "a separate boolean drifts from the truth");
+  // and it is per profile: two searches on two schedules, so one crawling must not
+  // grey out the other's button
+  assert.match(guardBody, /profileId|scope/, "the guard must be scoped to one profile");
 
   // and the abort has to take effect at once, not when the agent finally notices
   const abort = src.slice(src.indexOf("export function abortCrawl"));
@@ -2385,4 +2396,305 @@ test("stopping a crawl lets the next one start", async () => {
     /stopped by user/,
     "and record it as stopped rather than leaving the Stop button's note to be overwritten"
   );
+});
+
+test("profiles: a second line of work no longer overwrites the first", async () => {
+  const { listProfiles, createProfile, updateProfile, deleteProfile, profileSlug } = await import(
+    "../app/profiles.server"
+  );
+  const { getDb } = await import("../app/sqlite.server");
+
+  // The whole point: there used to be one search held in three settings rows, so
+  // starting a second meant destroying the first. These have to coexist.
+  const eng = createProfile({ name: "Engineering", field: "software", stack: "TypeScript" });
+  const design = createProfile({ name: "Design", field: "design", stack: "Figma" });
+  assert.notEqual(eng.id, design.id);
+  assert.equal(createProfile({ name: "Design", field: "design" }).id, "design-2", "a repeated name gets its own id");
+
+  const still = listProfiles().find((p) => p.id === eng.id)!;
+  assert.equal(still.stack, "TypeScript", "creating the second must not have touched the first");
+
+  // inactive is kept, just not searched
+  updateProfile(design.id, { active: 0 });
+  assert.equal(listProfiles().find((p) => p.id === design.id)!.active, 0);
+  assert.ok(listProfiles().some((p) => p.id === design.id), "deactivating is not deleting");
+
+  // A posting may exist under two profiles — that is the chosen model — but never
+  // twice within one. Asserted through upsertJobs rather than a unique index: the
+  // index would make the legacy-duplicate state unrepresentable, and the fold that
+  // repairs installs carrying it could then never run.
+  const { upsertJobs } = await import("../app/db.server");
+  const db = getDb();
+  const posting = [
+    {
+      company: "Profilecorp",
+      role: "Backend Engineer",
+      category: "high",
+      fit_score: 80,
+      apply_url: "https://boards.greenhouse.io/profilecorp/jobs/99001122",
+    },
+  ];
+  const countIn = (p: string) =>
+    (db.prepare("SELECT count(*) AS n FROM jobs WHERE profile_id=?").get(p) as { n: number }).n;
+
+  assert.equal(upsertJobs(posting, undefined, eng.id).inserted, 1);
+  assert.equal(upsertJobs(posting, undefined, design.id).inserted, 1, "the other profile collects it too");
+  assert.equal(countIn(eng.id), 1);
+  assert.equal(countIn(design.id), 1);
+
+  // the same posting again, reworded — updates, never mints a second row
+  const reworded = [{ ...posting[0], role: "Backend Engineer (Remote)" }];
+  const again = upsertJobs(reworded, undefined, eng.id);
+  assert.equal(again.inserted, 0, "a reworded title is not a new posting");
+  assert.equal(countIn(eng.id), 1, "still one row in this profile");
+  assert.equal(countIn(design.id), 1, "and the other profile was not touched");
+
+  // deleting takes its postings with it, and leaves the other profile's copy alone
+  const removed = deleteProfile(design.id, { deleteJobs: true });
+  assert.equal(removed.jobs, 1, "deleting a profile takes its postings with it");
+  assert.equal(
+    (db.prepare("SELECT count(*) AS n FROM jobs WHERE profile_id=?").get(eng.id) as { n: number }).n,
+    1,
+    "the other profile's copy survives"
+  );
+
+  assert.equal(profileSlug("Data / ML!!", []), "data-ml");
+  deleteProfile(eng.id, { deleteJobs: true });
+  deleteProfile("design-2", { deleteJobs: true });
+});
+
+test("export carries your work and never your keys", async () => {
+  const { exportData, readExport, importData, EXPORT_VERSION, OMITTED } = await import(
+    "../app/services/portability.server"
+  );
+  const { gzipSync } = await import("node:zlib");
+  const { setSecret } = await import("../app/secrets.server");
+
+  // A real secret in the store. The export must not contain it — and not because
+  // something downstream strips it: the secrets table is never read.
+  setSecret("anthropic_api_key", "sk-ant-do-not-export-me-0123456789");
+
+  const dump = exportData();
+  const text = JSON.stringify(dump);
+  assert.ok(!("secrets" in dump.tables), "no secrets table in the file");
+  assert.ok(!text.includes("sk-ant-do-not-export-me"), "and the value is nowhere else in it either");
+  assert.ok(OMITTED.secrets, "the file says what it left out, so the other machine knows to re-enter it");
+
+  // An email account travels without its password rather than being dropped, so the
+  // account is there to re-authorise instead of being silently missing.
+  for (const a of dump.tables.email_accounts || []) assert.equal(a.password, null);
+
+  // A file from a newer version is refused, not guessed at. Writing columns this
+  // code has never seen is how an import corrupts a database instead of declining.
+  assert.throws(
+    () => readExport(Buffer.from(JSON.stringify({ ...dump, version: EXPORT_VERSION + 1 }))),
+    /newer version/i
+  );
+  assert.throws(() => readExport(Buffer.from(JSON.stringify({ hello: "world" }))), /not a Remote Ledger export/i);
+
+  // gzip and plain JSON both read
+  assert.equal(readExport(gzipSync(Buffer.from(text))).version, EXPORT_VERSION);
+
+  // and a merge is repeatable: the second run adds nothing
+  const again = importData(dump, "merge");
+  assert.equal(
+    Object.values(again.inserted).reduce((a, b) => a + b, 0),
+    0,
+    "importing what is already here must be a no-op"
+  );
+});
+
+test("autopilot skips what is done and never submits", async () => {
+  const { STEPS } = await import("../app/services/autopilot.server");
+  const { readFileSync } = await import("node:fs");
+
+  const ids = STEPS.map((s) => s.id);
+  assert.deepEqual(ids, ["match", "build", "tailor", "cover", "form", "answers"], "the guided order, in order");
+
+  // Re-running on a job you part-did by hand must not pay to redo it. Every step that
+  // produces something durable has to be able to say "already done".
+  for (const id of ["match", "build", "tailor", "cover"]) {
+    const step = STEPS.find((s) => s.id === id)!;
+    assert.equal(typeof step.done, "function", `${id} must declare when it can be skipped`);
+  }
+  // Reading the form is the exception, deliberately: it costs no model call and a form
+  // can change under you between runs.
+  assert.equal(STEPS.find((s) => s.id === "form")!.done({} as never), false);
+
+  // The promise in the README. Nothing in here may click a submit button — if a step
+  // is ever added that does, this is the test that should stop it.
+  const src = readFileSync("app/services/autopilot.server.ts", "utf8");
+  assert.ok(!/\.click\(|submit\(\)|type="submit"/.test(src), "autopilot must never submit an application");
+  assert.match(src, /stops before submitting/i, "and must say so where the next person will read it");
+});
+
+test("a new profile starts with the whole knowledge base, and can be narrowed", async () => {
+  const { createProfile, deleteProfile, profileKbIds, setProfileKb, copyProfileKb } = await import(
+    "../app/profiles.server"
+  );
+  const { kbBuildSources } = await import("../app/resume/build.server");
+  const { getDb } = await import("../app/sqlite.server");
+
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO kb_items (kind,title,summary,tags,created_at,updated_at) VALUES ('project','Ledger','built a thing','[]','n','n')"
+  ).run();
+  db.prepare(
+    "INSERT INTO kb_items (kind,title,summary,tags,created_at,updated_at) VALUES ('project','Poster','drew a thing','[]','n','n')"
+  ).run();
+  const all = kbBuildSources();
+  assert.ok(all.length >= 2);
+
+  // The base is shared. This is the thing worth asserting: making a profile does not
+  // mean rebuilding what you have done, and an uncurated profile sees all of it.
+  const fresh = createProfile({ name: "KB Test", field: "software" });
+  assert.deepEqual(profileKbIds(fresh.id), [], "a new profile has no selection…");
+  assert.equal(kbBuildSources(fresh.id).length, all.length, "…which means everything, not nothing");
+
+  // narrowing it
+  setProfileKb(fresh.id, [all[0].id]);
+  assert.equal(kbBuildSources(fresh.id).length, 1);
+  assert.equal(kbBuildSources().length, all.length, "and the shared base is untouched");
+
+  // and starting another from it rather than picking again
+  const second = createProfile({ name: "KB Test Two", field: "design" });
+  assert.equal(copyProfileKb(fresh.id, second.id), 1);
+  assert.deepEqual(profileKbIds(second.id), [all[0].id]);
+
+  // clearing goes back to "all", not "none"
+  setProfileKb(fresh.id, []);
+  assert.equal(kbBuildSources(fresh.id).length, all.length);
+
+  deleteProfile(fresh.id, { deleteJobs: true });
+  deleteProfile(second.id, { deleteJobs: true });
+});
+
+test("a posting is one job whether or not the link repeats its id in the query", async () => {
+  const { urlKey } = await import("../app/job-identity");
+
+  // Consensys arrived both ways on different days. Two keys meant two rows, so a job
+  // already at screening came back under "new jobs" — which is what this fixes.
+  assert.equal(
+    urlKey("https://consensys.io/open-roles/8138475?gh_jid=8138475"),
+    urlKey("https://consensys.io/open-roles/8138475")
+  );
+
+  // The query is still kept where it is the only thing carrying an id: that is the
+  // case the original rule was written for, and dropping it there would merge every
+  // posting on the board into one.
+  assert.equal(urlKey("https://jobs.example.com/apply?gh_jid=449912"), "jobs.example.com/apply?gh_jid=449912");
+  assert.notEqual(
+    urlKey("https://jobs.example.com/apply?gh_jid=449912"),
+    urlKey("https://jobs.example.com/apply?gh_jid=778001")
+  );
+
+  // and a page with no id at all still refuses to be an identity
+  assert.equal(urlKey("https://example.com/careers"), null);
+});
+
+test("mail scanned before you marked the job applied is not lost", async () => {
+  const { proposedStage, reconsiderRecentlyApplied } = await import("../app/services/email.server");
+  const { getDb, setSetting } = await import("../app/sqlite.server");
+  const { upsertJobs, setStage } = await import("../app/db.server");
+
+  // A receipt normally says "you applied" — it is often the first thing that tells the
+  // ledger an application exists. Against a job you have already marked applied it means
+  // something else: the company has acknowledged it.
+  assert.equal(proposedStage("receipt", "saved"), "applied");
+  assert.equal(proposedStage("receipt", "applied"), "screening");
+  assert.equal(proposedStage("recruiter", "applied"), "screening");
+  assert.equal(proposedStage("alert", "applied"), null, "a job alert is not a stage change");
+
+  const db = getDb();
+  upsertJobs(
+    [
+      {
+        company: "Racecorp",
+        role: "Engineer",
+        category: "high",
+        fit_score: 70,
+        apply_url: "https://boards.greenhouse.io/racecorp/jobs/5150001",
+      },
+    ],
+    undefined,
+    "default"
+  );
+  const jobId = (db.prepare("SELECT id FROM jobs WHERE company='Racecorp'").get() as { id: string }).id;
+
+  // the scan wins the race: mail read and held while the job is still just saved
+  db.prepare(
+    `INSERT INTO email_messages (account_id, uid, from_addr, subject, job_id, category, confidence,
+       proposed_stage, status, created_at)
+     VALUES (1, 991, 'careers@racecorp.com', 'We received your application', ?, 'receipt', 90, 'applied', 'deferred', 'n')`
+  ).run(jobId);
+
+  // ...then you mark it applied. Nothing re-opens that mail on its own.
+  setSetting("last_email_scan", "2000-01-01T00:00:00.000Z");
+  setStage(jobId, "applied");
+
+  const r = reconsiderRecentlyApplied();
+  assert.ok(r.jobs >= 1, "the job it was applied to is in the window");
+  const after = db.prepare("SELECT stage FROM applications WHERE job_id=?").get(jobId) as { stage: string };
+  assert.equal(after.stage, "screening", "the held receipt now means the company has acknowledged it");
+
+  db.prepare("DELETE FROM email_messages WHERE uid=991").run();
+  db.prepare("DELETE FROM jobs WHERE id=?").run(jobId);
+});
+
+test("a profile is a workspace: its own résumés, apply history and mail", async () => {
+  const { createProfile, deleteProfile, setCurrentProfile } = await import("../app/profiles.server");
+  const { listProfiles: listResumes, saveProfile } = await import("../app/resume/profiles.server");
+  const { listSessions, createSession } = await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+
+  const a = createProfile({ name: "Workspace A", field: "software" });
+  const b = createProfile({ name: "Workspace B", field: "design" });
+
+  setCurrentProfile(a.id);
+  saveProfile({ name: "A's résumé", data: { name: "x", contact: {}, experience: [] } as never });
+  createSession("assist", {});
+
+  // B is a different workspace, not a different view of the same one
+  setCurrentProfile(b.id);
+  assert.equal(listResumes().length, 0, "B has no résumés of its own yet");
+  assert.equal(listSessions().length, 0, "and none of A's apply history");
+
+  // …and nothing was moved or lost getting there
+  setCurrentProfile(a.id);
+  assert.equal(listResumes().length, 1);
+  assert.equal(listSessions().length, 1);
+
+  // Mail with no matched job belongs to no search yet, so it must appear under both —
+  // hiding it until it matches is how a reply goes unseen.
+  const { pendingEmails } = await import("../app/services/email.server");
+  // A real shared mailbox, because a message now has to belong to one the profile can
+  // see — an account bound to another profile takes its mail with it.
+  const acctId = Number(
+    getDb()
+      .prepare(
+        `INSERT INTO email_accounts (label, host, port, secure, username, mailbox, interval_min, created_at, profile_id)
+         VALUES ('shared', 'imap.example.com', 993, 1, 'me@example.com', 'INBOX', 0, 'n', NULL)`
+      )
+      .run().lastInsertRowid
+  );
+  getDb()
+    .prepare(
+      `INSERT INTO email_messages (account_id, uid, from_addr, subject, job_id, category, confidence, status, created_at)
+       VALUES (?, 4242, 'someone@example.com', 'Unmatched', NULL, 'recruiter', 50, 'new', 'n')`
+    )
+    .run(acctId);
+  const inA = pendingEmails(a.id).some((m: any) => m.uid === 4242);
+  const inB = pendingEmails(b.id).some((m: any) => m.uid === 4242);
+  assert.ok(inA && inB, "unmatched mail is visible from every profile");
+
+  // and binding that mailbox to A takes its mail out of B, which is the point of binding
+  const { setAccountProfile } = await import("../app/services/email.server");
+  setAccountProfile(acctId, a.id);
+  assert.ok(pendingEmails(a.id).some((m: any) => m.uid === 4242), "still visible where it belongs");
+  assert.ok(!pendingEmails(b.id).some((m: any) => m.uid === 4242), "and gone from the other profile");
+
+  getDb().prepare("DELETE FROM email_messages WHERE uid=4242").run();
+  getDb().prepare("DELETE FROM email_accounts WHERE id=?").run(acctId);
+  deleteProfile(a.id, { deleteJobs: true });
+  deleteProfile(b.id, { deleteJobs: true });
 });

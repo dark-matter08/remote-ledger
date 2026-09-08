@@ -1,5 +1,12 @@
 // Base resume profiles: extract text from an uploaded PDF, parse to structured
 // JSON with the runner, and CRUD them in resume_profiles.
+import { currentProfile } from "../profiles.server";
+
+/** Which search a posting belongs to, so work made for it is filed with it. */
+function jobProfile(jobId: string): string {
+  const r = getDb().prepare("SELECT profile_id FROM jobs WHERE id=?").get(jobId) as { profile_id?: string } | undefined;
+  return r?.profile_id || currentProfile().id;
+}
 import { getDb } from "../sqlite.server";
 import { runLLM } from "../llm/runner.server";
 import { RESUME_JSON_SHAPE, emptyResume, type Resume } from "./types";
@@ -47,8 +54,13 @@ function rowToProfile(row: any): ResumeProfile {
   return { ...row, data: JSON.parse(row.data_json) };
 }
 
-export function listProfiles(): ResumeProfile[] {
-  return (getDb().prepare("SELECT * FROM resume_profiles ORDER BY is_default DESC, updated_at DESC").all() as any[]).map(
+export function listProfiles(profileId?: string): ResumeProfile[] {
+  const scope = profileId ?? currentProfile().id;
+  return (
+    getDb()
+      .prepare("SELECT * FROM resume_profiles WHERE profile_id=? ORDER BY is_default DESC, updated_at DESC")
+      .all(scope) as any[]
+  ).map(
     rowToProfile
   );
 }
@@ -58,10 +70,15 @@ export function getProfile(id: string): ResumeProfile | null {
   return row ? rowToProfile(row) : null;
 }
 
-export function getDefaultProfile(): ResumeProfile | null {
+export function getDefaultProfile(profileId?: string): ResumeProfile | null {
+  const scope = profileId ?? currentProfile().id;
   const row =
-    (getDb().prepare("SELECT * FROM resume_profiles WHERE is_default=1").get() as any) ||
-    (getDb().prepare("SELECT * FROM resume_profiles ORDER BY updated_at DESC LIMIT 1").get() as any);
+    (getDb().prepare("SELECT * FROM resume_profiles WHERE is_default=1 AND profile_id=?").get(scope) as any) ||
+    (getDb().prepare("SELECT * FROM resume_profiles WHERE profile_id=? ORDER BY updated_at DESC LIMIT 1").get(scope) as any) ||
+    // A profile with no résumé of its own falls back to the default one rather than to
+    // nothing: a new search should be able to tailor on day one, before you have made
+    // it a résumé of its own.
+    (getDb().prepare("SELECT * FROM resume_profiles WHERE is_default=1").get() as any);
   return row ? rowToProfile(row) : null;
 }
 
@@ -90,8 +107,21 @@ export function saveProfile(opts: {
   } else {
     const count = (db.prepare("SELECT COUNT(*) n FROM resume_profiles").get() as any).n;
     db.prepare(
-      "INSERT INTO resume_profiles (id,name,is_default,data_json,raw_text,source_file,built_for_job_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)"
-    ).run(id, opts.name, count === 0 || opts.makeDefault ? 1 : 0, JSON.stringify(opts.data), opts.raw_text ?? null, opts.source_file ?? null, opts.builtForJobId ?? null, now, now);
+      "INSERT INTO resume_profiles (id,name,is_default,data_json,raw_text,source_file,built_for_job_id,created_at,updated_at,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?)"
+    ).run(
+      id,
+      opts.name,
+      count === 0 || opts.makeDefault ? 1 : 0,
+      JSON.stringify(opts.data),
+      opts.raw_text ?? null,
+      opts.source_file ?? null,
+      opts.builtForJobId ?? null,
+      now,
+      now,
+      // a résumé built for a posting belongs to that posting's search, not to whichever
+      // profile happened to be selected when the guided flow ran
+      opts.builtForJobId ? jobProfile(opts.builtForJobId) : currentProfile().id
+    );
   }
   if (opts.makeDefault) setDefaultProfile(id);
   return id;

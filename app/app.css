@@ -569,7 +569,12 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 .sb-item.active { color: var(--vermillion); border-left-color: var(--vermillion); }
 .sb-ico { flex: none; width: 22px; height: 20px; display: grid; place-items: center; }
 .sb-ico svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.sb-label { opacity: 0; transition: opacity 0.15s; }
+/* A profile can reasonably be called "Nde Lucien - Engineer", and the rail is a fixed
+   width — so the label has to end in an ellipsis rather than run under its own edge.
+   min-width:0 on both is the part that actually does it: a flex child will not shrink
+   below its content without it, so overflow alone would have changed nothing. */
+.sb-label { opacity: 0; transition: opacity 0.15s; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-item { min-width: 0; }
 .sidebar.pinned .sb-label { opacity: 1; }
 .sb-bottom { border-top: 1.5px solid var(--rule); padding: 8px; }
 @media (max-width: 640px) { body { padding-left: 78px; } .sidebar { width: 52px; } }
@@ -933,6 +938,109 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 }
 .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
 /* the release this copy is on — quiet, but findable without opening a tab */
+/* one knowledge-base entry, folded. The summary is the scannable line; opening one
+   gives you the summary text, its tags, the context questions and the remove control. */
+.kb-entry { border: 1px solid var(--rule-faint); margin-top: 8px; background: var(--paper); }
+.kb-entry > summary {
+  cursor: pointer; list-style: none; padding: 11px 14px;
+  display: flex; align-items: baseline; gap: 10px; min-width: 0;
+}
+.kb-entry > summary::-webkit-details-marker { display: none; }
+.kb-entry > summary::before { content: "▸"; color: var(--vermillion); flex: none; }
+.kb-entry[open] > summary::before { content: "▾"; }
+.kb-entry > summary:hover { background: var(--paper-2); }
+.kb-entry > summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.kb-entry-src, .kb-entry-tags {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink-faint);
+  white-space: nowrap;
+}
+.kb-entry-tags { margin-left: auto; }
+.kb-entry-body { padding: 14px; border-top: 1px solid var(--rule-faint); }
+.kb-entry-body > .hint:first-child { margin-top: 0; }
+.kb-entry-body .kb-tags { margin: 12px 0; }
+
+/* the per-profile knowledge-base selection, folded away until wanted */
+.profile-kb { margin-top: 12px; border-top: 1px solid var(--rule-faint); padding-top: 10px; }
+.profile-kb > summary {
+  cursor: pointer; font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--ink-faint); list-style: none;
+}
+.profile-kb > summary::-webkit-details-marker { display: none; }
+.profile-kb > summary::before { content: "▸ "; color: var(--vermillion); }
+.profile-kb[open] > summary::before { content: "▾ "; }
+.profile-kb > summary:hover { color: var(--vermillion); }
+.kb-pick { max-height: 240px; overflow-y: auto; border: 1px solid var(--rule-faint); padding: 8px; margin: 10px 0; }
+.kb-pick-item { display: flex; align-items: center; gap: 9px; padding: 5px 4px; font-size: 13.5px; }
+.kb-pick-item:hover { background: var(--paper-2); }
+.kb-pick-kind {
+  flex: none; font-family: var(--mono); font-size: 8.5px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--vermillion); border: 1px solid var(--rule-faint); padding: 1px 5px;
+}
+.kb-pick-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-kb-copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+
+/* autopilot sits above the steps it runs, so it reads as "or do all of this" */
+.autopilot { border-left: 3px solid var(--vermillion); }
+.autopilot-done { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule-faint); }
+
+/* one profile per block: each row is its own form, so saving one cannot submit another */
+.profile-row { display: flex; gap: 18px; align-items: flex-start; padding: 18px 0 0; }
+.profile-block { border-bottom: 1px solid var(--rule-faint); }
+.profile-block:last-child { border-bottom: 0; }
+.profile-edit { flex: 1; min-width: 0; }
+.profile-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.profile-acts { display: flex; flex-direction: column; gap: 8px; flex: none; padding-top: 4px; }
+
+/* which search you are looking at. Only rendered when there is more than one. */
+/* the profile switcher in the rail. Shown even with one profile, worded as an
+   invitation — a control that only appears once you know about it teaches nobody. */
+/* The switcher is one row in the bottom rail that opens a menu, so the number of
+   profiles you keep costs the sidebar no height. It pops upward because it sits at
+   the foot of a full-height rail and there is nothing below it to open into. */
+.sb-prof-menu { position: relative; }
+/* A long profile name is normal — "Nde Lucien — Engineering" is a reasonable thing to
+   call one — and it was running out of the menu's right edge. Truncate rather than
+   wrap: these rows are one line each and the full name is in the title attribute. */
+.sb-prof-pop .sb-prof { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sb-prof-pop .sb-prof > span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.sb-prof-pop {
+  position: fixed; transform: translateY(-100%); z-index: 60; min-width: 210px; max-width: 280px;
+  background: var(--paper); border: 1.5px solid var(--ink); box-shadow: 4px 4px 0 var(--rule-faint);
+  padding: 6px 0;
+}
+.sb-prof-pop-title {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--vermillion); padding: 6px 12px 8px;
+}
+.sb-prof {
+  display: flex; align-items: center; gap: 10px; padding: 7px 12px; text-decoration: none;
+  color: var(--ink-soft); font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  white-space: nowrap; overflow: hidden;
+}
+.sb-prof:hover { color: var(--vermillion); background: var(--paper-2); }
+.sb-prof.on { color: var(--ink); background: var(--paper-2); }
+.sb-prof.paused .sb-label { opacity: .5; text-decoration: line-through; }
+.sb-prof-dot {
+  flex: none; width: 20px; height: 20px; border: 1.5px solid var(--rule); background: transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 10px; line-height: 1; color: var(--ink-soft);
+}
+.sb-prof.on .sb-prof-dot { background: var(--vermillion); border-color: var(--vermillion); color: var(--paper); }
+.sb-prof-dot.all { border-style: dashed; }
+.sb-prof-dot.plus { border-style: dotted; color: var(--ink-faint); }
+.sb-prof.add { color: var(--ink-faint); }
+
+.profile-switch { display: flex; flex-wrap: wrap; gap: 0; justify-content: center; margin: 14px 0 0; }
+.profile-switch .ps {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  padding: 7px 15px; color: var(--ink-soft); text-decoration: none;
+  border: 1px solid var(--rule); margin-right: -1px; background: var(--paper);
+}
+.profile-switch .ps:hover { color: var(--vermillion); }
+.profile-switch .ps.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
 .page-head .version {
   display: inline-block; margin-top: 10px; font-family: var(--mono); font-size: 10px;
   letter-spacing: .14em; color: var(--ink-faint);

@@ -20,6 +20,7 @@ import {
   activeCrawl,
   blocklistPrompt,
 } from "../db.server";
+import { currentProfile, activeProfiles, getProfile, touchProfileCrawled, type Profile } from "../profiles.server";
 import { WEB_TOOLS, executeTool, FetchLedger } from "../llm/tools.server";
 import { searchAvailable } from "./search.server";
 import { scrapeJds, verifyJobs, sanitizeJdHtml } from "./scrape.server";
@@ -197,16 +198,38 @@ export function abortCrawl(runId: number): boolean {
   return false;
 }
 
+/**
+ * One run searches for one profile.
+ *
+ * It used to search for all of them at once and divide the budget, which was the wrong
+ * shape: a profile is a workspace with its own postings, résumés, mail and apply
+ * history, so its crawl shell narrating another profile's search made no sense to read
+ * and no sense to reason about. Each profile gets its own run, its own log, and its own
+ * place in the schedule.
+ *
+ * That also returns the budget to what it was configured to be, per search, rather than
+ * a fraction of it. Two profiles cost two crawls — which is the honest price of looking
+ * for two things, and is now visibly two runs rather than one run doing half of each.
+ */
+async function executeOne(runId: number, type: CrawlType, only?: string): Promise<CrawlResult> {
+  const profile = (only ? getProfile(only) : null) || currentProfile();
+  touchProfileCrawled(profile.id);
+  try {
+    updateCrawlRun(runId, { profile_id: profile.id } as never);
+  } catch {}
+  return execute(runId, type, profile);
+}
+
 // public: synchronous (scheduler / CLI)
-export async function runCrawl(type: CrawlType = "find", trigger = "cli"): Promise<CrawlResult> {
+export async function runCrawl(type: CrawlType = "find", trigger = "cli", profileId?: string): Promise<CrawlResult> {
   const runId = createCrawlRun(type, trigger);
-  return execute(runId, type);
+  return executeOne(runId, type, profileId);
 }
 
 // public: fire-and-forget (UI) — returns the run id immediately
-export function startCrawl(type: CrawlType = "find", trigger = "manual"): number {
+export function startCrawl(type: CrawlType = "find", trigger = "manual", profileId?: string): number {
   const runId = createCrawlRun(type, trigger);
-  void execute(runId, type).catch((e: any) => {
+  void executeOne(runId, type, profileId).catch((e: any) => {
     try {
       crawlLog(runId, "error", String(e?.message || e));
       updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString() });
@@ -215,8 +238,16 @@ export function startCrawl(type: CrawlType = "find", trigger = "manual"): number
   return runId;
 }
 
-export function isCrawlRunning(): boolean {
-  return controllers.size > 0 || !!activeCrawl();
+/**
+ * Is a crawl running for this profile?
+ *
+ * Scoped, because profiles are separate searches on separate schedules: one crawling
+ * must not grey out another's button. controllers is keyed by run, so it is asked about
+ * this profile's run rather than any run at all.
+ */
+export function isCrawlRunning(profileId?: string): boolean {
+  const scope = profileId ?? currentProfile().id;
+  return !!activeCrawl(scope);
 }
 
 // Wrap any short LLM task as a crawl_run so it's monitorable in the Crawl Shell
@@ -273,10 +304,11 @@ function remoteEligible(p: AtsPosting): boolean {
  * same pool were discarded. The profile was not being weighted lightly; outside
  * software it was not being read at all.
  */
-function searchFor(): { field: JobField | null; tokens: string[] } {
+function searchFor(profile?: Profile): { field: JobField | null; tokens: string[] } {
+  const p = profile || currentProfile();
   return {
-    field: fieldById(getSetting("profile_field")),
-    tokens: keywordTokens(getSetting("profile_stack") || ""),
+    field: fieldById(p.field),
+    tokens: keywordTokens(p.stack || ""),
   };
 }
 
@@ -392,9 +424,10 @@ async function findViaFeeds(
   loc: string,
   stack: string,
   signal: AbortSignal,
-  L: (kind: string, text: string) => void
+  L: (kind: string, text: string) => void,
+  profile: Profile = currentProfile()
 ): Promise<{ jobs: any[]; received: number; errors: number }> {
-  const { field, tokens } = searchFor();
+  const { field, tokens } = searchFor(profile);
   const fieldWords = fieldLabel(field?.id);
   let errors = 0;
   L("step", field
@@ -441,13 +474,14 @@ async function findViaFeeds(
 
 async function runCareersCrawl(
   signal: AbortSignal,
-  L: (kind: string, text: string) => void
+  L: (kind: string, text: string) => void,
+  profile: Profile = currentProfile()
 ): Promise<{ received: number; inserted: number; updated: number; errors: number }> {
-  const loc = getSetting("profile_location") || "remote";
-  const stack = getSetting("profile_stack") || "software engineering";
-  const { field, tokens } = searchFor();
+  const loc = profile.location || "remote";
+  const stack = profile.stack || "software engineering";
+  const { field, tokens } = searchFor(profile);
   const fieldWords = fieldLabel(field?.id);
-  const companies = activeCompanies();
+  const companies = activeCompanies(profile.id);
   const boards = companies.filter((c) => c.ats && c.slug);
   const pages = companies.filter((c) => c.kind !== "board" && !c.ats && c.careers_url);
   // aggregators: mined for OTHER employers' postings, so they need their own rules
@@ -564,7 +598,7 @@ async function runCareersCrawl(
     L("note", "Nothing new cleared the bar this run.");
     return { received, inserted: 0, updated: 0, errors };
   }
-  const res = upsertJobs(scored);
+  const res = upsertJobs(scored, undefined, profile.id);
   for (const e of res.errors.slice(0, 5)) L("error", `Rejected ${e.job}: ${e.error}`);
   if (res.blocked) L("note", `${res.blocked} posting(s) skipped — you trashed them before.`);
 
@@ -718,7 +752,11 @@ async function researchWithTools(
 }
 
 
-async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
+async function execute(
+  runId: number,
+  type: CrawlType,
+  profile: Profile = currentProfile(),
+): Promise<CrawlResult> {
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const now = new Date().toISOString();
   const ac = new AbortController();
@@ -729,8 +767,8 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
     await recordRunner(runId);
 
     if (type === "find" || type === "full" || type === "feeds") {
-      const loc = getSetting("profile_location") || "remote";
-      const stack = getSetting("profile_stack") || "software";
+      const loc = profile.location || "remote";
+      const stack = profile.stack || "software";
       const mode = (getSetting("crawl_mode") || "time") as "time" | "count";
 
       // verified-open roles collected this run, keyed by company--role (dedup across rounds)
@@ -761,7 +799,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           }
         }
         L("reasoning", "Reading the free public job boards — keyless, exact, and nothing in them is imagined. No agent is asked to find anything.");
-        const fed = await findViaFeeds(loc, stack, ac.signal, L);
+        const fed = await findViaFeeds(loc, stack, ac.signal, L, profile);
         totals.received += fed.received;
         totals.errors += fed.errors;
         if (fed.jobs.length) {
@@ -816,7 +854,8 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           L("note", `Stopped with ${collected.size}/${target} after ${maxRounds} round(s) — couldn't verify more open roles right now.`);
       } else {
         // TIME MODE: single research pass bounded by an action budget derived from the timeout.
-        const timeoutMin = Number(getSetting("crawl_timeout_min") || "15") || 15;
+        const configured = Number(getSetting("crawl_timeout_min") || "15") || 15;
+        const timeoutMin = configured;
         const maxActions = actionBudget(timeoutMin);
         L("reasoning", `Target: roles in "${loc}" matching "${stack}" · budget ${timeoutMin} min / ${maxActions} web actions.`);
         L("step", `Invoking research agent (budget ${timeoutMin}m → ${maxActions} actions; hard stop only at ${timeoutMin * 2}m)…`);
@@ -846,7 +885,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
           return { ok: false, runId, ...totals, message: "no verified jobs" };
         }
       } else if (aliveJobs.length) {
-        const res = upsertJobs(aliveJobs, now);
+        const res = upsertJobs(aliveJobs, now, profile.id);
         totals.inserted = res.inserted;
         totals.updated = res.updated;
         totals.errors += res.errors.length;
@@ -870,7 +909,7 @@ async function execute(runId: number, type: CrawlType): Promise<CrawlResult> {
     }
 
     if (type === "careers") {
-      const r = await runCareersCrawl(ac.signal, L);
+      const r = await runCareersCrawl(ac.signal, L, profile);
       totals.received += r.received;
       totals.inserted += r.inserted;
       totals.updated += r.updated;

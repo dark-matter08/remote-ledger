@@ -6,6 +6,7 @@ import { Shell } from "../components/Shell";
 import { getSetting } from "../sqlite.server";
 import { ensureScheduler } from "../services/scheduler.server";
 import { getLedger, updateNotes, setStage, archiveJob, trashJob } from "../db.server";
+import { listProfiles, currentProfile, setCurrentProfile } from "../profiles.server";
 import { TrashDialog } from "../components/TrashDialog";
 import type { BlockScope } from "../trash";
 import { QUICK_STAGES, STAGE_LABEL, type Job, type Stage, type Category } from "../stages";
@@ -17,11 +18,23 @@ export function meta(_: Route.MetaArgs) {
   ];
 }
 
-export async function loader() {
+export async function loader({ request }: Route.LoaderArgs) {
   // first run → onboarding wizard
   if (getSetting("setup_complete") !== "true") throw redirect("/setup");
   ensureScheduler();
-  return { ...getLedger(), location: getSetting("profile_location") || "Remote" };
+  // `all` shows every profile at once. Anything else is one search, and the board is
+  // that search's board — including its own copy of a posting another profile also has.
+  const url = new URL(request.url);
+  const asked = url.searchParams.get("profile");
+  const profiles = listProfiles();
+  const scope = asked === "all" ? null : asked && profiles.some((p) => p.id === asked) ? asked : currentProfile().id;
+  if (scope && scope !== currentProfile().id) setCurrentProfile(scope);
+  return {
+    ...getLedger(scope || undefined),
+    profiles,
+    scope: scope || "all",
+    location: (scope ? profiles.find((p) => p.id === scope)?.location : "") || "Remote",
+  };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -287,6 +300,23 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           </span>
           <span>{data.total} on file{data.newCount > 0 ? ` · ${data.newCount} new` : ""}</span>
         </div>
+
+          {/*
+            Only when there is a choice to make. One profile is the ordinary case, and a
+            switcher with a single option in it is furniture rather than a control.
+          */}
+          {data.profiles.length > 1 && (
+            <div className="profile-switch">
+              {data.profiles.map((p) => (
+                <a key={p.id} href={`/?profile=${p.id}`} className={`ps ${data.scope === p.id ? "on" : ""}`}>
+                  {p.name}
+                </a>
+              ))}
+              <a href="/?profile=all" className={`ps ${data.scope === "all" ? "on" : ""}`}>
+                All
+              </a>
+            </div>
+          )}
         <hr className="rule double" />
       </header>
 

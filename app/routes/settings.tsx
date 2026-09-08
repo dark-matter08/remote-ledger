@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { useState } from "react";
-import { Form, redirect, useNavigation } from "react-router";
+import { Form, redirect, useNavigation, useSearchParams } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { FilePicker } from "../components/FilePicker";
+import { DirPicker } from "../components/DirPicker";
+import { ConfirmForm } from "../components/ConfirmForm";
 import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from "../services/contribute.server";
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
 import { OllamaSetup } from "../components/OllamaSetup";
@@ -16,7 +19,10 @@ import { discoverModels, openRouterShortlist } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
-import { listBackups } from "../services/backup.server";
+import { kbBuildSources } from "../resume/build.server";
+import { listBackups, takeBackup, backupDir, backupKeep, backupEveryHours, writeScheduledExport } from "../services/backup.server";
+import { listProfiles, createProfile, updateProfile, deleteProfile, profileKbIds, setProfileKb, copyProfileKb } from "../profiles.server";
+import { readExport, importData, OMITTED } from "../services/portability.server";
 import { currentVersion } from "../services/updates.server";
 import {
   listCompanies,
@@ -71,6 +77,18 @@ export async function loader() {
   );
   return {
     version: currentVersion(),
+    profiles: listProfiles().map((p) => ({ ...p, kb: profileKbIds(p.id) })),
+    kbItems: kbBuildSources().map((k) => ({ id: k.id, kind: k.kind, title: k.title, tags: k.tags })),
+    backup: {
+      everyHours: backupEveryHours(),
+      keep: backupKeep(),
+      dir: backupDir(),
+      exportDir: getSetting("backup_export_dir") || "",
+    },
+    // through the loader, not imported in the component: a *.server module referenced
+    // from client code drags the whole thing into the browser bundle, and the build
+    // stops rather than shipping it.
+    omitted: Object.values(OMITTED),
     reset: { scopes: resetPreview(), backups: listBackups() },
     companies: listCompanies(),
     community: {
@@ -116,6 +134,92 @@ export async function loader() {
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
+
+  if (intent === "backup-settings") {
+    for (const k of ["backup_every_hours", "backup_keep", "backup_dir", "backup_export_dir"]) {
+      setSetting(k, String(form.get(k) || "").trim());
+    }
+    return { ok: true, msg: "Backup schedule saved." };
+  }
+  if (intent === "backup-now") {
+    const b = takeBackup("manual");
+    const exported = writeScheduledExport();
+    return {
+      ok: !!b,
+      msg: b
+        ? `Backed up (${Math.round(b.bytes / 1024)} KB)${exported ? `, and wrote a portable export to ${exported}` : ""}.`
+        : "The backup failed — check the folder is writable.",
+    };
+  }
+  if (intent === "import-data") {
+    // Deliberately the only write path that takes a file. Everything about it is
+    // "refuse rather than guess": the version check, the column filter, and merge
+    // as the default so a mistaken import adds nothing it cannot also skip.
+    const upload = form.get("file");
+    if (!(upload instanceof File) || !upload.size) return { ok: false, msg: "Choose an export file first." };
+    if (upload.size > 200 * 1024 * 1024) return { ok: false, msg: "That file is over 200 MB — it is not one of ours." };
+    try {
+      const buf = Buffer.from(await upload.arrayBuffer());
+      const file = readExport(buf);
+      const r = importData(file, form.get("mode") === "replace" ? "replace" : "merge");
+      return { ok: true, msg: r.message };
+    } catch (e: any) {
+      return { ok: false, msg: e?.message || "That file could not be read." };
+    }
+  }
+
+  if (intent === "profile-kb") {
+    const id = String(form.get("id"));
+    setProfileKb(id, form.getAll("item").map((v) => Number(v)));
+    const n = profileKbIds(id).length;
+    return { ok: true, msg: n ? `${n} entr${n === 1 ? "y" : "ies"} selected for this profile.` : "Using the whole knowledge base." };
+  }
+  if (intent === "profile-kb-copy") {
+    const from = String(form.get("from"));
+    const to = String(form.get("id"));
+    // Nothing selected upstream means "everything", so copying it would look like it
+    // did nothing. Say that instead of silently writing an empty set.
+    if (!profileKbIds(from).length) {
+      return { ok: false, msg: "That profile has no selection of its own — it already uses the whole knowledge base." };
+    }
+    const n = copyProfileKb(from, to);
+    return { ok: true, msg: `Copied ${n} entr${n === 1 ? "y" : "ies"} across.` };
+  }
+  if (intent === "profile-create") {
+    const name = String(form.get("name") || "").trim();
+    if (!name) return { ok: false, msg: "Give the profile a name." };
+    const p = createProfile({
+      name,
+      field: String(form.get("field") || DEFAULT_FIELD),
+      location: String(form.get("location") || ""),
+      stack: String(form.get("stack") || ""),
+    });
+    return { ok: true, msg: `Added ${p.name}. It starts with the shipped boards — edit them under Companies.` };
+  }
+  if (intent === "profile-save") {
+    const p = updateProfile(String(form.get("id")), {
+      name: String(form.get("name") || "").trim() || "Untitled",
+      field: String(form.get("field") || DEFAULT_FIELD),
+      location: String(form.get("location") || ""),
+      stack: String(form.get("stack") || ""),
+    });
+    return { ok: true, msg: p ? `Saved ${p.name}.` : "That profile is gone." };
+  }
+  if (intent === "profile-active") {
+    const p = updateProfile(String(form.get("id")), { active: form.get("active") ? 1 : 0 });
+    return { ok: true, msg: p?.active ? `${p.name} is searched again.` : `${p?.name} is kept, but no longer searched.` };
+  }
+  if (intent === "profile-delete") {
+    // Never silently: the postings are the expensive part, and "where did my board
+    // go" is a worse surprise than an extra question on the way out.
+    const id = String(form.get("id"));
+    const moveTo = String(form.get("move_to") || "");
+    const r = deleteProfile(id, moveTo ? { moveTo } : { deleteJobs: true });
+    return {
+      ok: true,
+      msg: moveTo ? `Deleted. ${r.jobs} posting(s) moved.` : `Deleted, with ${r.jobs} posting(s).`,
+    };
+  }
   const save = (k: string) => {
     const v = form.get(k);
     if (v !== null) setSetting(k, String(v));
@@ -170,12 +274,6 @@ export async function action({ request }: Route.ActionArgs) {
     setSetting("scrape_jds", form.get("scrape_jds") ? "true" : "false");
     return { ok: true, msg: "Scheduler settings saved." };
   }
-  if (intent === "save-profile") {
-    save("profile_location");
-    save("profile_field");
-    save("profile_stack");
-    return { ok: true, msg: "Profile saved. The next crawl searches on this." };
-  }
   if (intent === "save-prompt") {
     save("search_prompt");
     return { ok: true, msg: "Prompt saved." };
@@ -222,14 +320,26 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profile", "Prompt", "Danger"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profiles", "Prompt", "Data", "Danger"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset, version } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup, kbItems } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
-  const [tab, setTab] = useState<Tab>("Runners");
+  // The tab lives in the URL, so a link can open one directly — the sidebar's
+  // "Add another" points straight at ?tab=Profiles — and so reloading or sharing the
+  // page keeps you where you were rather than snapping back to Runners.
+  const [params, setParams] = useSearchParams();
+  const asked = params.get("tab");
+  const tab: Tab = (TABS as readonly string[]).includes(asked || "") ? (asked as Tab) : "Runners";
+  const setTab = (t: Tab) => {
+    const next = new URLSearchParams(params);
+    if (t === "Runners") next.delete("tab");
+    else next.set("tab", t);
+    // replace, not push: flicking through tabs should not fill the back button
+    setParams(next, { replace: true, preventScrollReset: true });
+  };
   const [crawlMode, setCrawlMode] = useState(settings.crawlMode);
   const cliRunners = runners.filter((r) => r.kind === "cli");
   const availRunners = runners.filter((r) => r.available);
@@ -238,7 +348,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
     <Shell>
       <div className="page-head">
         <h1>Settings</h1>
-        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Profile · Prompt · Danger</div>
+        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Companies · Profiles · Prompt · Data · Danger</div>
         {/*
           In the head rather than inside a tab: the reason to look it up is usually
           that you are telling someone else what you are running, and hunting through
@@ -255,6 +365,257 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         ))}
       </div>
 
+      {tab === "Data" && (
+        <>
+          <div className="panel">
+            <h3>Move to another machine</h3>
+            <p className="hint">
+              One file with your profiles, postings, applications, résumés, knowledge base and
+              answers. Download it here, install the Ledger on the new machine, and read it back in below.
+            </p>
+            <p className="hint">
+              <strong>Your keys are not in it.</strong> API keys and email passwords stay on this
+              machine — they are not written to the file even though you asked for one. Re-enter them
+              under Keys on the other side.
+            </p>
+            <div className="row2">
+              <div className="field">
+                <label>Everything</label>
+                <a className="btn" href="/api/export">Download everything</a>
+              </div>
+              {profiles.length > 1 && (
+                <div className="field">
+                  <label>Or one profile</label>
+                  <Select
+                    name="export_profile"
+                    defaultValue=""
+                    onChange={(e: any) => {
+                      const v = e.target.value;
+                      if (v) window.location.href = `/api/export?profile=${encodeURIComponent(v)}`;
+                    }}
+                    options={[{ value: "", label: "Pick a profile to export…" }, ...profiles.map((p: any) => ({ value: p.id, label: p.name }))]}
+                  />
+                </div>
+              )}
+            </div>
+            <p className="hint" style={{ marginTop: 18, marginBottom: 0 }}>Left out: {omitted.join(" · ")}</p>
+          </div>
+      
+          <Form method="post" className="panel">
+            <input type="hidden" name="intent" value="backup-settings" />
+            <h3>Scheduled backups</h3>
+            <p className="hint">
+              A snapshot of the database is taken on a schedule and the oldest are pruned. Copies are
+              made with VACUUM INTO rather than copying the file — this database runs in WAL mode, so
+              the bytes on disk are not the whole story and a plain copy would miss the newest work.
+            </p>
+            <div className="row2">
+              <div className="field">
+                <label>How often</label>
+                <Select
+                  name="backup_every_hours"
+                  defaultValue={String(backup.everyHours)}
+                  options={[
+                    { value: "1", label: "Every hour" },
+                    { value: "6", label: "Every 6 hours" },
+                    { value: "12", label: "Every 12 hours" },
+                    { value: "24", label: "Daily" },
+                    { value: "168", label: "Weekly" },
+                  ]}
+                />
+              </div>
+              <div className="field">
+                <label>How many to keep</label>
+                <Select
+                  name="backup_keep"
+                  defaultValue={String(backup.keep)}
+                  options={[
+                    { value: "5", label: "5 — about a day at 6-hourly" },
+                    { value: "10", label: "10 — the default" },
+                    { value: "30", label: "30" },
+                    { value: "100", label: "100 — keep almost everything" },
+                  ]}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <label>Where the snapshots go</label>
+              <DirPicker name="backup_dir" placeholder={backup.dir} />
+            </div>
+            <div className="field">
+              <label>Also write a portable export here (optional)</label>
+              <DirPicker name="backup_export_dir" placeholder="e.g. your Dropbox or iCloud folder" />
+            </div>
+            <p className="hint">
+              The snapshots above are for this machine. A portable export is the file you can carry to
+              another laptop — put it somewhere that syncs and a new machine is one import away. It
+              carries no keys either, the same as the download above.
+            </p>
+            <div className="row2">
+              <button className="btn" disabled={saving}>Save schedule</button>
+            </div>
+            <p className="hint mono tiny" style={{ marginTop: 14, marginBottom: 0 }}>
+              {reset.backups.length} snapshot(s) in {backup.dir}
+              {backup.exportDir ? ` · portable exports to ${backup.exportDir}` : ""}
+            </p>
+          </Form>
+          
+          <Form method="post" className="panel">
+            <input type="hidden" name="intent" value="backup-now" />
+            <h3>Back up now</h3>
+            <p className="hint">
+              Takes one immediately, and writes the portable export too if you set a folder for it.
+            </p>
+            <button className="btn ghost" disabled={saving}>Back up now</button>
+          </Form>
+          
+          <Form method="post" encType="multipart/form-data" className="panel">
+            <input type="hidden" name="intent" value="import-data" />
+            <h3>Read an export back in</h3>
+            <p className="hint">
+              Merge adds what is not already here and leaves the rest alone, so running the same file
+              twice does nothing the second time. Replace empties these tables first — it takes a
+              backup before it does, but it is the one thing here you cannot undo by importing again.
+            </p>
+            <div className="row2">
+              <div className="field">
+                <label>Export file</label>
+                <FilePicker name="file" accept=".gz,.json" label="Choose export…" />
+              </div>
+              <div className="field">
+                <label>How to read it</label>
+                <Select
+                  name="mode"
+                  defaultValue="merge"
+                  options={[
+                    { value: "merge", label: "Merge — add what is missing" },
+                    { value: "replace", label: "Replace — wipe first (backs up)" },
+                  ]}
+                />
+              </div>
+            </div>
+            <button className="btn" disabled={saving}>Import</button>
+          </Form>
+        </>
+      )}
+      
+      {tab === "Profiles" && (
+        <>
+          <div className="panel">
+            <h3>Your searches</h3>
+            <p className="hint">
+              One per line of work. A crawl searches for every active profile in the same run and
+              divides the budget between them, so looking for two things costs about what looking for
+              one costs — each is searched a little less deeply. Pause one and it is kept, just not searched.
+            </p>
+            {profiles.map((p: any) => (
+              <div key={p.id} className="profile-block">
+                <div className="profile-row">
+                  <Form method="post" className="profile-edit">
+                    <input type="hidden" name="intent" value="profile-save" />
+                    <input type="hidden" name="id" value={p.id} />
+                    <div className="row2">
+                      <div className="field"><label>Name</label><input type="text" name="name" defaultValue={p.name} /></div>
+                      <div className="field"><label>Field</label>
+                        <Select name="field" defaultValue={p.field} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
+                      </div>
+                    </div>
+                    <div className="row2">
+                      <div className="field"><label>Where</label><input type="text" name="location" defaultValue={p.location} placeholder="Remote" /></div>
+                      <div className="field"><label>What you do</label><input type="text" name="stack" defaultValue={p.stack} placeholder="what you do" /></div>
+                    </div>
+                    <div className="profile-foot">
+                      <span className="hint mono tiny">
+                        {p.active ? "searched" : "paused"} · last searched {p.last_crawled_at ? p.last_crawled_at.slice(0, 10) : "never"}
+                      </span>
+                      <button className="btn small" disabled={saving}>Save</button>
+                    </div>
+                  </Form>
+
+                  <div className="profile-acts">
+                    <Form method="post">
+                      <input type="hidden" name="intent" value="profile-active" />
+                      <input type="hidden" name="id" value={p.id} />
+                      {p.active ? null : <input type="hidden" name="active" value="1" />}
+                      <button className="btn small ghost" disabled={saving}>{p.active ? "Pause" : "Resume"}</button>
+                    </Form>
+                    {profiles.length > 1 && (
+                      <ConfirmForm
+                        method="post"
+                        confirm={`Delete "${p.name}" and every posting found under it? Its applications and notes go too.`}
+                      >
+                        <input type="hidden" name="intent" value="profile-delete" />
+                        <input type="hidden" name="id" value={p.id} />
+                        <button className="btn small danger" disabled={saving}>Delete</button>
+                      </ConfirmForm>
+                    )}
+                  </div>
+                </div>
+                  <details className="profile-kb">
+                    <summary>
+                      Knowledge base — {p.kb.length ? `${p.kb.length} of ${kbItems.length} selected` : `all ${kbItems.length}`}
+                    </summary>
+                    <p className="hint">
+                      The knowledge base is shared: everything you have ever added is available to every
+                      profile, so a new one never starts empty. Selecting here narrows what <em>this</em>
+                      {" "}profile builds résumés from. Select nothing and it uses all of it.
+                    </p>
+                    <Form method="post" className="profile-kb-form">
+                      <input type="hidden" name="intent" value="profile-kb" />
+                      <input type="hidden" name="id" value={p.id} />
+                      <div className="kb-pick">
+                        {kbItems.map((k: any) => (
+                          <label key={k.id} className="kb-pick-item">
+                            <input type="checkbox" name="item" value={k.id} defaultChecked={p.kb.includes(k.id)} />
+                            <span className="kb-pick-kind">{k.kind}</span>
+                            <span className="kb-pick-title">{k.title}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <button className="btn small" disabled={saving}>Save selection</button>
+                    </Form>
+                    {profiles.length > 1 && (
+                      <Form method="post" className="profile-kb-copy">
+                        <input type="hidden" name="intent" value="profile-kb-copy" />
+                        <input type="hidden" name="id" value={p.id} />
+                        <Select
+                          name="from"
+                          defaultValue=""
+                          options={[
+                            { value: "", label: "Copy a selection from…" },
+                            ...profiles.filter((o: any) => o.id !== p.id).map((o: any) => ({ value: o.id, label: o.name })),
+                          ]}
+                        />
+                        <button className="btn small ghost" disabled={saving}>Copy</button>
+                      </Form>
+                    )}
+                  </details>
+              </div>
+            ))}
+          </div>
+      
+          <Form method="post" className="panel">
+            <input type="hidden" name="intent" value="profile-create" />
+            <h3>Add a search</h3>
+            <p className="hint">
+              It starts with the shipped job boards, and keeps its own postings — a role that suits
+              two of your searches is collected under each, with its own stage and notes.
+            </p>
+            <div className="row2">
+              <div className="field"><label>Name</label><input type="text" name="name" placeholder="Product design" required /></div>
+              <div className="field"><label>Field</label>
+                <Select name="field" defaultValue={DEFAULT_FIELD} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
+              </div>
+            </div>
+            <div className="row2">
+              <div className="field"><label>Where</label><input type="text" name="location" placeholder="Remote · Europe" /></div>
+              <div className="field"><label>What you do</label><input type="text" name="stack" placeholder="Figma, user research, design systems" /></div>
+            </div>
+            <button className="btn" disabled={saving}>Add profile</button>
+          </Form>
+        </>
+      )}
+      
       {tab === "Runners" && (
         <>
           <div className="panel">
@@ -440,7 +801,6 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         </Form>
       )}
 
-      {tab === "Profile" && <ProfileTab settings={settings} saving={saving} />}
 
       {tab === "Companies" && (
         <div className="panel">
@@ -615,39 +975,3 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
  * into the scorer where "software engineering role" used to be hardcoded. Leaving it
  * unset is a valid answer and says so — everything then falls to the keywords.
  */
-function ProfileTab({ settings, saving }: { settings: any; saving: boolean }) {
-  const [field, setField] = useState<string>(settings.profileField || DEFAULT_FIELD);
-  const chosen = fieldById(field);
-  return (
-    <Form method="post" className="panel">
-      <input type="hidden" name="intent" value="save-profile" />
-      <h3>Your profile</h3>
-      <p className="hint">Decides which postings are read at all, and how each one is scored against you.</p>
-      <div className="field">
-        <label>Line of work</label>
-        <Select
-          name="profile_field"
-          value={field}
-          onChange={setField}
-          options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))}
-        />
-      </div>
-      <div className="row2">
-        <div className="field">
-          <label>Location</label>
-          <input type="text" name="profile_location" defaultValue={settings.profileLocation} placeholder="e.g. your city, country" />
-        </div>
-        <div className="field">
-          <label>Skills and keywords</label>
-          <input key={field} type="text" name="profile_stack" defaultValue={settings.profileStack} placeholder={`e.g. ${chosen?.example || ""}`} />
-        </div>
-      </div>
-      <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "0 0 14px" }}>
-        The free boards are asked for <strong>{chosen?.label.toLowerCase() || "your field"}</strong> where they
-        take that as a parameter, and every posting they return is judged against it. The keywords weight the
-        result; the field decides what is looked at in the first place.
-      </p>
-      <button className="btn" disabled={saving}>Save</button>
-    </Form>
-  );
-}
