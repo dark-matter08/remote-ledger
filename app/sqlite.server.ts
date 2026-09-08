@@ -82,6 +82,7 @@ export function getDb(): Db {
   try {
     ensureColumn(db, "jobs", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     ensureColumn(db, "companies", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "profiles", "last_crawled_at", "TEXT");
     ensureColumn(db, "crawl_runs", "profile_id", "TEXT");
     ensureColumn(db, "crawl_runs", "job_id", "TEXT"); // autopilot runs belong to a posting
     db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_profile ON jobs(profile_id)");

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     prompt      TEXT,                          -- NULL = the templated default
     resume_profile_id TEXT,                    -- which résumé this one tailors from
     active      INTEGER NOT NULL DEFAULT 1,    -- 0 = kept, but skipped by crawls
+    last_crawled_at TEXT,                      -- so a rotation can pick the stalest
     sort_order  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL

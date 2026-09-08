@@ -9,6 +9,7 @@
 // Companies with a bespoke careers page have no such feed; those fall back to the
 // agent (see the careers crawl in crawl.server.ts).
 import { getDb } from "../sqlite.server";
+import { currentProfile } from "../profiles.server";
 import { detectBoard, ATS_KINDS, type AtsKind } from "../ats";
 
 // re-exported so server callers need only one import
@@ -162,14 +163,14 @@ export interface Company {
   created_at: string;
 }
 
-export function listCompanies(): Company[] {
+export function listCompanies(profileId = currentProfile().id): Company[] {
   return getDb()
-    .prepare("SELECT * FROM companies ORDER BY active DESC, name COLLATE NOCASE")
-    .all() as Company[];
+    .prepare("SELECT * FROM companies WHERE profile_id=? ORDER BY active DESC, name COLLATE NOCASE")
+    .all(profileId) as Company[];
 }
 
-export function activeCompanies(): Company[] {
-  return listCompanies().filter((c) => c.active);
+export function activeCompanies(profileId = currentProfile().id): Company[] {
+  return listCompanies(profileId).filter((c) => c.active);
 }
 
 export function addCompany(o: {
@@ -179,6 +180,8 @@ export function addCompany(o: {
   careersUrl?: string | null;
   note?: string | null;
   kind?: string | null;
+  /** which search this board belongs to; the one in use unless told otherwise */
+  profileId?: string;
 }): { id: number; error?: string } {
   const name = (o.name || "").trim();
   if (!name) return { id: 0, error: "A company name is required." };
@@ -198,9 +201,18 @@ export function addCompany(o: {
     const id = Number(
       getDb()
         .prepare(
-          "INSERT INTO companies (name,kind,ats,slug,careers_url,active,note,created_at) VALUES (?,?,?,?,?,1,?,?)"
+          "INSERT INTO companies (name,kind,ats,slug,careers_url,active,note,created_at,profile_id) VALUES (?,?,?,?,?,1,?,?,?)"
         )
-        .run(name, kind, ats, slug, careers, (o.note || "").trim() || null, new Date().toISOString()).lastInsertRowid
+        .run(
+          name,
+          kind,
+          ats,
+          slug,
+          careers,
+          (o.note || "").trim() || null,
+          new Date().toISOString(),
+          o.profileId || currentProfile().id
+        ).lastInsertRowid
     );
     return { id };
   } catch (e: any) {

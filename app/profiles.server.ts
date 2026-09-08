@@ -11,6 +11,7 @@
 // the release after this one.
 import { getDb, getSetting, setSetting, transaction } from "./sqlite.server";
 import { DEFAULT_FIELD } from "./fields";
+import { DEFAULT_BOARDS } from "./default-boards";
 
 export interface Profile {
   id: string;
@@ -22,6 +23,7 @@ export interface Profile {
   resume_profile_id: string | null;
   active: number;
   sort_order: number;
+  last_crawled_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -104,8 +106,31 @@ export function createProfile(input: {
       now
     );
   const made = getProfile(id)!;
+  seedBoardsFor(id);
   syncLegacySettings(made);
   return made;
+}
+
+/**
+ * Give a new profile the shipped boards.
+ *
+ * Boards belong to a profile now, so a profile created with none has nowhere to
+ * crawl — it would run, find nothing, and look broken. It gets the same starting
+ * list a fresh install gets.
+ *
+ * Deletions still stick: the seeding is per-URL against this profile's own rows, so
+ * a board removed from one profile is not handed back by another profile's creation.
+ */
+export function seedBoardsFor(profileId: string) {
+  const db = getDb();
+  const has = db.prepare("SELECT 1 FROM companies WHERE profile_id=? AND careers_url=?");
+  const insert = db.prepare(
+    "INSERT INTO companies (name,kind,ats,slug,careers_url,active,note,created_at,profile_id) VALUES (?,'board',NULL,NULL,?,1,?,?,?)"
+  );
+  const now = new Date().toISOString();
+  for (const b of DEFAULT_BOARDS) {
+    if (!has.get(profileId, b.url)) insert.run(b.name, b.url, b.note, now, profileId);
+  }
 }
 
 export function updateProfile(id: string, patch: Partial<Omit<Profile, "id" | "created_at">>): Profile | null {
@@ -164,6 +189,11 @@ export function deleteProfile(id: string, opts: { moveTo?: string; deleteJobs?: 
  * copy — one whose code still reaches for profile_field — reads the truth rather than
  * an empty string. Deleted in the release after this one.
  */
+/** Records that a crawl has just searched for this profile, so a rotation is fair. */
+export function touchProfileCrawled(id: string) {
+  getDb().prepare("UPDATE profiles SET last_crawled_at=? WHERE id=?").run(new Date().toISOString(), id);
+}
+
 export function syncLegacySettings(p: Profile) {
   setSetting("profile_field", p.field);
   setSetting("profile_location", p.location);
