@@ -569,7 +569,12 @@ body:has(.sidebar.pinned) { padding-left: 242px; }
 .sb-item.active { color: var(--vermillion); border-left-color: var(--vermillion); }
 .sb-ico { flex: none; width: 22px; height: 20px; display: grid; place-items: center; }
 .sb-ico svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.sb-label { opacity: 0; transition: opacity 0.15s; }
+/* A profile can reasonably be called "Nde Lucien - Engineer", and the rail is a fixed
+   width — so the label has to end in an ellipsis rather than run under its own edge.
+   min-width:0 on both is the part that actually does it: a flex child will not shrink
+   below its content without it, so overflow alone would have changed nothing. */
+.sb-label { opacity: 0; transition: opacity 0.15s; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-item { min-width: 0; }
 .sidebar.pinned .sb-label { opacity: 1; }
 .sb-bottom { border-top: 1.5px solid var(--rule); padding: 8px; }
 @media (max-width: 640px) { body { padding-left: 78px; } .sidebar { width: 52px; } }
