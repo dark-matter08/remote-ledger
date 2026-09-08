@@ -11,12 +11,27 @@
 // still in the write-ahead log, which is exactly the recent work worth keeping.
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
-import { getDb, DB_PATH } from "../sqlite.server";
+import { writeFileSync } from "node:fs";
+import { getDb, DB_PATH, getSetting } from "../sqlite.server";
 
-const KEEP = 10;
-const MIN_GAP_MS = 6 * 3600 * 1000; // an automatic backup is not worth taking hourly
+const KEEP_DEFAULT = 10;
+const EVERY_HOURS_DEFAULT = 6; // an automatic backup is not worth taking hourly
 
-export const backupDir = () => resolve(dirname(DB_PATH), "backups");
+const num = (key: string, fallback: number, min: number, max: number) => {
+  const n = Number(getSetting(key) || "");
+  return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : fallback;
+};
+
+/** How many to keep, how often, and where — all overridable in Settings → Data. */
+export const backupKeep = () => num("backup_keep", KEEP_DEFAULT, 1, 200);
+export const backupEveryHours = () => num("backup_every_hours", EVERY_HOURS_DEFAULT, 1, 24 * 14);
+
+/**
+ * Where the .db snapshots go. A custom folder is honoured, but never silently: if it
+ * cannot be written the caller falls back to the default rather than skipping the
+ * backup, because a backup that did not happen is worse than one in the wrong place.
+ */
+export const backupDir = () => (getSetting("backup_dir") || "").trim() || resolve(dirname(DB_PATH), "backups");
 
 export interface BackupInfo {
   path: string;
@@ -54,7 +69,7 @@ export function takeBackup(reason = "auto"): BackupInfo | null {
     // single-quoted SQL literal; the path is ours, but keep it unquotable anyway
     getDb().exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
 
-    for (const old of listBackups().slice(KEEP)) {
+    for (const old of listBackups().slice(backupKeep())) {
       try { rmSync(old.path, { force: true }); } catch {}
     }
     const s = statSync(path);
@@ -65,10 +80,39 @@ export function takeBackup(reason = "auto"): BackupInfo | null {
   }
 }
 
-/** Scheduler hook: at most one automatic backup per MIN_GAP_MS. */
+/** Scheduler hook: at most one automatic backup per configured interval. */
 export function runDueBackup(): void {
   const newest = listBackups()[0];
-  if (newest && Date.now() - Date.parse(newest.at) < MIN_GAP_MS) return;
+  if (newest && Date.now() - Date.parse(newest.at) < backupEveryHours() * 3600 * 1000) return;
   const b = takeBackup("auto");
   if (b) console.log(`[backup] ${b.path} (${Math.round(b.bytes / 1024)}KB)`);
+  writeScheduledExport();
+}
+
+/**
+ * Also drop a portable export in a folder you chose, on the same schedule.
+ *
+ * The .db snapshots above are for this machine — same SQLite file, same version. This
+ * is the one you can carry to another laptop, so it belongs somewhere you actually
+ * sync or back up rather than inside the app's own data directory.
+ *
+ * It carries no keys, for the same reason the manual export does not: see
+ * portability.server.ts, where the secrets table is never read.
+ */
+export function writeScheduledExport(): string | null {
+  const dir = (getSetting("backup_export_dir") || "").trim();
+  if (!dir) return null;
+  try {
+    mkdirSync(dir, { recursive: true });
+    // required lazily: portability imports this module for its pre-import backup, and
+    // importing it at the top would be a cycle
+    const { exportGzip, exportFilename } = require("./portability.server") as typeof import("./portability.server");
+    const path = join(dir, exportFilename());
+    writeFileSync(path, exportGzip());
+    console.log(`[backup] portable export -> ${path}`);
+    return path;
+  } catch (e) {
+    console.error("[backup] portable export failed:", e);
+    return null;
+  }
 }

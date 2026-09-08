@@ -945,6 +945,27 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 .profile-acts { display: flex; flex-direction: column; gap: 8px; flex: none; padding-top: 4px; }
 
 /* which search you are looking at. Only rendered when there is more than one. */
+/* the profile switcher in the rail. Shown even with one profile, worded as an
+   invitation — a control that only appears once you know about it teaches nobody. */
+.sb-profiles { padding: 10px 0 4px; border-bottom: 1px solid var(--rule-faint); margin-bottom: 6px; }
+.sb-prof {
+  display: flex; align-items: center; gap: 10px; padding: 7px 12px; text-decoration: none;
+  color: var(--ink-soft); font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  white-space: nowrap; overflow: hidden;
+}
+.sb-prof:hover { color: var(--vermillion); }
+.sb-prof.on { color: var(--ink); background: var(--paper-2); }
+.sb-prof.paused .sb-label { opacity: .5; text-decoration: line-through; }
+.sb-prof-dot {
+  flex: none; width: 20px; height: 20px; border: 1.5px solid var(--rule); background: transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 10px; line-height: 1; color: var(--ink-soft);
+}
+.sb-prof.on .sb-prof-dot { background: var(--vermillion); border-color: var(--vermillion); color: var(--paper); }
+.sb-prof-dot.all { border-style: dashed; }
+.sb-prof-dot.plus { border-style: dotted; color: var(--ink-faint); }
+.sb-prof.add { color: var(--ink-faint); }
+
 .profile-switch { display: flex; flex-wrap: wrap; gap: 0; justify-content: center; margin: 14px 0 0; }
 .profile-switch .ps {
   font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;

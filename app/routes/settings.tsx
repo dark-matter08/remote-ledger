@@ -6,6 +6,7 @@ import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
 import { FilePicker } from "../components/FilePicker";
+import { DirPicker } from "../components/DirPicker";
 import { ConfirmForm } from "../components/ConfirmForm";
 import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from "../services/contribute.server";
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
@@ -18,7 +19,7 @@ import { discoverModels, openRouterShortlist } from "../llm/models.server";
 import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
-import { listBackups } from "../services/backup.server";
+import { listBackups, takeBackup, backupDir, backupKeep, backupEveryHours, writeScheduledExport } from "../services/backup.server";
 import { listProfiles, createProfile, updateProfile, deleteProfile } from "../profiles.server";
 import { readExport, importData, OMITTED } from "../services/portability.server";
 import { currentVersion } from "../services/updates.server";
@@ -76,6 +77,12 @@ export async function loader() {
   return {
     version: currentVersion(),
     profiles: listProfiles(),
+    backup: {
+      everyHours: backupEveryHours(),
+      keep: backupKeep(),
+      dir: backupDir(),
+      exportDir: getSetting("backup_export_dir") || "",
+    },
     // through the loader, not imported in the component: a *.server module referenced
     // from client code drags the whole thing into the browser bundle, and the build
     // stops rather than shipping it.
@@ -126,6 +133,22 @@ export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
 
+  if (intent === "backup-settings") {
+    for (const k of ["backup_every_hours", "backup_keep", "backup_dir", "backup_export_dir"]) {
+      setSetting(k, String(form.get(k) || "").trim());
+    }
+    return { ok: true, msg: "Backup schedule saved." };
+  }
+  if (intent === "backup-now") {
+    const b = takeBackup("manual");
+    const exported = writeScheduledExport();
+    return {
+      ok: !!b,
+      msg: b
+        ? `Backed up (${Math.round(b.bytes / 1024)} KB)${exported ? `, and wrote a portable export to ${exported}` : ""}.`
+        : "The backup failed — check the folder is writable.",
+    };
+  }
   if (intent === "import-data") {
     // Deliberately the only write path that takes a file. Everything about it is
     // "refuse rather than guess": the version check, the column filter, and merge
@@ -232,12 +255,6 @@ export async function action({ request }: Route.ActionArgs) {
     setSetting("scrape_jds", form.get("scrape_jds") ? "true" : "false");
     return { ok: true, msg: "Scheduler settings saved." };
   }
-  if (intent === "save-profile") {
-    save("profile_location");
-    save("profile_field");
-    save("profile_stack");
-    return { ok: true, msg: "Profile saved. The next crawl searches on this." };
-  }
   if (intent === "save-prompt") {
     save("search_prompt");
     return { ok: true, msg: "Prompt saved." };
@@ -284,11 +301,11 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profiles", "Profile", "Prompt", "Data", "Danger"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profiles", "Prompt", "Data", "Danger"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles, omitted, backup } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -300,7 +317,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
     <Shell>
       <div className="page-head">
         <h1>Settings</h1>
-        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Companies · Profiles · Profile · Prompt · Data · Danger</div>
+        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Companies · Profiles · Prompt · Data · Danger</div>
         {/*
           In the head rather than inside a tab: the reason to look it up is usually
           that you are telling someone else what you are running, and hunting through
@@ -353,6 +370,74 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
             <p className="hint" style={{ marginTop: 18, marginBottom: 0 }}>Left out: {omitted.join(" · ")}</p>
           </div>
       
+          <Form method="post" className="panel">
+            <input type="hidden" name="intent" value="backup-settings" />
+            <h3>Scheduled backups</h3>
+            <p className="hint">
+              A snapshot of the database is taken on a schedule and the oldest are pruned. Copies are
+              made with VACUUM INTO rather than copying the file — this database runs in WAL mode, so
+              the bytes on disk are not the whole story and a plain copy would miss the newest work.
+            </p>
+            <div className="row2">
+              <div className="field">
+                <label>How often</label>
+                <Select
+                  name="backup_every_hours"
+                  defaultValue={String(backup.everyHours)}
+                  options={[
+                    { value: "1", label: "Every hour" },
+                    { value: "6", label: "Every 6 hours" },
+                    { value: "12", label: "Every 12 hours" },
+                    { value: "24", label: "Daily" },
+                    { value: "168", label: "Weekly" },
+                  ]}
+                />
+              </div>
+              <div className="field">
+                <label>How many to keep</label>
+                <Select
+                  name="backup_keep"
+                  defaultValue={String(backup.keep)}
+                  options={[
+                    { value: "5", label: "5 — about a day at 6-hourly" },
+                    { value: "10", label: "10 — the default" },
+                    { value: "30", label: "30" },
+                    { value: "100", label: "100 — keep almost everything" },
+                  ]}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <label>Where the snapshots go</label>
+              <DirPicker name="backup_dir" placeholder={backup.dir} />
+            </div>
+            <div className="field">
+              <label>Also write a portable export here (optional)</label>
+              <DirPicker name="backup_export_dir" placeholder="e.g. your Dropbox or iCloud folder" />
+            </div>
+            <p className="hint">
+              The snapshots above are for this machine. A portable export is the file you can carry to
+              another laptop — put it somewhere that syncs and a new machine is one import away. It
+              carries no keys either, the same as the download above.
+            </p>
+            <div className="row2">
+              <button className="btn" disabled={saving}>Save schedule</button>
+            </div>
+            <p className="hint mono tiny" style={{ marginTop: 14, marginBottom: 0 }}>
+              {reset.backups.length} snapshot(s) in {backup.dir}
+              {backup.exportDir ? ` · portable exports to ${backup.exportDir}` : ""}
+            </p>
+          </Form>
+          
+          <Form method="post" className="panel">
+            <input type="hidden" name="intent" value="backup-now" />
+            <h3>Back up now</h3>
+            <p className="hint">
+              Takes one immediately, and writes the portable export too if you set a folder for it.
+            </p>
+            <button className="btn ghost" disabled={saving}>Back up now</button>
+          </Form>
+          
           <Form method="post" encType="multipart/form-data" className="panel">
             <input type="hidden" name="intent" value="import-data" />
             <h3>Read an export back in</h3>
@@ -643,7 +728,6 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         </Form>
       )}
 
-      {tab === "Profile" && <ProfileTab settings={settings} saving={saving} />}
 
       {tab === "Companies" && (
         <div className="panel">
@@ -818,39 +902,3 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
  * into the scorer where "software engineering role" used to be hardcoded. Leaving it
  * unset is a valid answer and says so — everything then falls to the keywords.
  */
-function ProfileTab({ settings, saving }: { settings: any; saving: boolean }) {
-  const [field, setField] = useState<string>(settings.profileField || DEFAULT_FIELD);
-  const chosen = fieldById(field);
-  return (
-    <Form method="post" className="panel">
-      <input type="hidden" name="intent" value="save-profile" />
-      <h3>Your profile</h3>
-      <p className="hint">Decides which postings are read at all, and how each one is scored against you.</p>
-      <div className="field">
-        <label>Line of work</label>
-        <Select
-          name="profile_field"
-          value={field}
-          onChange={setField}
-          options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))}
-        />
-      </div>
-      <div className="row2">
-        <div className="field">
-          <label>Location</label>
-          <input type="text" name="profile_location" defaultValue={settings.profileLocation} placeholder="e.g. your city, country" />
-        </div>
-        <div className="field">
-          <label>Skills and keywords</label>
-          <input key={field} type="text" name="profile_stack" defaultValue={settings.profileStack} placeholder={`e.g. ${chosen?.example || ""}`} />
-        </div>
-      </div>
-      <p className="hint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 12, margin: "0 0 14px" }}>
-        The free boards are asked for <strong>{chosen?.label.toLowerCase() || "your field"}</strong> where they
-        take that as a parameter, and every posting they return is judged against it. The keywords weight the
-        result; the field decides what is looked at in the first place.
-      </p>
-      <button className="btn" disabled={saving}>Save</button>
-    </Form>
-  );
-}

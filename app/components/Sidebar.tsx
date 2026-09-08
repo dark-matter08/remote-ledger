@@ -137,11 +137,59 @@ export function Sidebar() {
     try { localStorage.setItem("ledger-theme", next); } catch {}
   }
 
+  const [profiles, setProfiles] = useState<{ id: string; name: string; active: boolean }[]>([]);
+  const [currentProfile, setCurrent] = useState<string>("");
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/profiles")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!alive) return;
+        setProfiles(d.profiles || []);
+        setCurrent(d.current || "");
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   return (
     <aside className={`sidebar ${pinned ? "pinned" : ""}`}>
       <div className="sb-top">
         <Link to="/" className="sb-brand" title="The Remote & Ledger">❦</Link>
         <span className="sb-word">The Remote <span className="sb-amp">&amp;</span> Ledger</span>
+      </div>
+
+      {/*
+        The switcher is here as much to say the feature exists as to be used: with one
+        profile it still shows, worded as an invitation, because a control that only
+        appears once you already know about it teaches nobody.
+      */}
+      <div className="sb-profiles">
+        <div className="sb-group-title">Searching for</div>
+        {profiles.map((p) => (
+          <a
+            key={p.id}
+            href={`/?profile=${p.id}`}
+            onClick={() => { void fetch("/api/profiles", { method: "POST", body: new URLSearchParams({ id: p.id }) }); }}
+            className={`sb-prof ${p.id === currentProfile ? "on" : ""} ${p.active ? "" : "paused"}`}
+            title={p.active ? p.name : `${p.name} — paused, not searched`}
+          >
+            {/* the initial, not a bare dot: collapsed to a rail of icons, an unlabelled
+                square reads as an artefact rather than a control you can press */}
+            <span className="sb-prof-dot">{p.name.trim().charAt(0).toUpperCase() || "?"}</span>
+            <span className="sb-label">{p.name}</span>
+          </a>
+        ))}
+        {profiles.length > 1 && (
+          <a href="/?profile=all" className={`sb-prof ${currentProfile === "all" ? "on" : ""}`} title="Every profile at once">
+            <span className="sb-prof-dot all">∗</span>
+            <span className="sb-label">All profiles</span>
+          </a>
+        )}
+        <a href="/settings" className="sb-prof add" title="Add or edit profiles">
+          <span className="sb-prof-dot plus">+</span>
+          <span className="sb-label">{profiles.length > 1 ? "Manage" : "Add another"}</span>
+        </a>
       </div>
 
       <nav className="sb-nav">
