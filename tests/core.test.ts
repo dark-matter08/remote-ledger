@@ -2586,6 +2586,64 @@ test("autopilot skips what is done and never submits", async () => {
   assert.match(src, /stops before submitting/i, "and must say so where the next person will read it");
 });
 
+test("autopilot can be watched while it runs, not only after it finishes", async () => {
+  const ap = await import("../app/services/autopilot.server");
+  const { upsertJobs } = await import("../app/db.server");
+
+  upsertJobs([{ company: "Watchme", role: "Engineer", category: "high", fit_score: 80, apply_url: "https://w.co" }]);
+  const jobId = "watchme--engineer";
+
+  // The steps are stood in for so this test costs nothing and controls its own timing.
+  // What is under test is the reporting, not what the steps do.
+  const real = ap.STEPS.slice();
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  ap.STEPS.length = 0;
+  ap.STEPS.push(
+    { id: "match", title: "Match analysis", done: () => false,
+      run: async (_j: any, log: any) => { log("comparing your résumé…"); await held; return "scored 84"; } },
+    { id: "cover", title: "Cover letter", done: () => true, run: async () => "never reached" }
+  );
+
+  try {
+    // The bug: the whole run was awaited inside the request that started it, so the
+    // page sat on one pending POST for eleven minutes — four steps finished, a browser
+    // opened by itself, and nothing on screen moved until you reloaded.
+    const started = ap.startAutopilot(jobId);
+    assert.equal(started.started, true, "starting returns immediately, before the work is done");
+
+    const mid = ap.autopilotProgress(jobId)!;
+    assert.ok(mid, "and there is something to watch the moment it returns");
+    assert.equal(mid.live, true);
+    assert.deepEqual(mid.steps.map((s) => s.id), ["match", "cover"], "every step is listed, not only the finished ones");
+    assert.equal(mid.steps[0].state, "running", "including which one it is on");
+    assert.equal(mid.steps[0].detail, "comparing your résumé…", "and what that step is doing now");
+    assert.equal(mid.steps[1].state, "pending");
+
+    // A second click while it is in flight is refused rather than run twice.
+    assert.equal(ap.startAutopilot(jobId).started, false);
+
+    // Stop is asked for, not taken: a model call in flight is not interruptible, so
+    // the run says it is stopping rather than leaving a button that looks ignored.
+    assert.equal(ap.stopAutopilot(jobId), true);
+    assert.equal(ap.autopilotProgress(jobId)!.stopping, true);
+    assert.equal(ap.autopilotProgress(jobId)!.live, true, "and it is still live until the step comes back");
+
+    release();
+    await new Promise((r) => setTimeout(r, 60));
+
+    const end = ap.autopilotProgress(jobId)!;
+    assert.equal(end.live, false, "the watch ends when the work does");
+    assert.equal(end.stopping, false, "and nothing is left saying it is still stopping");
+    assert.equal(end.steps[0].state, "done", "the step that was in flight finished rather than being torn up");
+    assert.equal(end.steps[0].detail, "scored 84", "a finished step says what it produced");
+    assert.match(String(end.message), /Stopped/, "the run reports that it was stopped, not that it completed");
+  } finally {
+    ap.STEPS.length = 0;
+    ap.STEPS.push(...real);
+  }
+});
+
 test("a new profile starts with the whole knowledge base, and can be narrowed", async () => {
   const { createProfile, deleteProfile, profileKbIds, setProfileKb, copyProfileKb } = await import(
     "../app/profiles.server"

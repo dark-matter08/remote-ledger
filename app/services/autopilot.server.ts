@@ -179,6 +179,90 @@ export const STEPS: AutopilotStep[] = [
   },
 ];
 
+export type StepState = "pending" | "running" | "done" | "skipped" | "failed";
+
+export interface StepProgress {
+  id: StepId;
+  title: string;
+  state: StepState;
+  /** The line this step is on right now, or what it ended up saying. */
+  detail?: string;
+}
+
+/**
+ * A run as seen from outside, for the page that is watching it.
+ *
+ * Held in memory rather than written to a table: it is a view of work happening in
+ * this process, and when the process is gone so is the work. The durable record is
+ * crawl_runs/crawl_logs, which is already written and already has a reader.
+ */
+export interface AutopilotProgress {
+  jobId: string;
+  runId: number;
+  startedAt: string;
+  endedAt?: string;
+  /** Still working. False for a run that finished, failed or was stopped. */
+  live: boolean;
+  /**
+   * A stop was asked for and the run has not reached a place to take it yet. Steps are
+   * not interruptible — a model call in flight finishes — so this says "stopping" for
+   * as long as that is the truth, rather than a button that looks ignored.
+   */
+  stopping?: boolean;
+  steps: StepProgress[];
+  ok?: boolean;
+  message?: string;
+}
+
+// Kept after the run ends, so the page can still say how it went; trimmed, because
+// this is a progress display and not a history.
+const PROGRESS_KEPT = 20;
+const progress = new Map<string, AutopilotProgress>();
+
+function seedProgress(jobId: string, runId: number): AutopilotProgress {
+  const p: AutopilotProgress = {
+    jobId,
+    runId,
+    startedAt: new Date().toISOString(),
+    live: true,
+    steps: STEPS.map((s) => ({ id: s.id, title: s.title, state: "pending" as StepState })),
+  };
+  progress.delete(jobId); // re-insert, so the trim below drops the least recent
+  progress.set(jobId, p);
+  for (const k of progress.keys()) {
+    if (progress.size <= PROGRESS_KEPT) break;
+    progress.delete(k);
+  }
+  return p;
+}
+
+export function autopilotProgress(jobId: string): AutopilotProgress | null {
+  return progress.get(jobId) ?? null;
+}
+
+/**
+ * Start a run and return at once.
+ *
+ * The steps take minutes — they are model calls and a real browser. Awaiting them
+ * inside the request that started them meant the page sat on a single pending POST:
+ * a disabled button, no sign that four of the six steps had finished, and a browser
+ * opening on its own with nothing on screen to explain it. Reloading was the only
+ * way to find out it had worked.
+ *
+ * The work is unchanged. What changed is that the caller gets an answer immediately
+ * and watches through autopilotProgress(), which also means closing the tab no
+ * longer looks like it cancelled anything — it never did.
+ */
+export function startAutopilot(jobId: string): { started: boolean; message?: string } {
+  const job = getJob(jobId);
+  if (!job) return { started: false, message: "no such posting" };
+  if (running.has(jobId)) return { started: false, message: "already running for this posting" };
+  // runAutopilot registers the job and seeds progress before its first await, so a
+  // second click in the same tick is refused rather than run twice.
+  void runAutopilot(jobId).catch(() => {});
+  return { started: true };
+}
+
 export interface AutopilotResult {
   ok: boolean;
   runId: number;
@@ -197,6 +281,8 @@ export function autopilotRunning(jobId: string): boolean {
 
 export function stopAutopilot(jobId: string): boolean {
   const ac = running.get(jobId);
+  const p = progress.get(jobId);
+  if (p?.live && ac) p.stopping = true;
   // Dropped here, not when the run finishes — the same lesson the crawl taught: a
   // stop that only takes effect once the work unwinds goes on blocking the next one.
   running.delete(jobId);
@@ -225,6 +311,15 @@ export async function runAutopilot(jobId: string): Promise<AutopilotResult> {
 
   const ac = new AbortController();
   running.set(jobId, ac);
+  const P = seedProgress(jobId, runId);
+  const mark = (id: StepId, state: StepState, detail?: string) => {
+    const s = P.steps.find((x) => x.id === id);
+    if (!s) return;
+    s.state = state;
+    if (detail !== undefined) s.detail = detail;
+  };
+  const finish = (patch: Partial<AutopilotProgress>) =>
+    Object.assign(P, { live: false, endedAt: new Date().toISOString() }, patch);
   const L = (kind: string, text: string) => crawlLog(runId, kind, text);
   const done: StepId[] = [];
   const skipped: StepId[] = [];
@@ -235,21 +330,30 @@ export async function runAutopilot(jobId: string): Promise<AutopilotResult> {
     for (const step of STEPS) {
       if (ac.signal.aborted) {
         L("note", "Stopped.");
+        finish({ ok: false, stopping: false, message: "Stopped. What finished is kept — running it again picks up from here." });
         updateCrawlRun(runId, { status: "error", ended_at: new Date().toISOString(), note: "stopped by user" });
         return { ok: false, runId, done, skipped, message: "stopped" };
       }
       if (step.done(job)) {
         skipped.push(step.id);
+        mark(step.id, "skipped", "already done");
         L("note", `${step.title} — already done, skipping`);
         continue;
       }
+      mark(step.id, "running", "starting…");
       L("step", `${step.title}…`);
       try {
-        const said = await step.run(job, (m) => L("step", m));
+        const said = await step.run(job, (m) => {
+          mark(step.id, "running", m);
+          L("step", m);
+        });
         done.push(step.id);
+        mark(step.id, "done", said);
         L("result", `${step.title}: ${said}`);
       } catch (e: any) {
         const why = e?.message || String(e);
+        mark(step.id, "failed", why);
+        finish({ ok: false, message: `${step.title} failed: ${why}` });
         L("error", `${step.title} failed: ${why}`);
         L(
           "note",
@@ -263,13 +367,9 @@ export async function runAutopilot(jobId: string): Promise<AutopilotResult> {
     addEvent(jobId, "note", "Autopilot prepared this application.");
     updateCrawlRun(runId, { status: "done", ended_at: new Date().toISOString() });
     L("note", "Ready. Nothing has been submitted — open the form when you want to.");
-    return {
-      ok: true,
-      runId,
-      done,
-      skipped,
-      message: `Ready: ${done.length} step(s) run${skipped.length ? `, ${skipped.length} already done` : ""}. Nothing submitted.`,
-    };
+    const message = `Ready: ${done.length} step(s) run${skipped.length ? `, ${skipped.length} already done` : ""}. Nothing submitted.`;
+    finish({ ok: true, message });
+    return { ok: true, runId, done, skipped, message };
   } finally {
     running.delete(jobId);
   }
