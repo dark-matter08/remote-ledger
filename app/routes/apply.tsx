@@ -20,7 +20,9 @@ import {
 import { draftAnswer } from "../resume/ai.server";
 import { kbContext } from "../services/kb.server";
 import { loggedTask } from "../services/crawl.server";
-import { startSession, resumeSession, type ApplyRules } from "../services/apply-session.server";
+import { startSession, resumeSession, type ApplyRules, type ApplyMode } from "../services/apply-session.server";
+import { estimateAutopilot, money } from "../services/estimate.server";
+import { getSetting } from "../sqlite.server";
 import { availableRunners } from "../llm/runner.server";
 import { getDefaultProfile } from "../resume/profiles.server";
 
@@ -36,6 +38,14 @@ export async function loader({ request }: Route.LoaderArgs) {
   return {
     ready: { hasRunner: runners.length > 0, hasProfile: !!getDefaultProfile() },
     sessions: listSessions(),
+    // Shown before the button, from what this machine has actually spent. Autopilot is
+    // five or six model calls a job, so a rule matching more jobs than you meant is an
+    // expensive mistake rather than an untidy one.
+    cost: {
+      perJob: money(estimateAutopilot(1).perJobUsd),
+      samples: estimateAutopilot(1).samples,
+      ceiling: Number(getSetting("max_session_cost") || "0") || 0,
+    },
     pool: openQuestions(),
     bankCount: answerBank().length,
     recentAnswers: answeredQuestions(8),
@@ -84,7 +94,7 @@ export async function action({ request }: Route.ActionArgs) {
       max: Math.min(12, Number(form.get("max") || "5") || 5),
       requireJd: !!form.get("requireJd"),
     };
-    const mode = (String(form.get("mode") || "draft") as "draft" | "assist");
+    const mode = (String(form.get("mode") || "draft") as ApplyMode);
     const id = startSession(mode, rules); // returns immediately; runs in background
     return redirect(`/apply?session=${id}`);
   }
@@ -101,7 +111,7 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export default function Apply({ loaderData, actionData }: Route.ComponentProps) {
-  const { ready, sessions, pool, bankCount, recentAnswers, active, activeJobs, activeLogs } = loaderData;
+  const { ready, sessions, pool, bankCount, recentAnswers, active, activeJobs, activeLogs, cost } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();
@@ -156,8 +166,21 @@ export default function Apply({ loaderData, actionData }: Route.ComponentProps) 
         </div>
         <div className="row2">
           <div className="field"><label>Mode</label>
-            <Select name="mode" defaultValue="draft" options={[{ value: "draft", label: "Draft — headless: capture + draft answers" }, { value: "assist", label: "Assist — opens a visible browser & prefills each form (you submit)" }]} />
+            <Select
+              name="mode"
+              defaultValue="draft"
+              options={[
+                { value: "draft", label: "Draft — headless: capture + draft answers" },
+                { value: "assist", label: "Assist — opens a visible browser & prefills each form (you submit)" },
+                { value: "autopilot", label: "Autopilot — the whole guided application, per job" },
+              ]}
+            />
           </div>
+          <p className="hint">
+            Autopilot is about {cost.perJob} a job on your runner{cost.samples ? ` (from your last ${cost.samples} calls)` : ""} — match, build,
+            tailor, cover letter and the form's questions. Draft and assist cost a fraction of that.
+            {cost.ceiling > 0 ? `A session stops once it has spent $${cost.ceiling}.` : "No spending ceiling is set."}
+          </p>
           <div className="field" style={{ display: "flex", alignItems: "flex-end" }}>
             <label style={{ margin: 0 }}><input type="checkbox" name="requireJd" defaultChecked /> Capture full JD if missing</label>
           </div>

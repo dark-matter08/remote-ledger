@@ -20,6 +20,7 @@ import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
 import { kbBuildSources } from "../resume/build.server";
+import { estimateAutopilot, money } from "../services/estimate.server";
 import { listBackups, takeBackup, backupDir, backupKeep, backupEveryHours, writeScheduledExport } from "../services/backup.server";
 import { listProfiles, createProfile, updateProfile, deleteProfile, profileKbIds, setProfileKb, copyProfileKb } from "../profiles.server";
 import { readExport, importData, OMITTED } from "../services/portability.server";
@@ -81,6 +82,8 @@ export async function loader() {
     matchGate: {
       min: Number(getSetting("min_match_score") || "0") || 0,
       advise: getSetting("min_match_advise") === "true",
+      ceiling: Number(getSetting("max_session_cost") || "0") || 0,
+      perJob: money(estimateAutopilot(1).perJobUsd),
     },
     kbItems: kbBuildSources().map((k) => ({ id: k.id, kind: k.kind, title: k.title, tags: k.tags })),
     backup: {
@@ -175,6 +178,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (intent === "match-minimum") {
     setSetting("min_match_score", String(Number(form.get("min_match_score") || "0") || 0));
     setSetting("min_match_advise", form.get("min_match_advise") ? "true" : "false");
+    setSetting("max_session_cost", String(Number(form.get("max_session_cost") || "0") || 0));
     return { ok: true, msg: "Minimum match score saved." };
   }
   if (intent === "profile-kb") {
@@ -755,6 +759,25 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               </label>
             </div>
           </div>
+          <div className="field">
+            <label>Stop a batch once it has spent</label>
+            <Select
+              name="max_session_cost"
+              defaultValue={String(matchGate.ceiling)}
+              options={[
+                { value: "0", label: "No ceiling" },
+                { value: "5", label: "$5" },
+                { value: "10", label: "$10" },
+                { value: "25", label: "$25" },
+                { value: "50", label: "$50" },
+              ]}
+            />
+          </div>
+          <p className="hint">
+            Autopilot runs about {matchGate.perJob} a job on your runner, so a batch of ten is
+            real money. The ceiling is checked between jobs against what was actually billed,
+            not against the estimate — it stops the session and says how many it did not reach.
+          </p>
           <p className="hint">
             The score is added up from five weighted dimensions, each quoted against the posting —
             open &ldquo;How this score was reached&rdquo; on any analysed job to see the working. A

@@ -2739,3 +2739,43 @@ test("the match score is arithmetic, not a number the model chose", async () => 
   assert.equal(norm.length, RUBRIC.length);
   assert.equal(norm.find((d) => d.key === "seniority")!.evidence, "5+ years");
 });
+
+test("a batch says what it will cost before you start it", async () => {
+  const { estimateAutopilot, sessionSpendUsd, money } = await import("../app/services/estimate.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  // No history: the estimate must not claim a batch is free. It has no basis, and says
+  // so through `samples`, which is what the UI uses to decide whether to cite it.
+  db.prepare("DELETE FROM llm_calls").run();
+  const blind = estimateAutopilot(5);
+  assert.equal(blind.samples, 0, "with nothing to go on it says so");
+  assert.equal(blind.calls, 25, "five jobs at five calls each");
+
+  // With history, it prices from what this machine actually spent.
+  const ins = db.prepare(
+    "INSERT INTO llm_calls (ts,runner,model,purpose,cost_usd,status) VALUES (?,?,?,?,?,'ok')"
+  );
+  ins.run("2026-01-01T00:00:00.000Z", "r", "m", "match", 0.4);
+  ins.run("2026-01-01T00:00:00.000Z", "r", "m", "resume-tailor", 0.8);
+  ins.run("2026-01-01T00:00:00.000Z", "r", "m", "cover-letter", 0.2);
+
+  const e = estimateAutopilot(10);
+  assert.ok(e.samples >= 3);
+  assert.ok(e.perJobUsd > 0, "a job that costs money must not estimate as free");
+  assert.equal(Math.round(e.totalUsd * 100), Math.round(e.perJobUsd * 10 * 100), "ten jobs is ten times one");
+
+  // A step with no history of its own is priced at the average of the others rather
+  // than zero — a step that has never run is not a free step.
+  const withUnknown = estimateAutopilot(1);
+  assert.ok(withUnknown.perJobUsd > 0.4 + 0.8 + 0.2 - 0.001, "unpriced steps still count for something");
+
+  // the ceiling is measured against what was billed, not against the estimate
+  assert.ok(sessionSpendUsd("2025-01-01T00:00:00.000Z") >= 1.4);
+  assert.equal(sessionSpendUsd("2027-01-01T00:00:00.000Z"), 0, "nothing spent since a future instant");
+
+  assert.equal(money(2.86), "$2.86");
+  assert.equal(money(0.4), "40¢");
+
+  db.prepare("DELETE FROM llm_calls").run();
+});
