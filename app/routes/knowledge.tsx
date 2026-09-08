@@ -8,6 +8,8 @@ import { DirPicker } from "../components/DirPicker";
 import { ConfirmForm } from "../components/ConfirmForm";
 import { GraphView } from "../components/graph/GraphView";
 import { buildGraph } from "../services/graph.server";
+import { currentProfile } from "../profiles.server";
+import { profileKbIds } from "../profiles.server";
 import {
   kbItems,
   kbOpenQuestions,
@@ -50,7 +52,19 @@ export async function loader() {
   return {
     hasRunner: runners.length > 0,
     hasProfile: !!getDefaultProfile(),
-    items: kbItems(),
+    // What THIS profile draws on. The base is shared — every entry stays available to
+    // every profile — but a page showing all of it is not the page you want once you
+    // have said which parts a search actually uses.
+    items: (() => {
+      const chosen = new Set(profileKbIds(currentProfile().id));
+      const all = kbItems();
+      return chosen.size ? all.filter((i: any) => chosen.has(Number(i.id))) : all;
+    })(),
+    kbScope: {
+      profile: currentProfile().name,
+      selected: profileKbIds(currentProfile().id).length,
+      total: kbItems().length,
+    },
     questions: kbOpenQuestions(),
     suggestions: kbSuggestions("pending"),
     suggestionGroups: kbSuggestionClusters(),
@@ -342,6 +356,13 @@ export default function Knowledge({ loaderData, actionData }: Route.ComponentPro
 
       <div className="panel">
         <h3>What the agent knows {kb.items.length ? <span className="badge ok">{kb.items.length}</span> : <span className="badge off">empty</span>}</h3>
+        {kb.kbScope.selected > 0 && (
+          <p className="hint">
+            Showing the {kb.kbScope.selected} of {kb.kbScope.total} entries that <strong>{kb.kbScope.profile}</strong>{" "}
+            draws on. The rest are still here and still yours — change the selection in{" "}
+            <a href="/settings?tab=Profiles">Settings → Profiles</a>.
+          </p>
+        )}
         {kb.items.length === 0 ? (
           <p className="hint">Nothing yet. Capture a note or scan a folder above to begin.</p>
         ) : (

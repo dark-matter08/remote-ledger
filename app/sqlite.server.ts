@@ -87,6 +87,14 @@ export function getDb(): Db {
     ensureColumn(db, "jobs", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     ensureColumn(db, "companies", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     ensureColumn(db, "profiles", "last_crawled_at", "TEXT");
+    // A profile is a whole workspace, not just a search: its own résumés and its own
+    // apply history, as well as its own postings. Mail is not listed here because it
+    // does not need a column — an email belongs to whichever profile owns the job it
+    // matched, and one that has matched nothing yet belongs to all of them, because
+    // which search it concerns is precisely what is not known yet.
+    ensureColumn(db, "resume_profiles", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "apply_sessions", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_resume_profiles_profile ON resume_profiles(profile_id)");
     ensureColumn(db, "crawl_runs", "profile_id", "TEXT");
     ensureColumn(db, "crawl_runs", "job_id", "TEXT"); // autopilot runs belong to a posting
     db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_profile ON jobs(profile_id)");

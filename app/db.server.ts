@@ -5,6 +5,7 @@ import { getDb, transaction } from "./sqlite.server";
 import { STAGES, type Stage, type Category, type Job } from "./stages";
 import { REASON_RULE, NON_JUDGEMENT_REASONS, hostOf, type BlockScope } from "./trash";
 import { urlKey } from "./job-identity";
+import { currentProfile } from "./profiles.server";
 
 export { STAGES, QUICK_STAGES, STAGE_LABEL } from "./stages";
 export type { Stage, Category, Job } from "./stages";
@@ -719,8 +720,8 @@ export interface ApplySession {
 
 export function createSession(mode: string, rules: any): number {
   const info = getDb()
-    .prepare("INSERT INTO apply_sessions (started_at,status,mode,rules_json,owner_pid) VALUES (?,?,?,?,?)")
-    .run(new Date().toISOString(), "running", mode, JSON.stringify(rules), process.pid);
+    .prepare("INSERT INTO apply_sessions (started_at,status,mode,rules_json,owner_pid,profile_id) VALUES (?,?,?,?,?,?)")
+    .run(new Date().toISOString(), "running", mode, JSON.stringify(rules), process.pid, currentProfile().id);
   return Number(info.lastInsertRowid);
 }
 export function updateSession(id: number, patch: Partial<ApplySession>): void {
@@ -732,8 +733,11 @@ export function updateSession(id: number, patch: Partial<ApplySession>): void {
 export function getSession(id: number): ApplySession | null {
   return (getDb().prepare("SELECT * FROM apply_sessions WHERE id=?").get(id) as ApplySession) || null;
 }
-export function listSessions(limit = 20): ApplySession[] {
-  return getDb().prepare("SELECT * FROM apply_sessions ORDER BY id DESC LIMIT ?").all(limit) as ApplySession[];
+export function listSessions(limit = 20, profileId?: string): ApplySession[] {
+  const scope = profileId ?? currentProfile().id;
+  return getDb()
+    .prepare("SELECT * FROM apply_sessions WHERE profile_id=? ORDER BY id DESC LIMIT ?")
+    .all(scope, limit) as ApplySession[];
 }
 
 export function addSessionJob(sessionId: number, jobId: string): number {
@@ -833,13 +837,31 @@ export function crawlLog(runId: number, kind: string, text: string): void {
 export function getCrawlRun(id: number): CrawlRun | null {
   return (getDb().prepare("SELECT * FROM crawl_runs WHERE id=?").get(id) as CrawlRun) || null;
 }
-export function listCrawlRuns(limit = 25): CrawlRun[] {
-  return getDb().prepare("SELECT * FROM crawl_runs ORDER BY id DESC LIMIT ?").all(limit) as CrawlRun[];
+/**
+ * Runs belong to the profile that asked for them.
+ *
+ * Runs made before profiles existed carry no profile_id; they are shown everywhere
+ * rather than nowhere, because hiding an install's entire history behind a column it
+ * predates would look like the history had been lost.
+ */
+export function listCrawlRuns(limit = 25, profileId?: string): CrawlRun[] {
+  const scope = profileId ?? currentProfile().id;
+  return getDb()
+    .prepare("SELECT * FROM crawl_runs WHERE profile_id IS NULL OR profile_id=? ORDER BY id DESC LIMIT ?")
+    .all(scope, limit) as CrawlRun[];
 }
-export function activeCrawl(): CrawlRun | null {
-  // only true crawls gate the crawl buttons / scheduler — folder scans (type='scan')
-  // also live in crawl_runs for the shell, but must not block crawling.
-  return (getDb().prepare("SELECT * FROM crawl_runs WHERE status='running' AND type IN ('find','update','full') ORDER BY id DESC LIMIT 1").get() as CrawlRun) || null;
+export function activeCrawl(profileId?: string): CrawlRun | null {
+  // Only true crawls gate the buttons — folder scans (type='scan') also live here for
+  // the shell but must not block crawling. Scoped, so one profile crawling does not
+  // grey out another's button: they are separate searches on separate schedules.
+  const scope = profileId ?? currentProfile().id;
+  return (
+    (getDb()
+      .prepare(
+        "SELECT * FROM crawl_runs WHERE status='running' AND type IN ('find','update','full') AND (profile_id IS NULL OR profile_id=?) ORDER BY id DESC LIMIT 1"
+      )
+      .get(scope) as CrawlRun) || null
+  );
 }
 export function crawlLogs(runId: number): { id: number; ts: string; kind: string; text: string }[] {
   return getDb().prepare("SELECT id,ts,kind,text FROM crawl_logs WHERE run_id=? ORDER BY id").all(runId) as any[];

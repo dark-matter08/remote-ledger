@@ -15,6 +15,7 @@ import { createCrawlRun, crawlLog, updateCrawlRun, setStage, setNextAction, addE
 import { resolveLive } from "./scrape.server";
 import { defaultRunnerId, runLLM, tryParseJson } from "../llm/runner.server";
 import { STAGES, type Stage } from "../stages";
+import { currentProfile } from "../profiles.server";
 
 const NOW = () => new Date().toISOString();
 
@@ -45,11 +46,28 @@ export function setAccountInterval(id: number, min: number): void {
 }
 
 // ---------- review queue ----------
-export function pendingEmails(): EmailMessage[] {
-  return getDb().prepare("SELECT * FROM email_messages WHERE status='new' ORDER BY sent_at DESC, id DESC").all() as any[];
+/*
+ * Mail belongs to the profile that owns the job it matched.
+ *
+ * No column for it: which search an email concerns is decided by the posting it turns
+ * out to be about, and copying that onto the message would just be a second place for
+ * the same fact to go stale. An email that has not matched anything yet shows under
+ * every profile, because which one it concerns is exactly what is not yet known — and
+ * hiding it until then is how a reply gets missed.
+ */
+const PROFILE_SCOPE = `AND (job_id IS NULL OR job_id IN (SELECT id FROM jobs WHERE profile_id = ?))`;
+
+export function pendingEmails(profileId?: string): EmailMessage[] {
+  const scope = profileId ?? currentProfile().id;
+  return getDb()
+    .prepare(`SELECT * FROM email_messages WHERE status='new' ${PROFILE_SCOPE} ORDER BY sent_at DESC, id DESC`)
+    .all(scope) as any[];
 }
-export function recentEmails(limit = 20): EmailMessage[] {
-  return getDb().prepare("SELECT * FROM email_messages WHERE status!='new' ORDER BY id DESC LIMIT ?").all(limit) as any[];
+export function recentEmails(limit = 20, profileId?: string): EmailMessage[] {
+  const scope = profileId ?? currentProfile().id;
+  return getDb()
+    .prepare(`SELECT * FROM email_messages WHERE status!='new' ${PROFILE_SCOPE} ORDER BY id DESC LIMIT ?`)
+    .all(scope, limit) as any[];
 }
 
 // Re-run job matching on queued ("new") emails that didn't match a job — e.g. older mail

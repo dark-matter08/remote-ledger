@@ -4,6 +4,7 @@ import { Square } from "lucide-react";
 import type { Route } from "./+types/crawl";
 import { Shell } from "../components/Shell";
 import { listCrawlRuns, activeCrawl, getCrawlRun, crawlLogs, updateCrawlRun, crawlLog } from "../db.server";
+import { currentProfile } from "../profiles.server";
 import { startCrawl, isCrawlRunning, abortCrawl, type CrawlType } from "../services/crawl.server";
 import { availableRunners } from "../llm/runner.server";
 
@@ -15,6 +16,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const runs = listCrawlRuns(25);
   const active = activeCrawl();
+  const profile = currentProfile();
   const selId = Number(url.searchParams.get("run") || active?.id || runs[0]?.id || 0);
   const selected = selId ? getCrawlRun(selId) : null;
   const runners = await availableRunners();

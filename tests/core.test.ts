@@ -2366,11 +2366,14 @@ test("stopping a crawl lets the next one start", async () => {
   // had already stopped went on refusing the next one.
   const guard = src.slice(src.indexOf("export function isCrawlRunning"));
   const guardBody = guard.slice(0, guard.indexOf("\n}"));
-  assert.match(guardBody, /controllers\.size/, "the guard must count live runs, not a flag beside them");
-  assert.ok(
-    !/\brunning\b\s*\|\|/.test(guardBody),
-    "a separate boolean drifts from the map; that drift is the bug"
-  );
+  // The guard asks the run record, which the Stop button writes to directly — so a
+  // stopped crawl stops blocking the moment it is stopped. It must NOT be a flag kept
+  // alongside: that is what drifted, and the drift was the bug.
+  assert.match(guardBody, /activeCrawl\(/, "the guard must ask the runs, not a flag beside them");
+  assert.ok(!/\brunning\b\s*\|\|/.test(guardBody), "a separate boolean drifts from the truth");
+  // and it is per profile: two searches on two schedules, so one crawling must not
+  // grey out the other's button
+  assert.match(guardBody, /profileId|scope/, "the guard must be scoped to one profile");
 
   // and the abort has to take effect at once, not when the agent finally notices
   const abort = src.slice(src.indexOf("export function abortCrawl"));
@@ -2636,4 +2639,45 @@ test("mail scanned before you marked the job applied is not lost", async () => {
 
   db.prepare("DELETE FROM email_messages WHERE uid=991").run();
   db.prepare("DELETE FROM jobs WHERE id=?").run(jobId);
+});
+
+test("a profile is a workspace: its own résumés, apply history and mail", async () => {
+  const { createProfile, deleteProfile, setCurrentProfile } = await import("../app/profiles.server");
+  const { listProfiles: listResumes, saveProfile } = await import("../app/resume/profiles.server");
+  const { listSessions, createSession } = await import("../app/db.server");
+  const { getDb } = await import("../app/sqlite.server");
+
+  const a = createProfile({ name: "Workspace A", field: "software" });
+  const b = createProfile({ name: "Workspace B", field: "design" });
+
+  setCurrentProfile(a.id);
+  saveProfile({ name: "A's résumé", data: { name: "x", contact: {}, experience: [] } as never });
+  createSession("assist", {});
+
+  // B is a different workspace, not a different view of the same one
+  setCurrentProfile(b.id);
+  assert.equal(listResumes().length, 0, "B has no résumés of its own yet");
+  assert.equal(listSessions().length, 0, "and none of A's apply history");
+
+  // …and nothing was moved or lost getting there
+  setCurrentProfile(a.id);
+  assert.equal(listResumes().length, 1);
+  assert.equal(listSessions().length, 1);
+
+  // Mail with no matched job belongs to no search yet, so it must appear under both —
+  // hiding it until it matches is how a reply goes unseen.
+  const { pendingEmails } = await import("../app/services/email.server");
+  getDb()
+    .prepare(
+      `INSERT INTO email_messages (account_id, uid, from_addr, subject, job_id, category, confidence, status, created_at)
+       VALUES (1, 4242, 'someone@example.com', 'Unmatched', NULL, 'recruiter', 50, 'new', 'n')`
+    )
+    .run();
+  const inA = pendingEmails(a.id).some((m: any) => m.uid === 4242);
+  const inB = pendingEmails(b.id).some((m: any) => m.uid === 4242);
+  assert.ok(inA && inB, "unmatched mail is visible from every profile");
+
+  getDb().prepare("DELETE FROM email_messages WHERE uid=4242").run();
+  deleteProfile(a.id, { deleteJobs: true });
+  deleteProfile(b.id, { deleteJobs: true });
 });
