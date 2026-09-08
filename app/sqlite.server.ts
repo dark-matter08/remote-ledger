@@ -70,6 +70,46 @@ export function getDb(): Db {
       }
     }
   } catch {}
+  // ── profiles ────────────────────────────────────────────────────────────────
+  //
+  // One profile per line of work. Before this there was one search, held as three
+  // settings rows, and a second line of work meant overwriting the first.
+  //
+  // The migration is careful in one specific way: it adopts the existing search
+  // rather than inventing a profile beside it. Every job and every company already
+  // on this machine belongs to that adopted profile, so nothing an install has
+  // collected becomes unreachable the moment it updates.
+  try {
+    ensureColumn(db, "jobs", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "companies", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    ensureColumn(db, "crawl_runs", "profile_id", "TEXT");
+    ensureColumn(db, "crawl_runs", "job_id", "TEXT"); // autopilot runs belong to a posting
+    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_profile ON jobs(profile_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_companies_profile ON companies(profile_id)");
+    // Deliberately NOT unique. Two profiles may hold the same posting — that is the
+    // chosen model — and within one profile upsertJobs already guarantees one row per
+    // url_key. A unique index would add nothing there and take something away: it
+    // makes the legacy-duplicate state unrepresentable, and installs from before
+    // url_key existed still carry it. On those, creating the index throws, this catch
+    // swallows it, and the result is no enforcement and no warning — while the fold
+    // that exists to repair them can no longer run either.
+    //
+    // Application code can heal a duplicate. An index can only refuse to admit one.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_profile_url_key ON jobs(profile_id, url_key)");
+
+    const have = db.prepare("SELECT count(*) AS n FROM profiles").get() as { n: number };
+    if (!have.n) {
+      const get = (k: string) =>
+        (db.prepare("SELECT value FROM settings WHERE key=?").get(k) as { value?: string } | undefined)?.value || "";
+      const field = get("profile_field") || "software";
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO profiles (id, name, field, location, stack, active, sort_order, created_at, updated_at)
+         VALUES ('default', ?, ?, ?, ?, 1, 0, ?, ?)`
+      ).run(get("profile_stack") ? "My search" : "My search", field, get("profile_location"), get("profile_stack"), now, now);
+    }
+  } catch {}
+
   // company-experience metadata (a company scan = ONE experience entry, not N projects)
   for (const t of ["kb_items", "kb_sources"]) {
     try { ensureColumn(db, t, "role", "TEXT"); } catch {}

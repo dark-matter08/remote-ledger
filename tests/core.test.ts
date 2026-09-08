@@ -2386,3 +2386,68 @@ test("stopping a crawl lets the next one start", async () => {
     "and record it as stopped rather than leaving the Stop button's note to be overwritten"
   );
 });
+
+test("profiles: a second line of work no longer overwrites the first", async () => {
+  const { listProfiles, createProfile, updateProfile, deleteProfile, profileSlug } = await import(
+    "../app/profiles.server"
+  );
+  const { getDb } = await import("../app/sqlite.server");
+
+  // The whole point: there used to be one search held in three settings rows, so
+  // starting a second meant destroying the first. These have to coexist.
+  const eng = createProfile({ name: "Engineering", field: "software", stack: "TypeScript" });
+  const design = createProfile({ name: "Design", field: "design", stack: "Figma" });
+  assert.notEqual(eng.id, design.id);
+  assert.equal(createProfile({ name: "Design", field: "design" }).id, "design-2", "a repeated name gets its own id");
+
+  const still = listProfiles().find((p) => p.id === eng.id)!;
+  assert.equal(still.stack, "TypeScript", "creating the second must not have touched the first");
+
+  // inactive is kept, just not searched
+  updateProfile(design.id, { active: 0 });
+  assert.equal(listProfiles().find((p) => p.id === design.id)!.active, 0);
+  assert.ok(listProfiles().some((p) => p.id === design.id), "deactivating is not deleting");
+
+  // A posting may exist under two profiles — that is the chosen model — but never
+  // twice within one. Asserted through upsertJobs rather than a unique index: the
+  // index would make the legacy-duplicate state unrepresentable, and the fold that
+  // repairs installs carrying it could then never run.
+  const { upsertJobs } = await import("../app/db.server");
+  const db = getDb();
+  const posting = [
+    {
+      company: "Profilecorp",
+      role: "Backend Engineer",
+      category: "high",
+      fit_score: 80,
+      apply_url: "https://boards.greenhouse.io/profilecorp/jobs/99001122",
+    },
+  ];
+  const countIn = (p: string) =>
+    (db.prepare("SELECT count(*) AS n FROM jobs WHERE profile_id=?").get(p) as { n: number }).n;
+
+  assert.equal(upsertJobs(posting, undefined, eng.id).inserted, 1);
+  assert.equal(upsertJobs(posting, undefined, design.id).inserted, 1, "the other profile collects it too");
+  assert.equal(countIn(eng.id), 1);
+  assert.equal(countIn(design.id), 1);
+
+  // the same posting again, reworded — updates, never mints a second row
+  const reworded = [{ ...posting[0], role: "Backend Engineer (Remote)" }];
+  const again = upsertJobs(reworded, undefined, eng.id);
+  assert.equal(again.inserted, 0, "a reworded title is not a new posting");
+  assert.equal(countIn(eng.id), 1, "still one row in this profile");
+  assert.equal(countIn(design.id), 1, "and the other profile was not touched");
+
+  // deleting takes its postings with it, and leaves the other profile's copy alone
+  const removed = deleteProfile(design.id, { deleteJobs: true });
+  assert.equal(removed.jobs, 1, "deleting a profile takes its postings with it");
+  assert.equal(
+    (db.prepare("SELECT count(*) AS n FROM jobs WHERE profile_id=?").get(eng.id) as { n: number }).n,
+    1,
+    "the other profile's copy survives"
+  );
+
+  assert.equal(profileSlug("Data / ML!!", []), "data-ml");
+  deleteProfile(eng.id, { deleteJobs: true });
+  deleteProfile("design-2", { deleteJobs: true });
+});

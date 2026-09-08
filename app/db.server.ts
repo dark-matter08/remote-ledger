@@ -560,20 +560,24 @@ function text(v: unknown): string {
 
 export function upsertJobs(
   jobs: any[],
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  profileId = "default"
 ): { inserted: number; updated: number; blocked: number; folded: number; errors: { job: string; error: string }[] } {
   const db = getDb();
   const isBlocked = blockIndex();
-  const existing = db.prepare("SELECT id FROM jobs WHERE id=?");
-  // the board's own id for the posting, which survives a reworded title
-  const byUrlKey = db.prepare("SELECT id FROM jobs WHERE url_key=? LIMIT 1");
+  const existing = db.prepare("SELECT id FROM jobs WHERE id=? AND profile_id=?");
+  // The board's own id for the posting, which survives a reworded title — looked up
+  // within this profile only. Two profiles are allowed to hold the same posting, each
+  // with its own stage and notes, so a match under one must not be folded into the
+  // other or the second profile could never collect it at all.
+  const byUrlKey = db.prepare("SELECT id FROM jobs WHERE url_key=? AND profile_id=? LIMIT 1");
   const insert = db.prepare(`
-    INSERT INTO jobs (id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,url_key,source,closes_at,active,first_seen,last_seen,updated_at)
-    VALUES (@id,@company,@role,@category,@fit_score,@stack,@eligibility,@seniority,@apply_url,@url_key,@source,@closes_at,1,@now,@now,@now)`);
+    INSERT INTO jobs (id,profile_id,company,role,category,fit_score,stack,eligibility,seniority,apply_url,url_key,source,closes_at,active,first_seen,last_seen,updated_at)
+    VALUES (@id,@profile_id,@company,@role,@category,@fit_score,@stack,@eligibility,@seniority,@apply_url,@url_key,@source,@closes_at,1,@now,@now,@now)`);
   const update = db.prepare(`
     UPDATE jobs SET company=@company, role=@role, category=@category, fit_score=@fit_score, stack=@stack,
       eligibility=@eligibility, seniority=@seniority, apply_url=@apply_url, url_key=@url_key, source=@source, closes_at=@closes_at,
-      active=1, last_seen=@now, updated_at=@now WHERE id=@id`);
+      active=1, last_seen=@now, updated_at=@now WHERE id=@id AND profile_id=@profile_id`);
   let inserted = 0,
     updated = 0,
     blocked = 0,
@@ -594,9 +598,18 @@ export function upsertJobs(
         // alone let the same posting come back as a brand-new row — with none of the
         // application against it. Prefer the board's id for the posting.
         const url_key = urlKey(apply_url);
-        const slugId = raw.id || jobId(company, role);
-        const byUrl = (url_key ? byUrlKey.get(url_key) : null) as { id: string } | undefined | null;
-        const bySlug = existing.get(slugId) as { id: string } | undefined | null;
+        // Namespaced by profile, because jobs.id is the primary key and two profiles
+        // are meant to be able to hold the same posting — unprefixed, the second
+        // profile's copy collided with the first and was silently counted as an error.
+        //
+        // The default profile keeps bare ids. Every install that existed before
+        // profiles has its rows under it, and rewriting 160-odd primary keys would
+        // cascade into applications, resume_versions and apply_session_jobs to make
+        // nothing look different.
+        const bare = raw.id || jobId(company, role);
+        const slugId = profileId === "default" ? bare : `${profileId}--${bare}`;
+        const byUrl = (url_key ? byUrlKey.get(url_key, profileId) : null) as { id: string } | undefined | null;
+        const bySlug = existing.get(slugId, profileId) as { id: string } | undefined | null;
 
         // The posting id beats the slug: the slug is built from a title the crawl
         // model rewords, the url carries the board's own id for the job.
@@ -634,6 +647,7 @@ export function upsertJobs(
           url_key,
           source: text(raw.source) || null,
           closes_at: text(raw.closes_at) || null,
+          profile_id: profileId,
           now,
         };
         if (hit) {

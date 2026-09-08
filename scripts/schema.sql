@@ -1,5 +1,24 @@
 -- The Remote Ledger — SQLite schema (single source of truth, read by app + scripts)
 
+-- A line of work you are searching for. There used to be exactly one of these, held
+-- as three rows in `settings`, so a second one meant overwriting the first — the
+-- "discard and start over" this table exists to end. Everything a search needs to be
+-- its own search belongs to a profile: the vocabulary, the prompt, the boards it
+-- mines, and the postings it finds.
+CREATE TABLE IF NOT EXISTS profiles (
+    id          TEXT PRIMARY KEY,              -- slug: 'engineering', 'design'
+    name        TEXT NOT NULL,
+    field       TEXT NOT NULL,                 -- an id from app/fields.ts
+    location    TEXT NOT NULL DEFAULT '',
+    stack       TEXT NOT NULL DEFAULT '',
+    prompt      TEXT,                          -- NULL = the templated default
+    resume_profile_id TEXT,                    -- which résumé this one tailors from
+    active      INTEGER NOT NULL DEFAULT 1,    -- 0 = kept, but skipped by crawls
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
   id           TEXT PRIMARY KEY,          -- stable slug: company--role
   company      TEXT NOT NULL,
