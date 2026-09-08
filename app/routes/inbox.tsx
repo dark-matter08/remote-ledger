@@ -5,8 +5,9 @@ import type { Route } from "./+types/inbox";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
 import { ConfirmForm } from "../components/ConfirmForm";
+import { listProfiles } from "../profiles.server";
 import {
-  listAccounts, addAccount, removeAccount, setAccountInterval,
+  listAccounts, addAccount, removeAccount, setAccountInterval, setAccountProfile,
   pendingEmails, recentEmails, startSync, applyEmailUpdate, dismissEmail, rematchPending,
 } from "../services/email.server";
 import { getDb, getSetting, setSetting } from "../sqlite.server";
@@ -22,6 +23,7 @@ export async function loader() {
   return {
     hasRunner: runners.length > 0,
     accounts: listAccounts(),
+    profiles: listProfiles(),
     pending: pendingEmails(),
     recent: recentEmails(),
     syncing: !!db.prepare("SELECT 1 FROM crawl_runs WHERE type='email' AND status='running' LIMIT 1").get(),
@@ -53,6 +55,13 @@ export async function action({ request }: Route.ActionArgs) {
   }
   if (intent === "sync") { startSync(Number(form.get("id"))); return { ok: true, msg: "Syncing…" }; }
   if (intent === "remove-account") { removeAccount(Number(form.get("id"))); return { ok: true, msg: "Mailbox disconnected and its queued mail removed." }; }
+  if (intent === "account-profile") {
+    // "" means shared. One mailbox serving every search is the ordinary setup; binding
+    // is for people who use a separate alias per search.
+    const pid = String(form.get("profile_id") || "") || null;
+    setAccountProfile(Number(form.get("id")), pid);
+    return { ok: true, msg: pid ? "This mailbox now belongs to one profile." : "This mailbox is shared with every profile." };
+  }
   if (intent === "interval") { setAccountInterval(Number(form.get("id")), Number(form.get("interval") || "0") || 0); return { ok: true, msg: "Auto-sync interval updated." }; }
   if (intent === "apply") { const r = applyEmailUpdate(Number(form.get("id"))); return r.ok ? { ok: true, msg: r.msg } : { error: r.msg }; }
   if (intent === "dismiss") { dismissEmail(Number(form.get("id"))); return { ok: true, msg: "Dismissed." }; }
@@ -70,7 +79,7 @@ export async function action({ request }: Route.ActionArgs) {
 const CAT_BADGE: Record<string, string> = { offer: "ok", interview: "ok", screening: "warn", recruiter: "warn", receipt: "off", rejection: "on", other: "off" };
 
 export default function Inbox({ loaderData, actionData }: Route.ComponentProps) {
-  const { accounts, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin, scanLimit, ingestAlerts } = loaderData;
+  const { accounts, profiles, pending, recent, hasRunner, syncing, lastEmailRun, autoApply, autoMin, scanLimit, ingestAlerts } = loaderData;
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const revalidator = useRevalidator();

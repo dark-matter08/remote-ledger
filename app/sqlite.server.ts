@@ -94,6 +94,12 @@ export function getDb(): Db {
     // which search it concerns is precisely what is not known yet.
     ensureColumn(db, "resume_profiles", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     ensureColumn(db, "apply_sessions", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    // Nullable on purpose, and null by default: one job-application mailbox serving
+    // every search is the ordinary setup, and forcing a mailbox per profile would mean
+    // connecting the same account twice and syncing it twice for nothing. Set it and
+    // the account belongs to one search — which is what you want if you use a separate
+    // alias per search (you+eng@, you+design@).
+    ensureColumn(db, "email_accounts", "profile_id", "TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_resume_profiles_profile ON resume_profiles(profile_id)");
     ensureColumn(db, "crawl_runs", "profile_id", "TEXT");
     ensureColumn(db, "crawl_runs", "job_id", "TEXT"); // autopilot runs belong to a posting

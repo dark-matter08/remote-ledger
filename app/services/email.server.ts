@@ -23,8 +23,28 @@ export interface EmailAccount { id: number; label: string | null; host: string; 
 export interface EmailMessage { id: number; account_id: number; uid: number; from_addr: string | null; from_name: string | null; subject: string | null; sent_at: string | null; job_id: string | null; category: string | null; confidence: number; proposed_stage: string | null; summary: string | null; snippet: string | null; status: string; created_at: string }
 
 // ---------- accounts ----------
-export function listAccounts(): EmailAccount[] {
-  return getDb().prepare("SELECT * FROM email_accounts ORDER BY id").all() as any[];
+/**
+ * The mailboxes this profile can see: its own, plus every unassigned one.
+ *
+ * An account with no profile is shared, which is the ordinary case — one job-application
+ * mailbox receives mail for whatever you happen to be applying for. Assigning one makes
+ * it belong to a single search, for people who use a separate alias per search.
+ *
+ * `all` is for the sync loop, which must service every mailbox on the machine whatever
+ * profile happens to be selected in the UI.
+ */
+export function listAccounts(profileId?: string | "all"): EmailAccount[] {
+  const db = getDb();
+  if (profileId === "all") return db.prepare("SELECT * FROM email_accounts ORDER BY id").all() as any[];
+  const scope = profileId ?? currentProfile().id;
+  return db
+    .prepare("SELECT * FROM email_accounts WHERE profile_id IS NULL OR profile_id=? ORDER BY id")
+    .all(scope) as any[];
+}
+
+/** Bind a mailbox to one search, or pass null to share it with all of them. */
+export function setAccountProfile(id: number, profileId: string | null): void {
+  getDb().prepare("UPDATE email_accounts SET profile_id=? WHERE id=?").run(profileId, id);
 }
 const pwKey = (id: number) => `email_pw_${id}`;
 
@@ -55,19 +75,20 @@ export function setAccountInterval(id: number, min: number): void {
  * every profile, because which one it concerns is exactly what is not yet known — and
  * hiding it until then is how a reply gets missed.
  */
-const PROFILE_SCOPE = `AND (job_id IS NULL OR job_id IN (SELECT id FROM jobs WHERE profile_id = ?))`;
+const PROFILE_SCOPE = `AND account_id IN (SELECT id FROM email_accounts WHERE profile_id IS NULL OR profile_id = ?)
+   AND (job_id IS NULL OR job_id IN (SELECT id FROM jobs WHERE profile_id = ?))`;
 
 export function pendingEmails(profileId?: string): EmailMessage[] {
   const scope = profileId ?? currentProfile().id;
   return getDb()
     .prepare(`SELECT * FROM email_messages WHERE status='new' ${PROFILE_SCOPE} ORDER BY sent_at DESC, id DESC`)
-    .all(scope) as any[];
+    .all(scope, scope) as any[];
 }
 export function recentEmails(limit = 20, profileId?: string): EmailMessage[] {
   const scope = profileId ?? currentProfile().id;
   return getDb()
     .prepare(`SELECT * FROM email_messages WHERE status!='new' ${PROFILE_SCOPE} ORDER BY id DESC LIMIT ?`)
-    .all(scope, limit) as any[];
+    .all(scope, scope, limit) as any[];
 }
 
 // Re-run job matching on queued ("new") emails that didn't match a job — e.g. older mail
@@ -425,7 +446,7 @@ async function runSync(runId: number, acct: EmailAccount): Promise<void> {
 
 export function runDueEmailSync(): void {
   const now = Date.now();
-  for (const a of listAccounts()) {
+  for (const a of listAccounts("all")) {
     if (a.interval_min <= 0) continue;
     const last = a.last_synced_at ? new Date(a.last_synced_at).getTime() : 0;
     if (now - last >= a.interval_min * 60000) startSync(a.id);

@@ -2667,17 +2667,34 @@ test("a profile is a workspace: its own résumés, apply history and mail", asyn
   // Mail with no matched job belongs to no search yet, so it must appear under both —
   // hiding it until it matches is how a reply goes unseen.
   const { pendingEmails } = await import("../app/services/email.server");
+  // A real shared mailbox, because a message now has to belong to one the profile can
+  // see — an account bound to another profile takes its mail with it.
+  const acctId = Number(
+    getDb()
+      .prepare(
+        `INSERT INTO email_accounts (label, host, port, secure, username, mailbox, interval_min, created_at, profile_id)
+         VALUES ('shared', 'imap.example.com', 993, 1, 'me@example.com', 'INBOX', 0, 'n', NULL)`
+      )
+      .run().lastInsertRowid
+  );
   getDb()
     .prepare(
       `INSERT INTO email_messages (account_id, uid, from_addr, subject, job_id, category, confidence, status, created_at)
-       VALUES (1, 4242, 'someone@example.com', 'Unmatched', NULL, 'recruiter', 50, 'new', 'n')`
+       VALUES (?, 4242, 'someone@example.com', 'Unmatched', NULL, 'recruiter', 50, 'new', 'n')`
     )
-    .run();
+    .run(acctId);
   const inA = pendingEmails(a.id).some((m: any) => m.uid === 4242);
   const inB = pendingEmails(b.id).some((m: any) => m.uid === 4242);
   assert.ok(inA && inB, "unmatched mail is visible from every profile");
 
+  // and binding that mailbox to A takes its mail out of B, which is the point of binding
+  const { setAccountProfile } = await import("../app/services/email.server");
+  setAccountProfile(acctId, a.id);
+  assert.ok(pendingEmails(a.id).some((m: any) => m.uid === 4242), "still visible where it belongs");
+  assert.ok(!pendingEmails(b.id).some((m: any) => m.uid === 4242), "and gone from the other profile");
+
   getDb().prepare("DELETE FROM email_messages WHERE uid=4242").run();
+  getDb().prepare("DELETE FROM email_accounts WHERE id=?").run(acctId);
   deleteProfile(a.id, { deleteJobs: true });
   deleteProfile(b.id, { deleteJobs: true });
 });
