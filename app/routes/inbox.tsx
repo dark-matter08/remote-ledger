@@ -154,6 +154,19 @@ export default function Inbox({ loaderData, actionData }: Route.ComponentProps) 
                     ]} />
                     <button className="back-link" disabled={busy}>set</button>
                   </Form>
+                  <Form method="post" className="kb-source-interval">
+                    <input type="hidden" name="intent" value="account-profile" />
+                    <input type="hidden" name="id" value={a.id} />
+                    <Select
+                      name="profile_id"
+                      defaultValue={a.profile_id || ""}
+                      options={[
+                        { value: "", label: "Every profile" },
+                        ...profiles.map((p: any) => ({ value: p.id, label: `Only ${p.name}` })),
+                      ]}
+                    />
+                    <button className="back-link" disabled={busy}>set</button>
+                  </Form>
                   <Form method="post"><input type="hidden" name="intent" value="sync" /><input type="hidden" name="id" value={a.id} /><button className="back-link" disabled={busy || syncing}>{syncing ? "syncing…" : "sync now"}</button></Form>
                   {lastEmailRun && <Link to={`/crawl?run=${lastEmailRun.id}`} className="back-link">logs</Link>}
                   <ConfirmForm method="post" title="Disconnect mailbox?" confirm="Removes the saved (encrypted) credentials and any queued mail for this account. Your pipeline stays." confirmLabel="Disconnect"><input type="hidden" name="intent" value="remove-account" /><input type="hidden" name="id" value={a.id} /><button className="back-link" disabled={busy}>remove</button></ConfirmForm>
