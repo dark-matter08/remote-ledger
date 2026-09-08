@@ -2492,3 +2492,27 @@ test("export carries your work and never your keys", async () => {
     "importing what is already here must be a no-op"
   );
 });
+
+test("autopilot skips what is done and never submits", async () => {
+  const { STEPS } = await import("../app/services/autopilot.server");
+  const { readFileSync } = await import("node:fs");
+
+  const ids = STEPS.map((s) => s.id);
+  assert.deepEqual(ids, ["match", "build", "tailor", "cover", "form", "answers"], "the guided order, in order");
+
+  // Re-running on a job you part-did by hand must not pay to redo it. Every step that
+  // produces something durable has to be able to say "already done".
+  for (const id of ["match", "build", "tailor", "cover"]) {
+    const step = STEPS.find((s) => s.id === id)!;
+    assert.equal(typeof step.done, "function", `${id} must declare when it can be skipped`);
+  }
+  // Reading the form is the exception, deliberately: it costs no model call and a form
+  // can change under you between runs.
+  assert.equal(STEPS.find((s) => s.id === "form")!.done({} as never), false);
+
+  // The promise in the README. Nothing in here may click a submit button — if a step
+  // is ever added that does, this is the test that should stop it.
+  const src = readFileSync("app/services/autopilot.server.ts", "utf8");
+  assert.ok(!/\.click\(|submit\(\)|type="submit"/.test(src), "autopilot must never submit an application");
+  assert.match(src, /stops before submitting/i, "and must say so where the next person will read it");
+});

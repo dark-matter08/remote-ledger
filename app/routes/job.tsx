@@ -29,6 +29,7 @@ import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
+import { runAutopilot } from "../services/autopilot.server";
 import { RefreshCw, Check, X, Circle, Sparkles, Trash2, ShieldAlert, Square } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
@@ -275,6 +276,12 @@ export async function action({ request, params }: Route.ActionArgs) {
       addEvent(job.id, "answers_drafted", { questions: a!.answers.length, formFields: fields.length });
       return { ok: true, msg: `Drafted ${a!.answers.length} answer(s) from ${qs.length} question(s) on the form (${fields.length} fields detected).` };
     }
+    if (intent === "autopilot") {
+      const r = await runAutopilot(job.id);
+      return r.ok
+        ? { ok: true, msg: r.message, autopilot: r }
+        : { error: r.message, autopilot: r };
+    }
     if (intent === "assist-apply") {
       const r = await loggedTask("prep", `Assisted apply · ${job.company} — ${job.role}`, async (L) =>
         assistApply(job.id, (m) => L("step", m))
@@ -472,6 +479,47 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         </>
       )}
 
+      {tab === "Guided Application" && (
+        <div className="panel autopilot">
+          <h3>Autopilot</h3>
+          <p className="hint">
+            Runs the five steps below in order — match, build from your knowledge base, tailor,
+            cover letter — then reads the application form and drafts its questions. Anything you
+            have already done is skipped rather than paid for twice.
+          </p>
+          <p className="hint">
+            <strong>It stops before submitting.</strong> When it finishes you choose whether to open
+            the form and fill it yourself, or open it prefilled with what the app is sure of.
+          </p>
+          <Form method="post">
+            <input type="hidden" name="intent" value="autopilot" />
+            <button className="btn primary" disabled={busy}>
+              {busy ? "Working…" : "Run autopilot"}
+            </button>
+          </Form>
+          {actionData?.autopilot && (
+            <div className="autopilot-done">
+              <p className="hint mono tiny">
+                {(actionData.autopilot.done || []).length} run ·{" "}
+                {(actionData.autopilot.skipped || []).length} already done
+                {actionData.autopilot.failedAt ? ` · stopped at ${actionData.autopilot.failedAt}` : ""}
+              </p>
+              {actionData.autopilot.ok && (
+                <div className="field-row">
+                  <a className="btn" href={job.apply_url} target="_blank" rel="noreferrer">
+                    Open and fill it myself
+                  </a>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="assist-apply" />
+                    <button className="btn ghost" disabled={busy}>Open and autofill</button>
+                  </Form>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      
       {tab === "Guided Application" && step === 1 && (
         <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
       )}

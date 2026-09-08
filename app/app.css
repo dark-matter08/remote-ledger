@@ -933,6 +933,10 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 }
 .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
 /* the release this copy is on — quiet, but findable without opening a tab */
+/* autopilot sits above the steps it runs, so it reads as "or do all of this" */
+.autopilot { border-left: 3px solid var(--vermillion); }
+.autopilot-done { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule-faint); }
+
 /* one profile per block: each row is its own form, so saving one cannot submit another */
 .profile-row { display: flex; gap: 18px; align-items: flex-start; padding: 18px 0; border-bottom: 1px solid var(--rule-faint); }
 .profile-row:last-child { border-bottom: 0; }
