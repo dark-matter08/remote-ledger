@@ -283,3 +283,4 @@ MIT licensed — see [LICENSE](LICENSE).
 | [DESIGN.md](DESIGN.md) | the Heritage Press design system |
 | [ROADMAP.md](ROADMAP.md) | what is planned, and what is deliberately not |
 | [INSTALL.md](INSTALL.md) | the one-file installer, for people who do not use a terminal |
+| [CHANGELOG.md](CHANGELOG.md) | what changed in each release, and why |
