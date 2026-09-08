@@ -505,7 +505,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 {actionData.autopilot.failedAt ? ` · stopped at ${actionData.autopilot.failedAt}` : ""}
               </p>
               {actionData.autopilot.ok && (
-                <div className="field-row">
+                <div className="row2">
                   <a className="btn" href={job.apply_url} target="_blank" rel="noreferrer">
                     Open and fill it myself
                   </a>

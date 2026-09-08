@@ -5,6 +5,7 @@ import { Form, redirect, useNavigation } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { FilePicker } from "../components/FilePicker";
 import { ConfirmForm } from "../components/ConfirmForm";
 import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from "../services/contribute.server";
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
@@ -299,7 +300,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
     <Shell>
       <div className="page-head">
         <h1>Settings</h1>
-        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Profile · Prompt · Danger</div>
+        <div className="sub">Runners · Keys · OpenRouter · Local · Search · Scheduler · Companies · Profiles · Profile · Prompt · Data · Danger</div>
         {/*
           In the head rather than inside a tab: the reason to look it up is usually
           that you are telling someone else what you are running, and hunting through
@@ -322,46 +323,51 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
             <h3>Move to another machine</h3>
             <p className="hint">
               One file with your profiles, postings, applications, résumés, knowledge base and
-              answers. Download it here, install the Ledger on the new machine, and read it back
-              in below.
+              answers. Download it here, install the Ledger on the new machine, and read it back in below.
             </p>
             <p className="hint">
               <strong>Your keys are not in it.</strong> API keys and email passwords stay on this
-              machine — they are not written to the file even though you asked for one. Re-enter
-              them under Keys on the other side.
+              machine — they are not written to the file even though you asked for one. Re-enter them
+              under Keys on the other side.
             </p>
-            <div className="field-row">
-              <a className="btn" href="/api/export">Download everything</a>
+            <div className="row2">
+              <div className="field">
+                <label>Everything</label>
+                <a className="btn" href="/api/export">Download everything</a>
+              </div>
               {profiles.length > 1 && (
-                <Select
-                  name="export_profile"
-                  defaultValue=""
-                  onChange={(e: any) => {
-                    const v = e.target.value;
-                    if (v) window.location.href = `/api/export?profile=${encodeURIComponent(v)}`;
-                  }}
-                  options={[{ value: "", label: "…or just one profile" }, ...profiles.map((p: any) => ({ value: p.id, label: p.name }))]}
-                />
+                <div className="field">
+                  <label>Or one profile</label>
+                  <Select
+                    name="export_profile"
+                    defaultValue=""
+                    onChange={(e: any) => {
+                      const v = e.target.value;
+                      if (v) window.location.href = `/api/export?profile=${encodeURIComponent(v)}`;
+                    }}
+                    options={[{ value: "", label: "Pick a profile to export…" }, ...profiles.map((p: any) => ({ value: p.id, label: p.name }))]}
+                  />
+                </div>
               )}
             </div>
-            <p className="hint mono tiny">
-              Left out: {omitted.join(" · ")}
-            </p>
+            <p className="hint" style={{ marginTop: 18, marginBottom: 0 }}>Left out: {omitted.join(" · ")}</p>
           </div>
       
           <Form method="post" encType="multipart/form-data" className="panel">
             <input type="hidden" name="intent" value="import-data" />
             <h3>Read an export back in</h3>
             <p className="hint">
-              Merge adds what is not already here and leaves the rest alone, so running the same
-              file twice does nothing the second time. Replace empties these tables first — it
-              takes a backup before it does, but it is the one thing here you cannot undo by
-              importing again.
+              Merge adds what is not already here and leaves the rest alone, so running the same file
+              twice does nothing the second time. Replace empties these tables first — it takes a
+              backup before it does, but it is the one thing here you cannot undo by importing again.
             </p>
-            <div className="field-row">
-              <label className="lab">File<input className="field" type="file" name="file" accept=".gz,.json" required /></label>
-              <label className="lab">
-                How
+            <div className="row2">
+              <div className="field">
+                <label>Export file</label>
+                <FilePicker name="file" accept=".gz,.json" label="Choose export…" />
+              </div>
+              <div className="field">
+                <label>How to read it</label>
                 <Select
                   name="mode"
                   defaultValue="merge"
@@ -370,7 +376,7 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
                     { value: "replace", label: "Replace — wipe first (backs up)" },
                   ]}
                 />
-              </label>
+              </div>
             </div>
             <button className="btn" disabled={saving}>Import</button>
           </Form>
@@ -391,16 +397,15 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
                 <Form method="post" className="profile-edit">
                   <input type="hidden" name="intent" value="profile-save" />
                   <input type="hidden" name="id" value={p.id} />
-                  <div className="field-row">
-                    <label className="lab">Name<input className="field" name="name" defaultValue={p.name} /></label>
-                    <label className="lab">
-                      Field
+                  <div className="row2">
+                    <div className="field"><label>Name</label><input type="text" name="name" defaultValue={p.name} /></div>
+                    <div className="field"><label>Field</label>
                       <Select name="field" defaultValue={p.field} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
-                    </label>
+                    </div>
                   </div>
-                  <div className="field-row">
-                    <label className="lab">Where<input className="field" name="location" defaultValue={p.location} placeholder="Remote" /></label>
-                    <label className="lab">What you do<input className="field" name="stack" defaultValue={p.stack} placeholder="what you do" /></label>
+                  <div className="row2">
+                    <div className="field"><label>Where</label><input type="text" name="location" defaultValue={p.location} placeholder="Remote" /></div>
+                    <div className="field"><label>What you do</label><input type="text" name="stack" defaultValue={p.stack} placeholder="what you do" /></div>
                   </div>
                   <div className="profile-foot">
                     <span className="hint mono tiny">
@@ -438,16 +443,15 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               It starts with the shipped job boards, and keeps its own postings — a role that suits
               two of your searches is collected under each, with its own stage and notes.
             </p>
-            <div className="field-row">
-              <label className="lab">Name<input className="field" name="name" placeholder="Product design" required /></label>
-              <label className="lab">
-                Field
+            <div className="row2">
+              <div className="field"><label>Name</label><input type="text" name="name" placeholder="Product design" required /></div>
+              <div className="field"><label>Field</label>
                 <Select name="field" defaultValue={DEFAULT_FIELD} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
-              </label>
+              </div>
             </div>
-            <div className="field-row">
-              <label className="lab">Where<input className="field" name="location" placeholder="Remote · Europe" /></label>
-              <label className="lab">What you do<input className="field" name="stack" placeholder="Figma, user research, design systems" /></label>
+            <div className="row2">
+              <div className="field"><label>Where</label><input type="text" name="location" placeholder="Remote · Europe" /></div>
+              <div className="field"><label>What you do</label><input type="text" name="stack" placeholder="Figma, user research, design systems" /></div>
             </div>
             <button className="btn" disabled={saving}>Add profile</button>
           </Form>
