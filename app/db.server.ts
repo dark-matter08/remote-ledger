@@ -43,12 +43,20 @@ const SELECT_JOB = `
 
 const TODAY = () => new Date().toISOString().slice(0, 10);
 
-export function getLedger(): LedgerData {
+/**
+ * The board.
+ *
+ * `profileId` narrows it to one search; undefined shows every profile at once, which
+ * is a real thing to want — a posting can suit two of your profiles and you keep a
+ * separate copy under each, so the combined view is where you notice that.
+ */
+export function getLedger(profileId?: string): LedgerData {
+  const scope = profileId ? " AND j.profile_id = ?" : "";
   const rows = getDb()
     .prepare(
-      `${SELECT_JOB} WHERE j.active = 1 AND (j.closes_at IS NULL OR j.closes_at >= ?) ORDER BY j.fit_score DESC, j.company ASC`
+      `${SELECT_JOB} WHERE j.active = 1 AND (j.closes_at IS NULL OR j.closes_at >= ?)${scope} ORDER BY j.fit_score DESC, j.company ASC`
     )
-    .all(TODAY()) as Job[];
+    .all(...(profileId ? [TODAY(), profileId] : [TODAY()])) as Job[];
 
   const prevCrawl = getMeta("prev_crawl");
   const soonCutoff = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);

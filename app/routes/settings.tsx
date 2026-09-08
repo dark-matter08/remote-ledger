@@ -5,6 +5,7 @@ import { Form, redirect, useNavigation } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
+import { ConfirmForm } from "../components/ConfirmForm";
 import { pendingBoardSuggestions, submitBoardSuggestions, upstreamRepo } from "../services/contribute.server";
 import { OpenRouterPicker } from "../components/OpenRouterPicker";
 import { OllamaSetup } from "../components/OllamaSetup";
@@ -17,6 +18,7 @@ import { setSecret, deleteSecret, hasSecret } from "../secrets.server";
 import { startCrawl } from "../services/crawl.server";
 import { resetPreview, performReset, ALL_SCOPES, type ResetScope } from "../services/reset.server";
 import { listBackups } from "../services/backup.server";
+import { listProfiles, createProfile, updateProfile, deleteProfile } from "../profiles.server";
 import { currentVersion } from "../services/updates.server";
 import {
   listCompanies,
@@ -71,6 +73,7 @@ export async function loader() {
   );
   return {
     version: currentVersion(),
+    profiles: listProfiles(),
     reset: { scopes: resetPreview(), backups: listBackups() },
     companies: listCompanies(),
     community: {
@@ -116,6 +119,42 @@ export async function loader() {
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
+
+  if (intent === "profile-create") {
+    const name = String(form.get("name") || "").trim();
+    if (!name) return { ok: false, msg: "Give the profile a name." };
+    const p = createProfile({
+      name,
+      field: String(form.get("field") || DEFAULT_FIELD),
+      location: String(form.get("location") || ""),
+      stack: String(form.get("stack") || ""),
+    });
+    return { ok: true, msg: `Added ${p.name}. It starts with the shipped boards — edit them under Companies.` };
+  }
+  if (intent === "profile-save") {
+    const p = updateProfile(String(form.get("id")), {
+      name: String(form.get("name") || "").trim() || "Untitled",
+      field: String(form.get("field") || DEFAULT_FIELD),
+      location: String(form.get("location") || ""),
+      stack: String(form.get("stack") || ""),
+    });
+    return { ok: true, msg: p ? `Saved ${p.name}.` : "That profile is gone." };
+  }
+  if (intent === "profile-active") {
+    const p = updateProfile(String(form.get("id")), { active: form.get("active") ? 1 : 0 });
+    return { ok: true, msg: p?.active ? `${p.name} is searched again.` : `${p?.name} is kept, but no longer searched.` };
+  }
+  if (intent === "profile-delete") {
+    // Never silently: the postings are the expensive part, and "where did my board
+    // go" is a worse surprise than an extra question on the way out.
+    const id = String(form.get("id"));
+    const moveTo = String(form.get("move_to") || "");
+    const r = deleteProfile(id, moveTo ? { moveTo } : { deleteJobs: true });
+    return {
+      ok: true,
+      msg: moveTo ? `Deleted. ${r.jobs} posting(s) moved.` : `Deleted, with ${r.jobs} posting(s).`,
+    };
+  }
   const save = (k: string) => {
     const v = form.get(k);
     if (v !== null) setSetting(k, String(v));
@@ -222,11 +261,11 @@ export async function action({ request }: Route.ActionArgs) {
   return { ok: true };
 }
 
-const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profile", "Prompt", "Danger"] as const;
+const TABS = ["Runners", "Keys", "OpenRouter", "Local", "Search", "Scheduler", "Companies", "Profiles", "Profile", "Prompt", "Danger"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
-  const { runners, modelOptions, keys, settings, companies, community, reset, version } = loaderData;
+  const { runners, modelOptions, keys, settings, companies, community, reset, version, profiles } = loaderData;
   const nav = useNavigation();
   const saving = nav.state !== "idle";
   const [tab, setTab] = useState<Tab>("Runners");
@@ -255,6 +294,83 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         ))}
       </div>
 
+      {tab === "Profiles" && (
+        <>
+          <div className="panel">
+            <h3>Your searches</h3>
+            <p className="hint">
+              One per line of work. A crawl searches for every active profile in the same run and
+              divides the budget between them, so looking for two things costs about what looking for
+              one costs — each is searched a little less deeply. Pause one and it is kept, just not searched.
+            </p>
+            {profiles.map((p: any) => (
+              <div key={p.id} className="profile-row">
+                <Form method="post" className="profile-edit">
+                  <input type="hidden" name="intent" value="profile-save" />
+                  <input type="hidden" name="id" value={p.id} />
+                  <div className="field-row">
+                    <label className="lab">Name<input className="field" name="name" defaultValue={p.name} /></label>
+                    <label className="lab">
+                      Field
+                      <Select name="field" defaultValue={p.field} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
+                    </label>
+                  </div>
+                  <div className="field-row">
+                    <label className="lab">Where<input className="field" name="location" defaultValue={p.location} placeholder="Remote" /></label>
+                    <label className="lab">What you do<input className="field" name="stack" defaultValue={p.stack} placeholder="what you do" /></label>
+                  </div>
+                  <div className="profile-foot">
+                    <span className="hint mono tiny">
+                      {p.active ? "searched" : "paused"} · last searched {p.last_crawled_at ? p.last_crawled_at.slice(0, 10) : "never"}
+                    </span>
+                    <button className="btn small" disabled={saving}>Save</button>
+                  </div>
+                </Form>
+                <div className="profile-acts">
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="profile-active" />
+                    <input type="hidden" name="id" value={p.id} />
+                    {p.active ? null : <input type="hidden" name="active" value="1" />}
+                    <button className="btn small ghost" disabled={saving}>{p.active ? "Pause" : "Resume"}</button>
+                  </Form>
+                  {profiles.length > 1 && (
+                    <ConfirmForm
+                      method="post"
+                      confirm={`Delete "${p.name}" and every posting found under it? Its applications and notes go too.`}
+                    >
+                      <input type="hidden" name="intent" value="profile-delete" />
+                      <input type="hidden" name="id" value={p.id} />
+                      <button className="btn small danger" disabled={saving}>Delete</button>
+                    </ConfirmForm>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+      
+          <Form method="post" className="panel">
+            <input type="hidden" name="intent" value="profile-create" />
+            <h3>Add a search</h3>
+            <p className="hint">
+              It starts with the shipped job boards, and keeps its own postings — a role that suits
+              two of your searches is collected under each, with its own stage and notes.
+            </p>
+            <div className="field-row">
+              <label className="lab">Name<input className="field" name="name" placeholder="Product design" required /></label>
+              <label className="lab">
+                Field
+                <Select name="field" defaultValue={DEFAULT_FIELD} options={JOB_FIELDS.map((f) => ({ value: f.id, label: f.label }))} />
+              </label>
+            </div>
+            <div className="field-row">
+              <label className="lab">Where<input className="field" name="location" placeholder="Remote · Europe" /></label>
+              <label className="lab">What you do<input className="field" name="stack" placeholder="Figma, user research, design systems" /></label>
+            </div>
+            <button className="btn" disabled={saving}>Add profile</button>
+          </Form>
+        </>
+      )}
+      
       {tab === "Runners" && (
         <>
           <div className="panel">
