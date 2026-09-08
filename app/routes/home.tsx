@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { stackTagsFor } from "../board-tags";
 import { Link, useFetcher, redirect } from "react-router";
 import { ChevronDown, Archive, Trash2 } from "lucide-react";
 import type { Route } from "./+types/home";
@@ -34,6 +35,11 @@ export async function loader({ request }: Route.LoaderArgs) {
     profiles,
     scope: scope || "all",
     location: (scope ? profiles.find((p) => p.id === scope)?.location : "") || "Remote",
+    // The keywords the quick filters are built from: this search's, or every search's
+    // when the board is showing all of them — the filters should cover what is on screen.
+    stackKeywords: (scope
+      ? profiles.find((p) => p.id === scope)?.stack || currentProfile().stack
+      : profiles.map((p) => p.stack).filter(Boolean).join(",")) || "",
   };
 }
 
@@ -62,11 +68,6 @@ const CATEGORY_META: Record<Category, { title: string; tag: string; cls: string 
 };
 const ORDER: Category[] = ["high", "medium", "stretch"];
 
-const STACK_TAGS: { label: string; test: RegExp }[] = [
-  { label: "Node/TS", test: /node|typescript|\bts\b|react|express|nest|fullstack|full-stack|full stack/i },
-  { label: "Infra", test: /terraform|docker|k8s|kubernetes|devops|cloud|aws|gcp|ci\/cd|sre|ansible|infra/i },
-  { label: "AI/LLM", test: /\bai\b|llm|\bml\b|training|rlhf/i },
-];
 
 function fmtCrawl(iso: string | null): string {
   if (!iso) return "never";
@@ -201,6 +202,16 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   const [sort, setSort] = useState<"fit" | "newest" | "oldest" | "closing" | "company">("fit");
   const [openId, setOpenId] = useState<string | null>(null);
 
+  // Derived from what is on the board, so a keyword that never appears does not get a
+  // button. Memoised on the postings and the profile's keywords rather than recomputed
+  // on every keystroke in the search box.
+  const stackTags = useMemo(() => {
+    const rows = [...data.groups.high, ...data.groups.medium, ...data.groups.stretch].map(
+      (j) => `${j.role} ${j.company} ${j.stack || ""} ${j.eligibility || ""}`
+    );
+    return stackTagsFor(data.stackKeywords || "", rows);
+  }, [data.groups, data.stackKeywords]);
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       const t = e.target as HTMLElement | null;
@@ -243,7 +254,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       if (query && !hay.toLowerCase().includes(query)) return false;
       if (tags.size) {
         for (const t of tags) {
-          const m = STACK_TAGS.find((x) => x.label === t);
+          const m = stackTags.find((x) => x.label === t);
           if (m && !m.test.test(hay)) return false;
         }
       }
@@ -328,7 +339,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         <button className={`chip ${cats.has("medium") ? "on" : ""}`} onClick={() => toggleCat("medium")}>Medium</button>
         <button className={`chip ${cats.has("stretch") ? "on" : ""}`} onClick={() => toggleCat("stretch")}>Stretch</button>
         <span className="sep">·</span>
-        {STACK_TAGS.map((t) => (
+        {stackTags.map((t) => (
           <button key={t.label} className={`chip ${tags.has(t.label) ? "on" : ""}`} onClick={() => toggleTag(t.label)}>{t.label}</button>
         ))}
         <span className="sep">·</span>

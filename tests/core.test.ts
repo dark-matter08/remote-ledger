@@ -1636,6 +1636,64 @@ test("fields: relevance comes from the profile, not from a hardcoded trade", asy
   assert.equal(keywordHit("Kitchen Technician", toks), false);
 });
 
+test("board filters: the chips come from your keywords, not from a hardcoded stack", async () => {
+  const { stackTagsFor } = await import("../app/board-tags");
+
+  // The bug this replaces: the filter bar above the board offered Node/TS, Infra and
+  // AI/LLM to everyone. A designer's board invited them to narrow by Kubernetes, and
+  // none of the three could ever match one of their postings.
+  const designBoard = [
+    "Senior Product Designer at Linear · Figma, design systems",
+    "Brand Designer at Oyster · Illustration, Figma",
+    "UX Researcher at Doist · interviews, usability testing",
+  ];
+  const design = stackTagsFor("Figma, design systems, user research, illustration", designBoard);
+  assert.deepEqual(
+    design.map((t) => t.label),
+    ["Figma", "design systems", "illustration"],
+    "a designer gets their own tools, ranked by how many postings each actually matches"
+  );
+
+  // A keyword nothing on the board mentions is a button that filters to nothing.
+  assert.equal(
+    design.some((t) => t.label === "user research"),
+    false,
+    "no posting says 'user research', so it is not offered"
+  );
+
+  // Same code, different trade — nothing here knows what an engineer is.
+  const engBoard = ["Backend Engineer · Go, Kubernetes", "Platform Engineer · Kubernetes, Terraform"];
+  assert.deepEqual(
+    stackTagsFor("Kubernetes, Go, Rust", engBoard).map((t) => t.label),
+    ["Kubernetes", "Go"]
+  );
+
+  // A tool spelled three ways is still one tool. Measured on the 177 postings on the
+  // author's install: "NodeJS" matched 1 posting literally and 80 by stem, "ReactJS"
+  // 1 against 101 — the two most common technologies on the board were invisible in a
+  // filter bar built from that board.
+  const jsBoard = ["Full-Stack · React · Node · TS", "Backend · Node.js, Express", "Frontend · ReactJS"];
+  assert.deepEqual(
+    stackTagsFor("NodeJS, ReactJS", jsBoard).map((t) => `${t.label}:${jsBoard.filter((h) => t.test.test(h)).length}`),
+    ["NodeJS:2", "ReactJS:2"],
+    "each finds both of its spellings, and keeps the label the user typed"
+  );
+
+  // Whole-word: "Go" must not claim every posting that says Django or Mongo.
+  const goTag = stackTagsFor("Go", ["Django developer", "MongoDB admin", "Go backend"])[0];
+  assert.equal(goTag.label, "Go");
+  assert.equal(goTag.test.test("Django developer"), false, "Go is not Django");
+  assert.equal(goTag.test.test("Go backend"), true);
+
+  // A profile listing twenty skills would otherwise paper the board with buttons.
+  const many = "a1, a2, a3, a4, a5, a6, a7";
+  assert.ok(stackTagsFor(many, ["a1 a2 a3 a4 a5 a6 a7"]).length <= 4, "the bar stays a bar");
+
+  // Nothing configured yet, or nothing matching: no chips rather than misleading ones.
+  assert.deepEqual(stackTagsFor("", engBoard), []);
+  assert.deepEqual(stackTagsFor("Figma", engBoard), []);
+});
+
 test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {
   const { JOB_FIELDS, fieldById, fieldLabel, inField } = await import("../app/fields");
 
