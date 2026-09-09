@@ -30,6 +30,7 @@ import {
   markCompanyChecked,
   boardUrl,
   type AtsPosting,
+  type Company,
 } from "./ats.server";
 import { fetchAllFeeds, type FeedPosting } from "./feeds.server";
 import { webSearchAdvice } from "../llm/openrouter.server";
@@ -472,6 +473,44 @@ async function findViaFeeds(
   return { jobs, received: sweep.postings.length, errors };
 }
 
+/** A board's hostname, which is often what the agent writes in `source`. */
+export function sourceHost(url: string | null): string | null {
+  try {
+    return new URL(url || "").hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which tracked source a returned posting came from.
+ *
+ * The agent reads a batch of boards in one prompt and answers with one flat array, so
+ * the only attribution available is the `source` the prompt asks it to fill in — the
+ * agent's word, not a measurement. Matched against the board's name and its hostname,
+ * and left uncredited when neither matches: a posting credited to no board is a count
+ * that reads low, while one credited to the wrong board is a count that lies.
+ *
+ * The date beside it does not depend on any of this. That a source was read is a fact
+ * about the run; how much came back through it is an estimate.
+ */
+export function creditSource(
+  covered: { id: number; name: string; careers_url: string | null }[],
+  job: any,
+  into: Map<number, number>
+): void {
+  const src = String(job?.source || "").toLowerCase().trim();
+  if (!src) return;
+  for (const c of covered) {
+    const host = sourceHost(c.careers_url);
+    const name = c.name.toLowerCase();
+    if ((name.length > 2 && src.includes(name)) || (host && src.includes(host))) {
+      into.set(c.id, (into.get(c.id) || 0) + 1);
+      return; // one posting, one board — first match wins rather than double-counting
+    }
+  }
+}
+
 async function runCareersCrawl(
   signal: AbortSignal,
   L: (kind: string, text: string) => void,
@@ -538,7 +577,21 @@ async function runCareersCrawl(
   // --- pages with no machine-readable feed, via the agent ----------------------
   const SHAPE = `Return ONLY a JSON array: [{"company","role","category":"high|medium|stretch","fit_score":0-100,"stack","eligibility","seniority","apply_url","source"}]`;
 
-  async function agentPass(label: string, prompt: string): Promise<void> {
+  /**
+   * Read a batch of sources the agent has to visit itself, and record that it did.
+   *
+   * The recording is the point of `covered`. Only the ATS pass above used to mark a
+   * source checked, so every job board in the registry read "never checked" while the
+   * log two lines down said it had been mined — and one of them was the recorded
+   * source of jobs sitting in the ledger. The column was wired to one of the three
+   * ways a source gets read.
+   *
+   * It marks in a `finally`: a pass that failed, or came back empty, still looked.
+   * "Checked, found nothing" and "never looked at" are different facts and the
+   * registry should be able to tell them apart.
+   */
+  async function agentPass(label: string, prompt: string, covered: Company[]): Promise<void> {
+    const credited = new Map<number, number>();
     try {
       const text = await invokeAgent(prompt, 10 * 60000, signal, L);
       const parsed = tryParseJson(text);
@@ -548,12 +601,15 @@ async function runCareersCrawl(
       // the agent could have imagined these, so they go through link verification
       const { alive, dropped } = await verifyJobs(rows, { limit: 25, signal, onLog: (l) => L("step", l) });
       errors += dropped.length;
+      for (const a of alive) creditSource(covered, a.job, credited);
       // verification already opened the page and read it; carry that through
       scored.push(...alive.map((a) => ({ ...a.job, jd: a.jd, jd_html: a.jdHtml })));
       L("result", `${label}: ${alive.length} verified, ${dropped.length} dropped.`);
     } catch (e: any) {
       errors++;
       L("error", `${label} pass failed: ${String(e?.message || e).slice(0, 100)}`);
+    } finally {
+      for (const c of covered) markCompanyChecked(c.id, credited.get(c.id) || 0);
     }
   }
 
@@ -563,7 +619,8 @@ async function runCareersCrawl(
     await agentPass(
       "Careers pages",
       `Open each careers page below and list the currently-open REMOTE software roles a candidate based in ${loc} could work, matching: ${stack}.\n\n${list}\n\n` +
-        `Open every page. Follow through to each individual role's own posting URL — never return the careers index itself. Skip a company rather than guessing.\n\n${SHAPE}`
+        `Open every page. Follow through to each individual role's own posting URL — never return the careers index itself. Skip a company rather than guessing.\n\n${SHAPE}`,
+      pages
     );
   }
 
@@ -590,7 +647,8 @@ async function runCareersCrawl(
         `- "apply_url" is the employer's URL. Never return a link on ${hosts}.\n` +
         `- "source" is the board you found it on.\n` +
         `- If you cannot reach a live employer posting, SKIP the role. A board link is worthless here.\n` +
-        `- Where a board lists RULES, follow them exactly. They usually reflect what that site's robots.txt permits, so ignoring them is not a shortcut worth taking.\n\n${SHAPE}`
+        `- Where a board lists RULES, follow them exactly. They usually reflect what that site's robots.txt permits, so ignoring them is not a shortcut worth taking.\n\n${SHAPE}`,
+      jobBoards
     );
   }
 

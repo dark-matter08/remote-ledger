@@ -866,7 +866,15 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
                         <a href={c.careers_url} target="_blank" rel="noreferrer" className="back-link">careers page</a>
                       )}
                     </td>
-                    <td>{c.last_checked_at ? c.last_checked_at.slice(0, 10) : "\u2014"}</td>
+                    {/* "never looked at" and "looked at, nothing kept" are different
+                        facts about a source, and both used to print as a dash. */}
+                    <td>
+                      {c.last_checked_at ? (
+                        c.last_checked_at.slice(0, 10)
+                      ) : (
+                        <span style={{ color: "var(--ink-faint)" }}>never</span>
+                      )}
+                    </td>
                     <td>{c.last_checked_at ? c.last_found : "\u2014"}</td>
                     <td style={{ display: "flex", gap: 10 }}>
                       <Form method="post">

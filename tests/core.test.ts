@@ -2586,6 +2586,62 @@ test("autopilot skips what is done and never submits", async () => {
   assert.match(src, /stops before submitting/i, "and must say so where the next person will read it");
 });
 
+test("a source the agent had to read itself still records that it was read", async () => {
+  const { creditSource, sourceHost } = await import("../app/services/crawl.server");
+
+  // The bug: only the ATS pass marked a source checked. Every job board in the
+  // registry read "never checked" while the crawl log said it had been mined, and one
+  // of them was the recorded source of three jobs sitting in the ledger.
+  const boards = [
+    { id: 1, name: "Remotiko", careers_url: "https://remotiko.com/jobs" },
+    { id: 2, name: "We Work Remotely", careers_url: "https://weworkremotely.com/" },
+    { id: 3, name: "Dice", careers_url: "https://www.dice.com/jobs" },
+  ];
+
+  const credited = new Map<number, number>();
+  for (const job of [
+    { source: "Remotiko" },                       // the board's name, as the prompt asks for
+    { source: "remotiko.com" },                   // its host, which agents write just as often
+    { source: "We Work Remotely" },
+    { source: "Greenhouse" },                     // an ATS, not one of these boards
+    { source: "" },                               // no answer at all
+    { source: "found via LinkedIn" },             // a board that is not tracked
+  ]) creditSource(boards, job, credited);
+
+  assert.equal(credited.get(1), 2, "name and hostname both credit the same board");
+  assert.equal(credited.get(2), 1);
+  assert.equal(credited.get(3), undefined, "a board nothing came through stays uncredited");
+
+  // www. is not part of the name anyone writes
+  assert.equal(sourceHost("https://www.dice.com/jobs"), "dice.com");
+  assert.equal(sourceHost("not a url"), null, "a broken careers_url is not a crash");
+
+  // Crediting the wrong board is worse than crediting none: the count beside the date
+  // is the agent's word, and it is better for it to read low than to read wrong.
+  const strict = new Map<number, number>();
+  creditSource(boards, { source: "some board we do not track" }, strict);
+  assert.equal(strict.size, 0);
+
+  // One posting is not evidence for two boards.
+  const once = new Map<number, number>();
+  creditSource([...boards, { id: 4, name: "Remotiko Mirror", careers_url: null }], { source: "Remotiko" }, once);
+  assert.equal([...once.values()].reduce((a, b) => a + b, 0), 1);
+
+  // A source is read one of three ways — an ATS feed, a careers page, a board — and
+  // all three have to record it. Wiring the column to only the first is the bug.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("app/services/crawl.server.ts", "utf8");
+  const pass = src.slice(src.indexOf("async function agentPass"), src.indexOf("if (pages.length"));
+  assert.match(
+    pass,
+    /finally\s*\{[\s\S]*?markCompanyChecked/,
+    "marked in a finally: a pass that failed, or came back empty, still looked"
+  );
+  assert.equal((src.match(/await agentPass\(/g) || []).length, 2, "both agent passes exist");
+  assert.match(src, /\n\s{6}pages\n\s*\);/, "the careers-page pass hands over what it covered");
+  assert.match(src, /\n\s{6}jobBoards\n\s*\);/, "and so does the board pass");
+});
+
 test("autopilot can be watched while it runs, not only after it finishes", async () => {
   const ap = await import("../app/services/autopilot.server");
   const { upsertJobs } = await import("../app/db.server");
