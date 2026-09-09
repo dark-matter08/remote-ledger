@@ -18,7 +18,9 @@ export async function action({ request }: Route.ActionArgs) {
     return Response.json({ stopped, progress: autopilotProgress(jobId) });
   }
 
-  const r = startAutopilot(jobId);
+  // "Apply anyway" restarts the same run past the gate. Every step before it already
+  // skips, so forcing costs the steps after the match and nothing else.
+  const r = startAutopilot(jobId, { force: String(form.get("force") || "") === "1" });
   // 202 accepted — the point of this route is that the work has begun, not finished.
   // 409 for "already running": a refused second click is not a failure worth an error
   // banner, and the progress that comes back with it is the run already in flight.

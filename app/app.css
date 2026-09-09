@@ -938,6 +938,26 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 }
 .page-head .sub { font-family: var(--mono); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
 /* the release this copy is on — quiet, but findable without opening a tab */
+/* how a match score was reached: one row per rubric dimension, with the quote that
+   justified it. Folded, because the number is the answer and this is the working. */
+.rubric { margin-top: 12px; border-top: 1px solid var(--rule-faint); padding-top: 10px; }
+.rubric > summary {
+  cursor: pointer; list-style: none; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint);
+}
+.rubric > summary::-webkit-details-marker { display: none; }
+.rubric > summary::before { content: "▸ "; color: var(--vermillion); }
+.rubric[open] > summary::before { content: "▾ "; }
+.rubric > summary:hover { color: var(--vermillion); }
+.rubric-table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.rubric-table td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--rule-faint); vertical-align: baseline; }
+.rubric-label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; white-space: nowrap; }
+.rubric-bar { width: 90px; }
+.rubric-bar span { display: block; height: 7px; background: var(--vermillion); }
+.rubric-num { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.rubric-num small { color: var(--ink-faint); }
+.rubric-why { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
+
 /* one knowledge-base entry, folded. The summary is the scannable line; opening one
    gives you the summary text, its tags, the context questions and the remove control. */
 .kb-entry { border: 1px solid var(--rule-faint); margin-top: 8px; background: var(--paper); }
@@ -981,6 +1001,8 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 
 /* autopilot sits above the steps it runs, so it reads as "or do all of this" */
 .autopilot { border-left: 3px solid var(--vermillion); }
+.autopilot-blocked { margin-top: 12px; padding: 12px 14px; border-left: 3px solid var(--ochre); background: var(--paper-2); }
+.autopilot-blocked .hint { text-transform: none; letter-spacing: 0; font-size: 13px; margin-bottom: 10px; }
 .autopilot-done { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule-faint); }
 
 /* Run · Stop · the way out to the full log, on one line with the log pushed right. */

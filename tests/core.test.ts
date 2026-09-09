@@ -2567,7 +2567,16 @@ test("autopilot skips what is done and never submits", async () => {
   const { readFileSync } = await import("node:fs");
 
   const ids = STEPS.map((s) => s.id);
-  assert.deepEqual(ids, ["match", "build", "tailor", "cover", "form", "answers"], "the guided order, in order");
+  assert.deepEqual(
+    ids,
+    ["match", "gate", "build", "tailor", "cover", "form", "answers"],
+    "the guided order, in order"
+  );
+  // The gate earns its place by being cheap to fail at: after the one call that produces
+  // a score, and before the three that write a résumé and a cover letter. Moving it
+  // later would mean paying for work on a job the threshold was going to refuse.
+  assert.equal(ids.indexOf("gate"), ids.indexOf("match") + 1, "the gate comes straight after the match");
+  assert.ok(ids.indexOf("gate") < ids.indexOf("tailor"), "and before anything expensive");
 
   // Re-running on a job you part-did by hand must not pay to redo it. Every step that
   // produces something durable has to be able to say "already done".
@@ -2640,6 +2649,54 @@ test("a source the agent had to read itself still records that it was read", asy
   assert.equal((src.match(/await agentPass\(/g) || []).length, 2, "both agent passes exist");
   assert.match(src, /\n\s{6}pages\n\s*\);/, "the careers-page pass hands over what it covered");
   assert.match(src, /\n\s{6}jobBoards\n\s*\);/, "and so does the board pass");
+});
+
+test("a run stopped by the minimum score ends, rather than watching forever", async () => {
+  const ap = await import("../app/services/autopilot.server");
+  const { upsertJobs } = await import("../app/db.server");
+  const { setSetting } = await import("../app/sqlite.server");
+
+  upsertJobs([{ company: "Gated", role: "Engineer", category: "high", fit_score: 60, apply_url: "https://g.co" }]);
+  const jobId = "gated--engineer";
+  const prevMin = null;
+  setSetting("min_match_score", "70");
+  setSetting("min_match_advise", "false");
+
+  const real = ap.STEPS.slice();
+  ap.STEPS.length = 0;
+  ap.STEPS.push(
+    { id: "match", title: "Match analysis", done: () => false, run: async () => "scored 41" },
+    // the real gate, unstubbed — the thing under test is what happens when it refuses
+    real.find((s) => s.id === "gate")!,
+    { id: "tailor", title: "Tailor the résumé", done: () => false, run: async () => "should never run" }
+  );
+
+  try {
+    const { setMeta } = await import("../app/db.server");
+    setMeta(`match:${jobId}`, JSON.stringify({ score: 41 }));
+
+    ap.startAutopilot(jobId);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const p = ap.autopilotProgress(jobId)!;
+    // The bug this pins: the gate returned early without ending the run, so the page
+    // went on polling a run that had stopped and the button never came back.
+    assert.equal(p.live, false, "a gated run is over, and says so");
+    assert.deepEqual(p.belowMinimum, { score: 41, minimum: 70 }, "and says why, with both numbers");
+    assert.equal(p.steps.find((x) => x.id === "gate")!.state, "failed");
+    assert.equal(p.steps.find((x) => x.id === "tailor")!.state, "pending", "nothing after the gate was paid for");
+
+    // Force resumes past it. The match already exists, so this costs the steps after it.
+    ap.startAutopilot(jobId, { force: true });
+    await new Promise((r) => setTimeout(r, 80));
+    const forced = ap.autopilotProgress(jobId)!;
+    assert.equal(forced.belowMinimum, undefined, "forcing is not still reporting itself blocked");
+    assert.equal(forced.steps.find((x) => x.id === "tailor")!.state, "done", "and the steps after it ran");
+  } finally {
+    ap.STEPS.length = 0;
+    ap.STEPS.push(...real);
+    setSetting("min_match_score", "0");
+  }
 });
 
 test("autopilot can be watched while it runs, not only after it finishes", async () => {
@@ -2869,4 +2926,76 @@ test("a profile is a workspace: its own résumés, apply history and mail", asyn
   getDb().prepare("DELETE FROM email_accounts WHERE id=?").run(acctId);
   deleteProfile(a.id, { deleteJobs: true });
   deleteProfile(b.id, { deleteJobs: true });
+});
+
+test("the match score is arithmetic, not a number the model chose", async () => {
+  const { RUBRIC, RUBRIC_TOTAL, scoreFromDimensions, normaliseDimensions, RUBRIC_VERSION } = await import(
+    "../app/resume/rubric"
+  );
+
+  assert.equal(RUBRIC_TOTAL, 100, "the weights have to add up to the scale they are reported on");
+  assert.ok(RUBRIC_VERSION >= 1, "a score has to say which rubric produced it, or old and new get compared");
+
+  const all = (f: (max: number) => number) =>
+    RUBRIC.map((d) => ({ key: d.key, label: d.label, max: d.max, score: f(d.max), evidence: "" }));
+  assert.equal(scoreFromDimensions(all((m) => m)), 100);
+  assert.equal(scoreFromDimensions(all(() => 0)), 0);
+
+  // The same input twice is the same score — which is the whole reason a threshold can
+  // be set on it. Before the rubric the model returned a holistic number and this was
+  // not true.
+  const once = scoreFromDimensions(all((m) => Math.round(m * 0.6)));
+  const twice = scoreFromDimensions(all((m) => Math.round(m * 0.6)));
+  assert.equal(once, twice);
+
+  // A model that misreads the scale must not be able to invent a score above the cap,
+  // nor sink the whole analysis by returning nonsense.
+  assert.equal(scoreFromDimensions([{ key: "must_have", label: "", max: 40, score: 999, evidence: "" }]), 40);
+  assert.equal(scoreFromDimensions(normaliseDimensions("not an array" as never)), 0);
+  assert.equal(scoreFromDimensions(normaliseDimensions([{ key: "unknown_key", score: 50 }])), 0);
+
+  // every dimension survives normalisation, so the breakdown always has five rows
+  const norm = normaliseDimensions([{ key: "seniority", score: 20, evidence: "5+ years" }]);
+  assert.equal(norm.length, RUBRIC.length);
+  assert.equal(norm.find((d) => d.key === "seniority")!.evidence, "5+ years");
+});
+
+test("a batch says what it will cost before you start it", async () => {
+  const { estimateAutopilot, sessionSpendUsd, money } = await import("../app/services/estimate.server");
+  const { getDb } = await import("../app/sqlite.server");
+  const db = getDb();
+
+  // No history: the estimate must not claim a batch is free. It has no basis, and says
+  // so through `samples`, which is what the UI uses to decide whether to cite it.
+  db.prepare("DELETE FROM llm_calls").run();
+  const blind = estimateAutopilot(5);
+  assert.equal(blind.samples, 0, "with nothing to go on it says so");
+  assert.equal(blind.calls, 25, "five jobs at five calls each");
+
+  // With history, it prices from what this machine actually spent.
+  const ins = db.prepare(
+    "INSERT INTO llm_calls (ts,runner,model,purpose,cost_usd,status) VALUES (?,?,?,?,?,'ok')"
+  );
+  ins.run("2026-01-01T00:00:00.000Z", "r", "m", "match", 0.4);
+  ins.run("2026-01-01T00:00:00.000Z", "r", "m", "resume-tailor", 0.8);
+  ins.run("2026-01-01T00:00:00.000Z", "r", "m", "cover-letter", 0.2);
+
+  const e = estimateAutopilot(10);
+  assert.ok(e.samples >= 3);
+  assert.ok(e.perJobUsd > 0, "a job that costs money must not estimate as free");
+  assert.equal(Math.round(e.totalUsd * 100), Math.round(e.perJobUsd * 10 * 100), "ten jobs is ten times one");
+
+  // A step with no history of its own is priced at the average of the others rather
+  // than zero — a step that has never run is not a free step.
+  const withUnknown = estimateAutopilot(1);
+  assert.ok(withUnknown.perJobUsd > 0.4 + 0.8 + 0.2 - 0.001, "unpriced steps still count for something");
+
+  // the ceiling is measured against what was billed, not against the estimate
+  assert.ok(sessionSpendUsd("2025-01-01T00:00:00.000Z") >= 1.4);
+  assert.equal(sessionSpendUsd("2027-01-01T00:00:00.000Z"), 0, "nothing spent since a future instant");
+
+  assert.equal(money(2.86), "$2.86");
+  assert.equal(money(0.4), "40¢");
+
+  db.prepare("DELETE FROM llm_calls").run();
 });

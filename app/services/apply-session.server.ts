@@ -7,7 +7,9 @@
 // It NEVER submits an application.
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { getDb } from "../sqlite.server";
+import { getDb, getSetting } from "../sqlite.server";
+import { runAutopilot } from "./autopilot.server";
+import { sessionSpendUsd, money } from "./estimate.server";
 import {
   createSession,
   updateSession,
@@ -30,6 +32,15 @@ import { resolveLive, renderWaitFor } from "./scrape.server";
 const SHOT_DIR = resolve(process.cwd(), "data", "apply");
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+
+/**
+ * draft   — read each form, draft answers, change nothing
+ * assist  — open a visible browser and prefill; you submit
+ * autopilot — run the whole guided application per job: match, build, tailor, cover,
+ *             read the form, draft its questions. Stops before submitting, same as the
+ *             single-job button.
+ */
+export type ApplyMode = "draft" | "assist" | "autopilot";
 
 export interface ApplyRules {
   categories: string[]; // high|medium|stretch
@@ -58,7 +69,7 @@ function selectJobs(rules: ApplyRules): { id: string; apply_url: string; company
 }
 
 // Runs the whole session synchronously (bounded by rules.max). Returns the id.
-export async function runSession(mode: "draft" | "assist", rules: ApplyRules): Promise<number> {
+export async function runSession(mode: ApplyMode, rules: ApplyRules): Promise<number> {
   const sessionId = createSession(mode, rules);
   await processSession(sessionId, mode, rules);
   return sessionId;
@@ -66,7 +77,7 @@ export async function runSession(mode: "draft" | "assist", rules: ApplyRules): P
 
 // Fire-and-forget: create the session, return its id immediately, process in the
 // background so the UI's Start button returns at once and the monitor polls live.
-export function startSession(mode: "draft" | "assist", rules: ApplyRules): number {
+export function startSession(mode: ApplyMode, rules: ApplyRules): number {
   const sessionId = createSession(mode, rules);
   void processSession(sessionId, mode, rules).catch((e: any) => {
     try {
@@ -77,7 +88,7 @@ export function startSession(mode: "draft" | "assist", rules: ApplyRules): numbe
   return sessionId;
 }
 
-async function processSession(sessionId: number, mode: "draft" | "assist", rules: ApplyRules): Promise<void> {
+async function processSession(sessionId: number, mode: ApplyMode, rules: ApplyRules): Promise<void> {
   mkdirSync(SHOT_DIR, { recursive: true });
   const jobs = selectJobs(rules);
   updateSession(sessionId, { total: jobs.length });
@@ -108,8 +119,48 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
   let processed = 0,
     needsInputTotal = 0;
 
+  // A ceiling, checked between jobs. Autopilot is five or six model calls each, so a
+  // rule that matched more jobs than you meant is an expensive mistake rather than an
+  // untidy one. Measured against what was actually billed since the session began, not
+  // against the estimate — the estimate is what we thought, this is what happened.
+  const startedAt = new Date().toISOString();
+  const ceiling = Number(getSetting("max_session_cost") || "0") || 0;
+  const skippedLow: { job: string; score: number; minimum: number }[] = [];
+
   for (const job of jobs) {
+    if (ceiling > 0) {
+      const spent = sessionSpendUsd(startedAt);
+      if (spent >= ceiling) {
+        addLog(sessionId, "note", {
+          text: `Stopping: this session has spent ${money(spent)}, which is at your ceiling of ${money(ceiling)}. ${jobs.length - processed} job(s) untouched.`,
+        });
+        break;
+      }
+    }
+
     const sjId = addSessionJob(sessionId, job.id);
+
+    if (mode === "autopilot") {
+      addLog(sessionId, "action", { jobId: job.id, text: `Autopilot · ${job.company} — ${job.role}` });
+      const r = await runAutopilot(job.id);
+      processed++;
+      updateSession(sessionId, { processed });
+      if (r.belowMinimum) {
+        // Collected, not paused on. A batch that stops on the third of twelve is a
+        // batch you have to sit and watch, which defeats the point of running one.
+        skippedLow.push({ job: `${job.company} — ${job.role}`, ...r.belowMinimum });
+        updateSessionJob(sjId, { status: "skipped", note: `match ${r.belowMinimum.score} < ${r.belowMinimum.minimum}` });
+        addLog(sessionId, "note", { jobId: job.id, text: `Skipped — matched ${r.belowMinimum.score}, under your minimum of ${r.belowMinimum.minimum}.` });
+      } else if (r.ok) {
+        updateSessionJob(sjId, { status: "drafted", note: r.message });
+        addLog(sessionId, "result", { jobId: job.id, text: r.message });
+      } else {
+        updateSessionJob(sjId, { status: "error", note: r.message });
+        addLog(sessionId, "error", { jobId: job.id, text: r.message });
+      }
+      continue;
+    }
+
     addLog(sessionId, "action", { jobId: job.id, text: `Opening ${job.company} — ${job.role}` });
     try {
       // 0) FRESHNESS GATE: confirm the posting is still live (follow redirects to the
@@ -230,6 +281,16 @@ async function processSession(sessionId: number, mode: "draft" | "assist", rules
   // Headed assist leaves the browser + prefilled tabs OPEN so you can review and submit
   // each one; everything else closes the browser.
   if (browser && !headed) await browser.close().catch(() => {});
+  // The skipped set, reported once at the end rather than as it happened — the point
+  // of a batch is that you read the outcome afterwards instead of watching it.
+  if (skippedLow.length) {
+    addLog(sessionId, "note", {
+      text:
+        `${skippedLow.length} job(s) were under your minimum and were left alone: ` +
+        skippedLow.map((s) => `${s.job} (${s.score}/${s.minimum})`).join("; ") +
+        ". Open any of them to apply anyway.",
+    });
+  }
   updateSession(sessionId, { status: "done", ended_at: new Date().toISOString() });
   addLog(sessionId, "note", {
     text: headed

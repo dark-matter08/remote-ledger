@@ -42,10 +42,17 @@ export interface Resume {
 }
 
 export interface MatchAnalysis {
-  score: number; // 0..100 fit of resume to JD
+  score: number; // 0..100, summed in code from `dimensions` when they are present
   matched: string[];
   missing: string[];
   atsKeywords: string[]; // keywords the resume should contain for ATS
+  /**
+   * How the score was arrived at. Absent on matches analysed before the rubric existed,
+   * which is why everything reading a match still has to cope without it.
+   */
+  dimensions?: { key: string; label: string; score: number; max: number; evidence: string }[];
+  /** Which rubric produced it. Scores from different versions are not comparable. */
+  rubricVersion?: number;
 }
 
 export interface TailorFlag {
