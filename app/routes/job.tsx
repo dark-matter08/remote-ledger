@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { redirect } from "react-router";
-import { Form, Link, useNavigation, useFetcher } from "react-router";
+import { Form, Link, useNavigation, useFetcher, useSearchParams, useRevalidator } from "react-router";
 import type { Route } from "./+types/job";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -29,7 +29,6 @@ import { KbBuilder } from "../components/KbBuilder";
 import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
-import { runAutopilot } from "../services/autopilot.server";
 import { RefreshCw, Check, X, Circle, Sparkles, Trash2, ShieldAlert, Square } from "lucide-react";
 import { createVersion, listVersions, setVersionPdf } from "../resume/versions.server";
 import { scrapeAndSave } from "../services/scrape.server";
@@ -276,12 +275,6 @@ export async function action({ request, params }: Route.ActionArgs) {
       addEvent(job.id, "answers_drafted", { questions: a!.answers.length, formFields: fields.length });
       return { ok: true, msg: `Drafted ${a!.answers.length} answer(s) from ${qs.length} question(s) on the form (${fields.length} fields detected).` };
     }
-    if (intent === "autopilot") {
-      const r = await runAutopilot(job.id);
-      return r.ok
-        ? { ok: true, msg: r.message, autopilot: r }
-        : { error: r.message, autopilot: r };
-    }
     if (intent === "assist-apply") {
       const r = await loggedTask("prep", `Assisted apply · ${job.company} — ${job.role}`, async (L) =>
         assistApply(job.id, (m) => L("step", m))
@@ -361,10 +354,89 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
   const { job, events, versions, profiles, gaps, gapsCovered, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
-  const [tab, setTab] = useState<Tab>("Overview");
+  // Same as Settings: the tab lives in the URL, so a reload, a shared link or the back
+  // button keeps you on the tab you were reading rather than snapping to Overview.
+  const [params, setParams] = useSearchParams();
+  const asked = params.get("tab");
+  const tab: Tab = (TABS as readonly string[]).includes(asked || "") ? (asked as Tab) : "Overview";
+  const setTab = (t: Tab) => {
+    const next = new URLSearchParams(params);
+    if (t === "Overview") next.delete("tab");
+    else next.set("tab", t);
+    // replace, not push: flicking through tabs should not fill the back button
+    setParams(next, { replace: true, preventScrollReset: true });
+  };
   const [step, setStep] = useState(1);
+
+  // Watching a run.
+  //
+  // The run happens on the server and outlives this page, so the page asks where it
+  // has got to rather than holding the request open. Two things move as a result: the
+  // step list inside the Autopilot panel, from the run's own report, and everything
+  // else on the page, from the loader — because the wizard's ticks are read from the
+  // work itself, refreshing as each step lands makes them advance on their own.
+  //
+  // The poll is a plain fetch, deliberately. A fetcher would route it through the
+  // router, which makes it a revalidation target: refreshing the page's data would
+  // re-fire the poll, and the poll would refresh the data — the two feeding each
+  // other. This wants one small JSON object on a timer and nothing else.
+  const autopilot = useFetcher<any>(); // starting and stopping
+  const revalidator = useRevalidator();
+  const [progress, setProgress] = useState<any>(null);
+  const autoLive = !!progress?.live;
+  const watchUrl = `/api/autopilot?job=${encodeURIComponent(job.id)}`;
+
+  // Starting or stopping answers with the run's state, so the panel fills in on the
+  // click rather than on the next tick.
+  useEffect(() => {
+    if (autopilot.data?.progress) setProgress(autopilot.data.progress);
+  }, [autopilot.data]);
+
+  // Ask once when the tab opens: coming back to a job that is mid-run reattaches to
+  // it rather than showing an idle button while the work carries on behind it.
+  useEffect(() => {
+    if (tab !== "Guided Application") return;
+    let alive = true;
+    fetch(watchUrl)
+      .then((r) => r.json())
+      .then((j) => alive && j?.progress && setProgress(j.progress))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [tab, watchUrl]);
+
+  // And keep asking only while there is something to watch.
+  useEffect(() => {
+    if (!autoLive) return;
+    let alive = true;
+    const t = setInterval(() => {
+      fetch(watchUrl)
+        .then((r) => r.json())
+        .then((j) => alive && setProgress(j?.progress ?? null))
+        .catch(() => {});
+    }, 1500);
+    return () => { alive = false; clearInterval(t); };
+  }, [autoLive, watchUrl]);
+
+  // Reload the page's own data when a step lands, and once more when the run ends —
+  // not on every poll, which would re-read the whole job forty times a minute to
+  // show nothing new.
+  const settled = progress ? progress.steps.filter((x: any) => x.state !== "pending" && x.state !== "running").length : 0;
+  const lastSettled = useRef(-1);
+  useEffect(() => {
+    if (!progress) return;
+    const key = settled + (progress.live ? 0 : 1000);
+    if (key === lastSettled.current) return;
+    lastSettled.current = key;
+    revalidator.revalidate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settled, progress?.live]);
+
   const nav = useNavigation();
-  const busy = nav.state !== "idle";
+  // A live run counts as busy. It used to, for the wrong reason — the run blocked the
+  // request, so every button on the page was disabled while it went. Now that it does
+  // not block, saying so explicitly is what stops you clicking "Analyze match" while
+  // autopilot is on that very step and paying for it twice.
+  const busy = nav.state !== "idle" || autoLive;
   const running = nav.formData?.get("intent")?.toString(); // which action is in flight
   const resumeVersions = versions.filter((v) => v.kind === "resume");
   const coverVersions = versions.filter((v) => v.kind === "cover-letter");
@@ -427,29 +499,6 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
         ))}
       </div>
 
-      {tab === "Guided Application" && (
-        <div className="panel" style={{ paddingBottom: 16 }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch" }}>
-            {STEPS.map((st) => (
-              <button
-                key={st.n}
-                type="button"
-                onClick={() => setStep(st.n)}
-                className={`tab ${step === st.n ? "on" : ""}`}
-                style={{ flex: "1 1 160px", textAlign: "left", padding: "10px 12px" }}
-                title={st.hint}
-              >
-                <span style={{ opacity: 0.6 }}>{done[st.n] ? "✓" : st.n}</span>{" "}
-                {st.title}
-              </button>
-            ))}
-          </div>
-          <p className="hint" style={{ margin: "12px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
-            {STEPS.find((x) => x.n === step)!.hint} Steps are not locked &mdash; skip what this posting does not need.
-          </p>
-        </div>
-      )}
-
       {tab === "Overview" && (
         <>
           <div className="panel">
@@ -481,30 +530,66 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
 
       {tab === "Guided Application" && (
         <div className="panel autopilot">
-          <h3>Autopilot</h3>
+          <h3>
+            Autopilot{" "}
+            {autoLive && <span className="badge warn">running</span>}
+          </h3>
           <p className="hint">
             Runs the five steps below in order — match, build from your knowledge base, tailor,
             cover letter — then reads the application form and drafts its questions. Anything you
             have already done is skipped rather than paid for twice.
           </p>
           <p className="hint">
+            Reading the form opens a real browser window on your desktop and fills it in — that
+            window is autopilot working, not something that has gone wrong. Leave it alone and it
+            finishes on its own.
+          </p>
+          <p className="hint">
             <strong>It stops before submitting.</strong> When it finishes you choose whether to open
             the form and fill it yourself, or open it prefilled with what the app is sure of.
           </p>
-          <Form method="post">
-            <input type="hidden" name="intent" value="autopilot" />
-            <button className="btn primary" disabled={busy}>
-              {busy ? "Working…" : "Run autopilot"}
-            </button>
-          </Form>
-          {actionData?.autopilot && (
+
+          <div className="ap-controls">
+            <autopilot.Form method="post" action="/api/autopilot">
+              <input type="hidden" name="jobId" value={job.id} />
+              <button className="btn primary" disabled={autoLive || autopilot.state !== "idle"}>
+                {autoLive ? "Running…" : "Run autopilot"}
+              </button>
+            </autopilot.Form>
+            {autoLive && (
+              <autopilot.Form method="post" action="/api/autopilot">
+                <input type="hidden" name="jobId" value={job.id} />
+                <input type="hidden" name="intent" value="stop" />
+                <button className="ghost-btn" disabled={!!progress?.stopping}>
+                {progress?.stopping ? "Stopping…" : "Stop"}
+              </button>
+              </autopilot.Form>
+            )}
+            {progress && (
+              <Link to="/crawl" className="back-link">
+                Full log in the Crawl Shell →
+              </Link>
+            )}
+          </div>
+
+          {progress && (
+            <ol className="ap-steps">
+              {progress.steps.map((st: any) => (
+                <li key={st.id} className={`ap-step is-${st.state}`}>
+                  <span className="ap-mark" aria-hidden="true">
+                    {st.state === "done" ? "✓" : st.state === "skipped" ? "–" : st.state === "failed" ? "✕" : st.state === "running" ? "" : "·"}
+                  </span>
+                  <span className="ap-title">{st.title}</span>
+                  {st.detail && <span className="ap-detail">{st.detail}</span>}
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {progress && !progress.live && (
             <div className="autopilot-done">
-              <p className="hint mono tiny">
-                {(actionData.autopilot.done || []).length} run ·{" "}
-                {(actionData.autopilot.skipped || []).length} already done
-                {actionData.autopilot.failedAt ? ` · stopped at ${actionData.autopilot.failedAt}` : ""}
-              </p>
-              {actionData.autopilot.ok && (
+              <p className="hint" style={progress.ok ? undefined : { color: "var(--vermillion)" }}>{progress.message}</p>
+              {progress.ok && (
                 <div className="row2">
                   <a className="btn" href={job.apply_url} target="_blank" rel="noreferrer">
                     Open and fill it myself
@@ -517,9 +602,40 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
               )}
             </div>
           )}
+
+          {autoLive && (
+            <p className="hint" style={{ marginTop: 10 }}>
+              {progress?.stopping
+                ? "Stopping as soon as the step it is on comes back — a model call already in flight is not interrupted."
+                : "This keeps running if you close the page — come back to this tab to pick the watch back up."}
+            </p>
+          )}
         </div>
       )}
-      
+
+      {tab === "Guided Application" && (
+        <div className="panel" style={{ paddingBottom: 16 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch" }}>
+            {STEPS.map((st) => (
+              <button
+                key={st.n}
+                type="button"
+                onClick={() => setStep(st.n)}
+                className={`tab ${step === st.n ? "on" : ""}`}
+                style={{ flex: "1 1 160px", textAlign: "left", padding: "10px 12px" }}
+                title={st.hint}
+              >
+                <span style={{ opacity: 0.6 }}>{done[st.n] ? "✓" : st.n}</span>{" "}
+                {st.title}
+              </button>
+            ))}
+          </div>
+          <p className="hint" style={{ margin: "12px 0 0", textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+            {STEPS.find((x) => x.n === step)!.hint} Steps are not locked &mdash; skip what this posting does not need.
+          </p>
+        </div>
+      )}
+
       {tab === "Guided Application" && step === 1 && (
         <MatchPanel match={storedMatch} busy={busy} running={running} profiles={profiles} defaultProfileId={defaultProfileId} />
       )}

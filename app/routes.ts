@@ -21,6 +21,7 @@ export default [
   route("setup", "routes/setup.tsx"),
   route("clipper", "routes/clipper.tsx"),
   route("api/crawl", "routes/api-crawl.tsx"),
+  route("api/autopilot", "routes/api-autopilot.tsx"),
   route("api/export", "routes/api-export.tsx"),
   route("api/profiles", "routes/api-profiles.tsx"),
   route("api/clip", "routes/api-clip.tsx"),

@@ -1636,6 +1636,64 @@ test("fields: relevance comes from the profile, not from a hardcoded trade", asy
   assert.equal(keywordHit("Kitchen Technician", toks), false);
 });
 
+test("board filters: the chips come from your keywords, not from a hardcoded stack", async () => {
+  const { stackTagsFor } = await import("../app/board-tags");
+
+  // The bug this replaces: the filter bar above the board offered Node/TS, Infra and
+  // AI/LLM to everyone. A designer's board invited them to narrow by Kubernetes, and
+  // none of the three could ever match one of their postings.
+  const designBoard = [
+    "Senior Product Designer at Linear · Figma, design systems",
+    "Brand Designer at Oyster · Illustration, Figma",
+    "UX Researcher at Doist · interviews, usability testing",
+  ];
+  const design = stackTagsFor("Figma, design systems, user research, illustration", designBoard);
+  assert.deepEqual(
+    design.map((t) => t.label),
+    ["Figma", "design systems", "illustration"],
+    "a designer gets their own tools, ranked by how many postings each actually matches"
+  );
+
+  // A keyword nothing on the board mentions is a button that filters to nothing.
+  assert.equal(
+    design.some((t) => t.label === "user research"),
+    false,
+    "no posting says 'user research', so it is not offered"
+  );
+
+  // Same code, different trade — nothing here knows what an engineer is.
+  const engBoard = ["Backend Engineer · Go, Kubernetes", "Platform Engineer · Kubernetes, Terraform"];
+  assert.deepEqual(
+    stackTagsFor("Kubernetes, Go, Rust", engBoard).map((t) => t.label),
+    ["Kubernetes", "Go"]
+  );
+
+  // A tool spelled three ways is still one tool. Measured on the 177 postings on the
+  // author's install: "NodeJS" matched 1 posting literally and 80 by stem, "ReactJS"
+  // 1 against 101 — the two most common technologies on the board were invisible in a
+  // filter bar built from that board.
+  const jsBoard = ["Full-Stack · React · Node · TS", "Backend · Node.js, Express", "Frontend · ReactJS"];
+  assert.deepEqual(
+    stackTagsFor("NodeJS, ReactJS", jsBoard).map((t) => `${t.label}:${jsBoard.filter((h) => t.test.test(h)).length}`),
+    ["NodeJS:2", "ReactJS:2"],
+    "each finds both of its spellings, and keeps the label the user typed"
+  );
+
+  // Whole-word: "Go" must not claim every posting that says Django or Mongo.
+  const goTag = stackTagsFor("Go", ["Django developer", "MongoDB admin", "Go backend"])[0];
+  assert.equal(goTag.label, "Go");
+  assert.equal(goTag.test.test("Django developer"), false, "Go is not Django");
+  assert.equal(goTag.test.test("Go backend"), true);
+
+  // A profile listing twenty skills would otherwise paper the board with buttons.
+  const many = "a1, a2, a3, a4, a5, a6, a7";
+  assert.ok(stackTagsFor(many, ["a1 a2 a3 a4 a5 a6 a7"]).length <= 4, "the bar stays a bar");
+
+  // Nothing configured yet, or nothing matching: no chips rather than misleading ones.
+  assert.deepEqual(stackTagsFor("", engBoard), []);
+  assert.deepEqual(stackTagsFor("Figma", engBoard), []);
+});
+
 test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {
   const { JOB_FIELDS, fieldById, fieldLabel, inField } = await import("../app/fields");
 
@@ -2526,6 +2584,120 @@ test("autopilot skips what is done and never submits", async () => {
   const src = readFileSync("app/services/autopilot.server.ts", "utf8");
   assert.ok(!/\.click\(|submit\(\)|type="submit"/.test(src), "autopilot must never submit an application");
   assert.match(src, /stops before submitting/i, "and must say so where the next person will read it");
+});
+
+test("a source the agent had to read itself still records that it was read", async () => {
+  const { creditSource, sourceHost } = await import("../app/services/crawl.server");
+
+  // The bug: only the ATS pass marked a source checked. Every job board in the
+  // registry read "never checked" while the crawl log said it had been mined, and one
+  // of them was the recorded source of three jobs sitting in the ledger.
+  const boards = [
+    { id: 1, name: "Remotiko", careers_url: "https://remotiko.com/jobs" },
+    { id: 2, name: "We Work Remotely", careers_url: "https://weworkremotely.com/" },
+    { id: 3, name: "Dice", careers_url: "https://www.dice.com/jobs" },
+  ];
+
+  const credited = new Map<number, number>();
+  for (const job of [
+    { source: "Remotiko" },                       // the board's name, as the prompt asks for
+    { source: "remotiko.com" },                   // its host, which agents write just as often
+    { source: "We Work Remotely" },
+    { source: "Greenhouse" },                     // an ATS, not one of these boards
+    { source: "" },                               // no answer at all
+    { source: "found via LinkedIn" },             // a board that is not tracked
+  ]) creditSource(boards, job, credited);
+
+  assert.equal(credited.get(1), 2, "name and hostname both credit the same board");
+  assert.equal(credited.get(2), 1);
+  assert.equal(credited.get(3), undefined, "a board nothing came through stays uncredited");
+
+  // www. is not part of the name anyone writes
+  assert.equal(sourceHost("https://www.dice.com/jobs"), "dice.com");
+  assert.equal(sourceHost("not a url"), null, "a broken careers_url is not a crash");
+
+  // Crediting the wrong board is worse than crediting none: the count beside the date
+  // is the agent's word, and it is better for it to read low than to read wrong.
+  const strict = new Map<number, number>();
+  creditSource(boards, { source: "some board we do not track" }, strict);
+  assert.equal(strict.size, 0);
+
+  // One posting is not evidence for two boards.
+  const once = new Map<number, number>();
+  creditSource([...boards, { id: 4, name: "Remotiko Mirror", careers_url: null }], { source: "Remotiko" }, once);
+  assert.equal([...once.values()].reduce((a, b) => a + b, 0), 1);
+
+  // A source is read one of three ways — an ATS feed, a careers page, a board — and
+  // all three have to record it. Wiring the column to only the first is the bug.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("app/services/crawl.server.ts", "utf8");
+  const pass = src.slice(src.indexOf("async function agentPass"), src.indexOf("if (pages.length"));
+  assert.match(
+    pass,
+    /finally\s*\{[\s\S]*?markCompanyChecked/,
+    "marked in a finally: a pass that failed, or came back empty, still looked"
+  );
+  assert.equal((src.match(/await agentPass\(/g) || []).length, 2, "both agent passes exist");
+  assert.match(src, /\n\s{6}pages\n\s*\);/, "the careers-page pass hands over what it covered");
+  assert.match(src, /\n\s{6}jobBoards\n\s*\);/, "and so does the board pass");
+});
+
+test("autopilot can be watched while it runs, not only after it finishes", async () => {
+  const ap = await import("../app/services/autopilot.server");
+  const { upsertJobs } = await import("../app/db.server");
+
+  upsertJobs([{ company: "Watchme", role: "Engineer", category: "high", fit_score: 80, apply_url: "https://w.co" }]);
+  const jobId = "watchme--engineer";
+
+  // The steps are stood in for so this test costs nothing and controls its own timing.
+  // What is under test is the reporting, not what the steps do.
+  const real = ap.STEPS.slice();
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  ap.STEPS.length = 0;
+  ap.STEPS.push(
+    { id: "match", title: "Match analysis", done: () => false,
+      run: async (_j: any, log: any) => { log("comparing your résumé…"); await held; return "scored 84"; } },
+    { id: "cover", title: "Cover letter", done: () => true, run: async () => "never reached" }
+  );
+
+  try {
+    // The bug: the whole run was awaited inside the request that started it, so the
+    // page sat on one pending POST for eleven minutes — four steps finished, a browser
+    // opened by itself, and nothing on screen moved until you reloaded.
+    const started = ap.startAutopilot(jobId);
+    assert.equal(started.started, true, "starting returns immediately, before the work is done");
+
+    const mid = ap.autopilotProgress(jobId)!;
+    assert.ok(mid, "and there is something to watch the moment it returns");
+    assert.equal(mid.live, true);
+    assert.deepEqual(mid.steps.map((s) => s.id), ["match", "cover"], "every step is listed, not only the finished ones");
+    assert.equal(mid.steps[0].state, "running", "including which one it is on");
+    assert.equal(mid.steps[0].detail, "comparing your résumé…", "and what that step is doing now");
+    assert.equal(mid.steps[1].state, "pending");
+
+    // A second click while it is in flight is refused rather than run twice.
+    assert.equal(ap.startAutopilot(jobId).started, false);
+
+    // Stop is asked for, not taken: a model call in flight is not interruptible, so
+    // the run says it is stopping rather than leaving a button that looks ignored.
+    assert.equal(ap.stopAutopilot(jobId), true);
+    assert.equal(ap.autopilotProgress(jobId)!.stopping, true);
+    assert.equal(ap.autopilotProgress(jobId)!.live, true, "and it is still live until the step comes back");
+
+    release();
+    await new Promise((r) => setTimeout(r, 60));
+
+    const end = ap.autopilotProgress(jobId)!;
+    assert.equal(end.live, false, "the watch ends when the work does");
+    assert.equal(end.stopping, false, "and nothing is left saying it is still stopping");
+    assert.equal(end.steps[0].state, "done", "the step that was in flight finished rather than being torn up");
+    assert.equal(end.steps[0].detail, "scored 84", "a finished step says what it produced");
+    assert.match(String(end.message), /Stopped/, "the run reports that it was stopped, not that it completed");
+  } finally {
+    ap.STEPS.length = 0;
+    ap.STEPS.push(...real);
+  }
 });
 
 test("a new profile starts with the whole knowledge base, and can be narrowed", async () => {
