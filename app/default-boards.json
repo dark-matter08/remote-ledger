@@ -38,5 +38,10 @@
     "name": "Truly Remote Work",
     "url": "https://trulyremotework.com/",
     "note": "Curated worldwide-remote board — its whole premise is no location locks and no timezone traps, so postings here are unusually likely to be workable from anywhere. Each posting at /jobs/<slug> is public, carries the full description, and links out to the employer's own ATS (Lever, Greenhouse and similar) — follow that link and file the employer's URL, not this one. Public category pages, roughly 30 postings each: /remote-support-jobs, /remote-sales-jobs, /remote-marketing-jobs, /remote-finance-jobs, /remote-hr-jobs, /remote-operations-jobs, /remote-design-jobs, /remote-data-jobs, /remote-product-jobs, /remote-engineering-jobs, /remote-devops-jobs, /remote-security-jobs. Rendered by JavaScript, so open the page rather than fetching it. robots.txt disallows /api/, /partials/ and /newsletter/ only."
+  },
+  {
+    "name": "LemonIO",
+    "url": "https://lemon.io/for-developers",
+    "note": ""
   }
 ]
