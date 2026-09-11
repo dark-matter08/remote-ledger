@@ -382,3 +382,28 @@ CREATE TABLE IF NOT EXISTS email_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_em_status ON email_messages(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_em_acct_uid ON email_messages(account_id, uid);
+
+-- ---------------------------------------------------------------------------
+-- v9: interview prep, one session per round
+--
+-- An application is several conversations — a screening call, a technical round, a
+-- final — and each wants its own preparation. Before this there was one prep per job,
+-- held in `meta` under prep:<job>, and preparing for the second round overwrote the
+-- first. A session carries what you knew going in (your notes, the screenshots of the
+-- invite) and what was prepared from it, so the prep can be checked against its inputs.
+CREATE TABLE IF NOT EXISTS prep_sessions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id       TEXT NOT NULL,
+  stage        TEXT NOT NULL,                 -- screening | recruiter | technical | coding | system-design | take-home | behavioural | hiring-manager | final | other
+  title        TEXT NOT NULL,                 -- what you call it: "Screening with Maria, Thursday"
+  notes        TEXT NOT NULL DEFAULT '',      -- what you know about this round, in your words
+  images       TEXT NOT NULL DEFAULT '[]',    -- JSON [{n, name, mime, bytes}] — files live under data/prep/<session>/
+  prep_md      TEXT,                          -- the prep, markdown; NULL until generated
+  vision       INTEGER NOT NULL DEFAULT 0,    -- 1 when the model that wrote the prep actually looked at the images
+  runner       TEXT,                          -- which runner wrote it, so "read by Claude Code" is a fact and not a guess
+  model        TEXT,
+  llm_call_id  INTEGER,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prep_job ON prep_sessions(job_id);

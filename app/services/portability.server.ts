@@ -39,6 +39,7 @@ const TABLES = [
   "kb_sources",
   "answer_bank",
   "apply_questions",
+  "prep_sessions",
   "job_blocks",
   "email_accounts",
   "settings",
@@ -60,6 +61,7 @@ export const OMITTED: Record<string, string> = {
   kb_scans: "folder scans, which point at paths this machine has",
   email_messages: "synced mail, which the accounts re-fetch",
   "data/pdfs": "rendered PDFs — remade on demand from the versions that do travel",
+  "data/prep": "interview-prep screenshots — the prep written from them travels; the pictures stay",
 };
 
 /** Rows whose values could be a credential in disguise, whatever the table says. */
@@ -111,7 +113,8 @@ export function exportData(profileId?: string): ExportFile {
     // A job's application travels with the job it belongs to, or a narrowed export
     // arrives as postings with no history — which looks like data loss and is.
     const kept =
-      profileId && (t === "applications" || t === "application_events" || t === "resume_versions" || t === "apply_questions")
+      profileId &&
+      (t === "applications" || t === "application_events" || t === "resume_versions" || t === "apply_questions" || t === "prep_sessions")
         ? rows.filter((r) => jobIdsFor(profileId).has(String(r.job_id ?? "")))
         : rows;
 

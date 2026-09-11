@@ -1028,6 +1028,9 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
           catRaw("lab/json-free-3:free", "0", ["tools", "response_format"]),
           catRaw("lab/json-free-4:free", "0", ["tools", "response_format"]),
           catRaw("lab/paid", "0.000003", ["tools", "response_format"]),
+          // a free model that takes images, and a second so a seeing chain can form
+          { ...catRaw("lab/sees-free:free", "0", ["tools", "response_format"]), architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } },
+          { ...catRaw("lab/sees-2-free:free", "0", ["tools", "response_format"]), architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } },
         ],
       }),
     })
@@ -1130,9 +1133,78 @@ test("openrouter adapter: request shape, free fallbacks, guard rails", async () 
     );
     setSetting("openrouter_fallbacks", "");
 
+    // A request with a screenshot: the picture goes as a data URL, and the free
+    // fallbacks are models that can also see it. The free pools rate-limit one model
+    // at a time, so a chain of seeing models is what gets a prep through — and a
+    // text-only fallback would answer about a picture it never saw.
+    {
+      const shot = r(dirname(process.env.JOBS_DB_PATH!), "shot.png");
+      writeFileSync(shot, Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]));
+      reply = { ok: true, status: 200, body: { model: "lab/sees-free:free", choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } } };
+      const res = await or.run({ purpose: "misc", prompt: "look", images: [{ path: shot, mime: "image/png" }] } as any, "lab/sees-free:free");
+      const body = JSON.parse(seen!.init.body);
+      assert.equal(body.messages.at(-1).content[0].type, "image_url");
+      assert.ok(body.models.length > 1 && body.models.every((m: string) => /sees/.test(m)), `every fallback must see: ${body.models.join(", ")}`);
+      assert.equal(res.sawImages, true);
+
+      // asked of a model the catalogue says cannot see, the picture is not sent and
+      // the answer says so — a claim to have read it would be false
+      reply = { ok: true, status: 200, body: { model: "lab/json-free:free", choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } } };
+      const blind = await or.run({ purpose: "misc", prompt: "look", images: [{ path: shot, mime: "image/png" }] } as any, "lab/json-free:free");
+      assert.equal(typeof JSON.parse(seen!.init.body).messages.at(-1).content, "string");
+      assert.equal(blind.sawImages, false);
+    }
+
+    // A reasoning model that spends its whole budget thinking hands back no content,
+    // and OpenRouter reports success — its own chain only moves on an error. The
+    // adapter walks the chain itself: the next model is asked, and only a spent chain
+    // is a failure. A free reasoning model did exactly this on the first prep with a
+    // screenshot: 4,500 output tokens, nothing written.
+    {
+      const seq: any[] = [
+        { ok: true, status: 200, body: { model: "lab/json-free:free", choices: [{ message: { content: "", reasoning: "…" }, finish_reason: "length" }], usage: { prompt_tokens: 100, completion_tokens: 4500, completion_tokens_details: { reasoning_tokens: 4500 }, cost: 0 } } },
+        { ok: true, status: 200, body: { model: "lab/json-free-2:free", choices: [{ message: { content: "the prep" } }], usage: { prompt_tokens: 100, completion_tokens: 900, cost: 0 } } },
+      ];
+      const realFetch2 = globalThis.fetch;
+      const bodies: any[] = [];
+      globalThis.fetch = (async (_u: any, init: any) => {
+        bodies.push(JSON.parse(init.body));
+        const r = seq.shift();
+        return { ok: r.ok, status: r.status, json: async () => r.body } as any;
+      }) as any;
+      try {
+        const out = await or.run({ purpose: "misc", prompt: "p", json: true } as any, "lab/json-free:free");
+        assert.equal(out.text, "the prep");
+        assert.equal(out.model, "lab/json-free-2:free", "credited to the model that actually wrote it");
+        assert.equal(bodies.length, 2, "one retry");
+        assert.ok(!bodies[1].models.includes("lab/json-free:free"), "the model that wrote nothing is not asked again");
+
+        // a model that stops on its own with nothing to say is passed through, not retried
+        seq.push({ ok: true, status: 200, body: { model: "lab/json-free:free", choices: [{ message: { content: "" }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 0, cost: 0 } } });
+        const quiet = await or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free");
+        assert.equal(quiet.text, "");
+        assert.equal(bodies.length, 3);
+      } finally {
+        globalThis.fetch = realFetch2;
+      }
+    }
+
     // the errors a free-tier user will actually hit, in words they can act on
     reply = { ok: false, status: 429, body: { error: { code: 429, message: "rate limited" } } };
     await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free"), /rate-limited/);
+
+    // OpenRouter wraps an upstream failure as "Provider returned error" with the
+    // provider's own sentence in metadata — that sentence is the useful one, and an
+    // upstream 429 is still a rate limit whatever HTTP status the wrapper carries
+    reply = {
+      ok: false,
+      status: 400,
+      body: { error: { code: 400, message: "Provider returned error", metadata: { raw: "lab/json-free:free is temporarily rate-limited upstream. Please retry shortly", provider_error_code: "429" } } },
+    };
+    await assert.rejects(
+      () => or.run({ purpose: "misc", prompt: "p" } as any, "lab/json-free:free"),
+      (e: any) => /rate-limited/.test(e.message) && /retry shortly/.test(e.message) && !/Provider returned error/.test(e.message)
+    );
     reply = { ok: false, status: 402, body: { error: { code: 402, message: "no credit" } } };
     await assert.rejects(() => or.run({ purpose: "misc", prompt: "p" } as any, "lab/paid"), /free model/);
     // OpenRouter can return an error with HTTP 200 — that must still throw
@@ -1719,10 +1791,234 @@ test("markdown: what the models write becomes a page, and nothing they write bec
   assert.match(hostile, /<strong>bold<\/strong>/);
   assert.match(hostile, /<a href="https:\/\/a\.b\/c" target="_blank" rel="noreferrer">ok<\/a>/, "http links are kept");
 
+  // A blank line between numbered items is still one list. Models write them this
+  // way constantly; broken into five lists, every item rendered as "1."
+  const loose = renderMarkdown("1. First thing.\n\n2. Second thing.\n\n3. Third.\n\nA paragraph after.");
+  assert.equal((loose.match(/<ol/g) || []).length, 1, `one list, not three: ${loose}`);
+  assert.match(loose, /<ol><li>First thing\.<\/li><li>Second thing\.<\/li><li>Third\.<\/li><\/ol>\n<p>A paragraph after\.<\/p>/);
+  // and a list that begins at 3 says so, rather than renumbering the model's answer
+  assert.match(renderMarkdown("3. c\n4. d"), /<ol start="3">/);
+  // a bulleted list following a numbered one across a blank line is a different list
+  assert.equal((renderMarkdown("1. a\n\n- b").match(/<[ou]l/g) || []).length, 2);
+
   // bold before italic, or ** reads as two italic markers
   assert.equal(inline("**a** and *b*"), "<strong>a</strong> and <em>b</em>");
   // an unclosed fence at the end of a truncated answer still renders, as code
   assert.match(renderMarkdown("```\nunfinished"), /<pre><code>unfinished<\/code><\/pre>/);
+});
+
+test("prep: one session per round, with its screenshots kept and its inputs checked", async () => {
+  const prep = await import("../app/services/prep.server");
+  const { upsertJobs, getMeta } = await import("../app/db.server");
+  const { existsSync, readdirSync } = await import("node:fs");
+
+  upsertJobs([{ company: "Toggl", role: "Senior Full Stack Engineer", category: "high", fit_score: 85, apply_url: "https://toggl.com/jobs/1" }]);
+  const jobId = "toggl--senior-full-stack-engineer";
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(64)]);
+
+  // The bug this replaces: one prep per job, so preparing for the technical round
+  // overwrote the screening prep. Two rounds now sit side by side.
+  const a = prep.createSession({ jobId, stage: "screening", title: "Screening with Maria", notes: "30 min, Thursday", files: [{ name: "invite.png", mime: "image/png", buf: png }, { name: "thread.jpg", mime: "image/jpeg", buf: png }] });
+  const b = prep.createSession({ jobId, stage: "technical", title: "", notes: "", files: [] });
+  assert.ok("id" in a && "id" in b);
+  const list = prep.listSessions(jobId);
+  assert.equal(list.length, 2);
+  assert.equal(list[0].stage, "technical", "newest first");
+  assert.equal(list[0].title, "Technical interview", "an untitled session is called by its round");
+  assert.equal(list[1].images.length, 2);
+
+  // the pictures are on disk, named by position, never by the uploaded name
+  const dir = prep.sessionDir((a as any).id);
+  assert.deepEqual(readdirSync(dir).sort(), ["1.png", "2.jpg"]);
+  assert.ok(dir.startsWith(prep.PREP_DIR) && prep.PREP_DIR.includes("ledger-test"), "written beside the test DB, not into the real data/");
+  assert.equal(prep.imagePath(list[1], 3), null, "no such image is null, not a guessed path");
+
+  // what the models cannot take is refused before anything is written
+  assert.match((prep.createSession({ jobId, stage: "final", title: "", notes: "", files: [{ name: "brief.pdf", mime: "application/pdf", buf: png }] }) as any).error, /not an image/);
+  assert.match((prep.createSession({ jobId, stage: "final", title: "", notes: "", files: [{ name: "huge.png", mime: "image/png", buf: Buffer.alloc(prep.MAX_IMAGE_BYTES + 1) }] }) as any).error, /5 MB/);
+  assert.equal(prep.listSessions(jobId).length, 2, "a refused session leaves no row");
+
+  // removing a session removes its pictures
+  prep.deleteSession((a as any).id);
+  assert.equal(existsSync(dir), false);
+  assert.equal(prep.listSessions(jobId).length, 1);
+
+  // an unknown round kind is kept as "other" rather than rejected — the label is the
+  // user's, the kind only shapes the prompt
+  const c = prep.createSession({ jobId, stage: "made-up", title: "Chat with the CTO", notes: "", files: [] });
+  assert.equal(prep.getSession((c as any).id)!.stage, "other");
+  assert.equal(getMeta(`prep:${jobId}`), null, "nothing is written to the old single-prep key");
+});
+
+test("prep: a runner that cannot look at a picture is never credited with having looked", async () => {
+  const prep = await import("../app/services/prep.server");
+  const { ADAPTERS } = await import("../app/llm/adapters.server");
+  const { runnerForImages } = await import("../app/llm/runner.server");
+  const { setSetting } = await import("../app/sqlite.server");
+  const { saveProfile } = await import("../app/resume/profiles.server");
+  const { upsertJobs } = await import("../app/db.server");
+
+  saveProfile({ name: "Base", makeDefault: true, data: { contact: { name: "Ada" }, summary: "", skills: ["TypeScript"], experience: [], projects: [], education: [] } });
+  upsertJobs([{ company: "Linear", role: "Product Engineer", category: "high", fit_score: 80, apply_url: "https://linear.app/jobs/2" }]);
+  const jobId = "linear--product-engineer";
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(16)]);
+
+  // Two stand-in runners: a local text model that cannot see, and one that can. Each
+  // records what it was handed. Nothing real is called.
+  const seen: { id: string; images: number }[] = [];
+  const fake = (id: string, sees: boolean) => ({
+    id,
+    info: async () => ({ id, label: id, kind: "api" as const, provider: "test", available: true, defaultModel: "m" }),
+    vision: async () => sees,
+    run: async (req: any) => {
+      seen.push({ id, images: req.images?.length ?? 0 });
+      return { text: "## What this round is\nread", model: "m", sawImages: sees && !!req.images?.length, usage: { inTok: 1, outTok: 1, metered: false } };
+    },
+  });
+  const real = ADAPTERS.slice();
+  ADAPTERS.length = 0;
+  ADAPTERS.push(fake("blind", false) as any, fake("seer", true) as any);
+  const prevDefault = (await import("../app/sqlite.server")).getSetting("default_runner");
+  setSetting("default_runner", "blind");
+  setSetting("fallback_runner", "");
+
+  try {
+    // The default cannot see and the other runner can: the pictures go to the other one.
+    assert.equal((await runnerForImages())?.id, "seer");
+    const s = prep.createSession({ jobId, stage: "technical", title: "Pairing round", notes: "", files: [{ name: "a.png", mime: "image/png", buf: png }] });
+    const r = await prep.generatePrep((s as any).id);
+    assert.ok(r.ok && r.sawImages && r.runner === "seer", JSON.stringify(r));
+    assert.deepEqual(seen.at(-1), { id: "seer", images: 1 });
+    assert.equal(prep.getSession((s as any).id)!.vision, 1);
+
+    // No runner can see: the prep is still written — from the notes and the posting —
+    // and the session records that the screenshot was not read. That record is what
+    // stops the page from implying it was.
+    ADAPTERS.length = 0;
+    ADAPTERS.push(fake("blind", false) as any);
+    assert.equal(await runnerForImages(), null);
+    const t = prep.createSession({ jobId, stage: "screening", title: "", notes: "recruiter said 20 min", files: [{ name: "b.png", mime: "image/png", buf: png }] });
+    const r2 = await prep.generatePrep((t as any).id);
+    assert.ok(r2.ok && !r2.sawImages, JSON.stringify(r2));
+    assert.deepEqual(seen.at(-1), { id: "blind", images: 0 }, "a blind runner is not even handed the picture");
+    assert.equal(prep.getSession((t as any).id)!.vision, 0);
+    assert.ok(prep.getSession((t as any).id)!.prep_md, "and the prep exists regardless");
+  } finally {
+    ADAPTERS.length = 0;
+    ADAPTERS.push(...real);
+    setSetting("default_runner", prevDefault || "");
+  }
+});
+
+test("prep: the single prep an install already has becomes its first session", async () => {
+  const { getDb } = await import("../app/sqlite.server");
+  const { upsertJobs, setMeta } = await import("../app/db.server");
+  const prep = await import("../app/services/prep.server");
+
+  // A pre-existing install's prep lives in meta under prep:<job>. The fold runs once,
+  // on the next start; here it is exercised directly with the same statements.
+  upsertJobs([{ company: "Old", role: "Engineer", category: "medium", fit_score: 60, apply_url: "https://old.co/j" }]);
+  setMeta("prep:old--engineer", "## Likely questions\n1. Why us?");
+  setMeta("prep:gone--posting", "## orphan");
+  const db = getDb();
+  db.prepare("DELETE FROM settings WHERE key='prep_sessions_folded'").run();
+  // the fold is part of getDb(); a fresh connection runs it — emulate by re-running the
+  // migration body through the module's own bootstrap
+  delete (global as any).__ledgerDb;
+  getDb();
+
+  const folded = prep.listSessions("old--engineer");
+  assert.equal(folded.length, 1);
+  assert.equal(folded[0].prep_md, "## Likely questions\n1. Why us?");
+  assert.equal(folded[0].title, "Interview prep");
+  assert.equal((db.prepare("SELECT count(*) c FROM meta WHERE key LIKE 'prep:%'").get() as any).c, 0, "old keys are gone");
+  assert.equal(prep.listSessions("gone--posting").length, 0, "a prep for a posting that no longer exists is dropped, not orphaned");
+});
+
+test("adapters: a picture reaches the model in its own format, or the answer says it did not", async () => {
+  const { ADAPTERS } = await import("../app/llm/adapters.server");
+  const { writeFileSync } = await import("node:fs");
+  const { resolve: r } = await import("node:path");
+  const img = r(TEST_DIR, "shot.png");
+  writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  const images = [{ path: img, mime: "image/png" as const }];
+  const byId = (id: string) => ADAPTERS.find((a) => a.id === id)!;
+
+  const calls: { url: string; body: any }[] = [];
+  const realFetch = globalThis.fetch;
+  let answer: (url: string, body: any) => { status: number; json: any } = () => ({ status: 200, json: {} });
+  globalThis.fetch = (async (url: any, init: any) => {
+    const body = init?.body ? JSON.parse(init.body) : null;
+    calls.push({ url: String(url), body });
+    const a = answer(String(url), body);
+    return { ok: a.status < 400, status: a.status, json: async () => a.json } as any;
+  }) as any;
+
+  const { setSecret } = await import("../app/secrets.server");
+  setSecret("anthropic_api_key", "k");
+  setSecret("google_api_key", "k");
+  setSecret("openai_api_key", "k");
+
+  try {
+    // Anthropic: a base64 image block ahead of the text
+    answer = () => ({ status: 200, json: { content: [{ text: "ok" }], usage: {} } });
+    let res = await byId("anthropic-api").run({ purpose: "misc", prompt: "look", images }, "claude-x");
+    let content = calls.at(-1)!.body.messages[0].content;
+    assert.equal(content[0].type, "image");
+    assert.equal(content[0].source.media_type, "image/png");
+    assert.equal(content[0].source.data, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString("base64"));
+    assert.equal(content[1].text, "look");
+    assert.equal(res.sawImages, true);
+
+    // Gemini: an inline part
+    answer = () => ({ status: 200, json: { candidates: [{ content: { parts: [{ text: "ok" }] } }] } });
+    res = await byId("google-api").run({ purpose: "misc", prompt: "look", images }, "gemini-x");
+    const parts = calls.at(-1)!.body.contents[0].parts;
+    assert.equal(parts[0].inlineData.mimeType, "image/png");
+    assert.equal(res.sawImages, true);
+
+    // Ollama: the daemon is asked whether the model sees. qwen2.5 does not, so it is
+    // not handed the picture, and the result says so. This is the install this was
+    // written on.
+    answer = (url) =>
+      url.endsWith("/api/show")
+        ? { status: 200, json: { capabilities: ["completion"] } }
+        : { status: 200, json: { choices: [{ message: { content: "ok" } }], usage: {} } };
+    res = await byId("ollama-api").run({ purpose: "misc", prompt: "look", images }, "qwen2.5:7b");
+    assert.equal(typeof calls.at(-1)!.body.messages.at(-1).content, "string", "no image_url for a model that cannot see");
+    assert.equal(res.sawImages, false);
+
+    // ...and qwen2.5vl does
+    answer = (url) =>
+      url.endsWith("/api/show")
+        ? { status: 200, json: { capabilities: ["completion", "vision"] } }
+        : { status: 200, json: { choices: [{ message: { content: "ok" } }], usage: {} } };
+    res = await byId("ollama-api").run({ purpose: "misc", prompt: "look", images }, "qwen2.5vl:7b");
+    content = calls.at(-1)!.body.messages.at(-1).content;
+    assert.equal(content[0].type, "image_url");
+    assert.match(content[0].image_url.url, /^data:image\/png;base64,/);
+    assert.equal(res.sawImages, true);
+
+    // OpenAI: sent with the picture; a model that refuses it is asked again without,
+    // and the answer records that it looked at nothing
+    let n = 0;
+    answer = () =>
+      ++n === 1
+        ? { status: 400, json: { error: { message: "Invalid content type. image_url is only supported by certain models." } } }
+        : { status: 200, json: { choices: [{ message: { content: "ok" } }], usage: {} } };
+    res = await byId("openai-api").run({ purpose: "misc", prompt: "look", images }, "gpt-4o-mini");
+    assert.equal(n, 2, "retried once, without the picture");
+    assert.equal(typeof calls.at(-1)!.body.messages.at(-1).content, "string");
+    assert.equal(res.sawImages, false);
+
+    // no images in the request: nothing about them in the answer, either way
+    answer = () => ({ status: 200, json: { content: [{ text: "ok" }], usage: {} } });
+    res = await byId("anthropic-api").run({ purpose: "misc", prompt: "plain" }, "claude-x");
+    assert.equal(typeof calls.at(-1)!.body.messages[0].content, "string");
+    assert.equal(res.sawImages, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {

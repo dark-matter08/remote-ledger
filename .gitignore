@@ -1,6 +1,8 @@
 .DS_Store
 .env
 /node_modules/
+# a symlink of that name too — a worktree's link to the real one once got merged
+/node_modules
 
 # React Router
 /.react-router/

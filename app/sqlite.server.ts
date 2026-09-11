@@ -74,6 +74,32 @@ export function getDb(): Db {
       }
     }
   } catch {}
+  // ── prep sessions ───────────────────────────────────────────────────────────
+  //
+  // One prep per job became one per round. The single prep an install already has
+  // becomes its first session, so nothing generated before this is lost — and the
+  // meta row goes, so there is one place a prep can live.
+  try {
+    const folded = db.prepare("SELECT value FROM settings WHERE key='prep_sessions_folded'").get() as { value?: string } | undefined;
+    if (!folded?.value) {
+      const rows = db.prepare("SELECT key, value FROM meta WHERE key LIKE 'prep:%' AND value IS NOT NULL AND value <> ''").all() as {
+        key: string;
+        value: string;
+      }[];
+      const now = new Date().toISOString();
+      const ins = db.prepare(
+        "INSERT INTO prep_sessions (job_id, stage, title, notes, images, prep_md, vision, created_at, updated_at) VALUES (?,?,?,?,?,?,0,?,?)"
+      );
+      for (const r of rows) {
+        const jobId = r.key.slice("prep:".length);
+        if (!db.prepare("SELECT 1 FROM jobs WHERE id=?").get(jobId)) continue; // a prep for a posting that is gone
+        ins.run(jobId, "other", "Interview prep", "", "[]", r.value, now, now);
+      }
+      db.prepare("DELETE FROM meta WHERE key LIKE 'prep:%'").run();
+      db.prepare("INSERT INTO settings (key,value) VALUES ('prep_sessions_folded',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(now);
+    }
+  } catch {}
+
   // ── profiles ────────────────────────────────────────────────────────────────
   //
   // One profile per line of work. Before this there was one search, held as three

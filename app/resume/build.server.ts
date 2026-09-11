@@ -25,6 +25,8 @@ export interface KbBuildSource {
   end_date: string | null;
   location: string | null;
   bullets: string[];
+  /** facts only you know about this entry — the KB's context field, fed to every draft */
+  context: string | null;
 }
 
 const safeTags = (raw: unknown): string[] => {
@@ -66,6 +68,7 @@ export function kbBuildSources(profileId?: string): KbBuildSource[] {
     start_date: i.start_date ?? null,
     end_date: i.end_date ?? null,
     location: i.location ?? null,
+    context: i.context ?? null,
     bullets: (bulletsFor.all(i.id) as { bullet: string }[]).map((b) => b.bullet),
   }));
 }
