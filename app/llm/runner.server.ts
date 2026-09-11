@@ -47,6 +47,37 @@ export async function runnerCanSearchWeb(runnerId?: string): Promise<boolean> {
   return !!(await adapterById(id)?.info())?.web;
 }
 
+/**
+ * Can this runner, with the model it is set to use, look at a picture?
+ *
+ * A per-model question. Ollama with qwen2.5 cannot and Ollama with qwen2.5vl can,
+ * so the adapter is asked about the configured model rather than about itself.
+ */
+export async function runnerCanSee(runnerId?: string): Promise<boolean> {
+  const id = runnerId || (await defaultRunnerId());
+  const adapter = id ? adapterById(id) : undefined;
+  if (!adapter?.vision) return false;
+  const info = await adapter.info();
+  if (!info.available) return false;
+  return adapter.vision(modelFor(id!, info));
+}
+
+/**
+ * The runner that should take a request with pictures in it.
+ *
+ * The default first, if it sees; then the fallback; then any available runner that
+ * does. Nothing, if none does — the caller then runs without the pictures and says
+ * so, which is what happens on an install whose only runner is a local text model.
+ */
+export async function runnerForImages(): Promise<{ id: string; label: string } | null> {
+  const preferred = [await defaultRunnerId(), getSetting("fallback_runner")].filter(Boolean) as string[];
+  const rest = (await availableRunners()).map((r) => r.id);
+  for (const id of [...new Set([...preferred, ...rest])]) {
+    if (await runnerCanSee(id)) return { id, label: (await adapterById(id)!.info()).label };
+  }
+  return null;
+}
+
 function modelFor(runnerId: string, info: RunnerInfo, override?: string): string {
   return (
     override ||
@@ -158,7 +189,18 @@ async function runOne(req: RunRequest, runnerId: string): Promise<RunResult> {
 
     let json: any;
     if (req.json) json = tryParseJson(r.text);
-    return { text: r.text, json, usage, runner: runnerId, model: r.model || model, durationMs, callId, toolCalls: r.toolCalls };
+    return {
+      text: r.text,
+      json,
+      usage,
+      runner: runnerId,
+      model: r.model || model,
+      durationMs,
+      callId,
+      toolCalls: r.toolCalls,
+      // only an adapter that put them in front of the model says yes
+      sawImages: req.images?.length ? !!r.sawImages : undefined,
+    };
   } catch (e: any) {
     logCall({
       runner: runnerId,
