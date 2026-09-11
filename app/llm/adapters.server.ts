@@ -619,7 +619,7 @@ class OpenRouterAdapter implements RunnerAdapter {
   }
 
   // primary + free fallbacks, so a 429 on the free pool is a detour, not a dead end
-  private modelChain(model: string, needsJson: boolean, needsTools = false): string[] {
+  private modelChain(model: string, needsJson: boolean, needsTools = false, needsVision = false): string[] {
     const chain = [model];
     const freeOnly = getSetting("openrouter_free_only") === "true";
     const configured = (getSetting("openrouter_fallbacks") || "")
@@ -639,6 +639,10 @@ class OpenRouterAdapter implements RunnerAdapter {
       // a model without tool support does not refuse a tool — it ignores it and
       // answers from memory, which is the failure this whole path exists to avoid
       if (needsTools && !m.tools) continue;
+      // and a fallback that cannot see would answer a request about a screenshot from
+      // the text alone. The free pools rate-limit one model at a time, so a chain of
+      // seeing models is what gets a prep past "temporarily rate-limited upstream".
+      if (needsVision && !m.vision) continue;
       chain.push(m.id);
     }
     return chain;
@@ -659,11 +663,11 @@ class OpenRouterAdapter implements RunnerAdapter {
     if (!cachedCatalog().length && isFreeModelId(model)) await warmCatalog();
 
     const known = cachedModel(model);
-    const chain = this.modelChain(model, !!req.json, !!req.tools?.length);
-    const web = req.allowWeb ? webPlugin() : null;
-    // pictures go only where the catalogue says they can be seen; a fallback model in
-    // the chain that cannot see would get the text alone, and the result says so
+    // pictures go only where the catalogue says they can be seen; the chain is then
+    // built from models that also can, so a detour is not a downgrade
     const images = req.images?.length && (await this.vision(model)) ? req.images : undefined;
+    const chain = this.modelChain(model, !!req.json, !!req.tools?.length, !!images);
+    const web = req.allowWeb ? webPlugin() : null;
     const messages = req.messages?.length
       ? req.messages.map(toWireMessage)
       : [
@@ -676,7 +680,59 @@ class OpenRouterAdapter implements RunnerAdapter {
           },
         ];
 
-    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    // A thinking model can spend the whole output budget on reasoning and hand back
+    // an empty answer, and OpenRouter reports that as success — its fallback chain only
+    // moves on an error. So the chain is walked here as well: an empty answer whose
+    // budget ran out is retried on the next model, and only when the chain is spent is
+    // it a failure. It was a free reasoning model doing exactly this, on the first prep
+    // with a screenshot, that made the case.
+    let tried = 0;
+    let remaining = chain;
+    let j: any;
+    let res: Response;
+    let used = model;
+    while (true) {
+      const first = remaining[0];
+      res = await this.post(key, first, remaining, messages, req, known, web);
+      j = await res.json().catch(() => null);
+      if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, first));
+      used = String(j.model || first);
+      if (!wroteNothing(j)) break;
+      tried++;
+      remaining = remaining.filter((m) => m !== used);
+      if (!remaining.length || tried >= 2)
+        throw new Error(
+          `"${used}" spent its whole output budget thinking and wrote nothing${tried > 1 ? ", and so did the fallback" : ""}. Pick a different model in Settings → OpenRouter, or raise the token limit.`
+        );
+    }
+
+    const message = j.choices?.[0]?.message ?? {};
+    const text = message.content ?? "";
+    const inTok = j.usage?.prompt_tokens ?? 0;
+    const outTok = j.usage?.completion_tokens ?? 0;
+    // OpenRouter reports the charge it actually made; fall back to catalogue rates,
+    // and leave it undefined if we know neither so the runner tries pricing.json
+    const cost =
+      typeof j.usage?.cost === "number" ? j.usage.cost : catalogCost(used, inTok, outTok) ?? undefined;
+
+    return {
+      text,
+      toolCalls: parseToolCalls(message),
+      model: used,
+      // seen only if they were sent AND the model that answered is one that sees
+      sawImages: !!images && (used === model || !!cachedModel(used)?.vision),
+      usage: {
+        inTok,
+        outTok,
+        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        costUsd: cost,
+        metered: true,
+      },
+    };
+  }
+
+  private post(key: string, model: string, chain: string[], messages: any[], req: RunRequest, known: any, web: any): Promise<Response> {
+    return fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -708,47 +764,40 @@ class OpenRouterAdapter implements RunnerAdapter {
             }
           : {}),
         ...(web ? { plugins: [web] } : {}), // billed per search, never on a free-only key
+        // a reasoning model asked for long-form prose is told to keep the thinking short;
+        // models without the knob ignore it
+        ...(req.thinking === "low" ? { reasoning: { effort: "low" } } : {}),
         usage: { include: true }, // return real, post-discount cost
       }),
     });
-
-    // a body that will not parse is still a failure — without this the unreadable
-    // `null` walks into the field reads below and surfaces as a bare TypeError
-    const j: any = await res.json().catch(() => null);
-    if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, model));
-
-    const used = String(j.model || model);
-    const message = j.choices?.[0]?.message ?? {};
-    const text = message.content ?? "";
-    const inTok = j.usage?.prompt_tokens ?? 0;
-    const outTok = j.usage?.completion_tokens ?? 0;
-    // OpenRouter reports the charge it actually made; fall back to catalogue rates,
-    // and leave it undefined if we know neither so the runner tries pricing.json
-    const cost =
-      typeof j.usage?.cost === "number" ? j.usage.cost : catalogCost(used, inTok, outTok) ?? undefined;
-
-    return {
-      text,
-      toolCalls: parseToolCalls(message),
-      model: used,
-      // seen only if they were sent AND the model that answered is one that sees
-      sawImages: !!images && (used === model || !!cachedModel(used)?.vision),
-      usage: {
-        inTok,
-        outTok,
-        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
-        costUsd: cost,
-        metered: true,
-      },
-    };
   }
 }
 
+/**
+ * An answer with no content, from a model that used its budget up — the shape a
+ * reasoning model leaves when the thinking ran to the limit. A model that stopped on
+ * its own with nothing to say is a different thing and is passed through as it is.
+ */
+function wroteNothing(j: any): boolean {
+  const choice = j?.choices?.[0];
+  const content = String(choice?.message?.content ?? "").trim();
+  if (content) return false;
+  if (choice?.message?.tool_calls?.length) return false;
+  const reasoning = Number(j?.usage?.completion_tokens_details?.reasoning_tokens ?? 0);
+  return choice?.finish_reason === "length" || reasoning > 0;
+}
+
 function openRouterError(status: number, body: any, model: string): string {
-  const msg = String(body?.error?.message || body?.error || "").slice(0, 300);
+  // "Provider returned error" is OpenRouter's wrapper; the upstream's own sentence —
+  // "temporarily rate-limited upstream, retry shortly" — is in metadata.raw, and is
+  // the one a person can act on
+  const raw = String(body?.error?.metadata?.raw || "").trim();
+  const wrapped = String(body?.error?.message || body?.error || "");
+  const msg = (raw && /provider returned error/i.test(wrapped) ? raw : wrapped).slice(0, 300);
   // a body-level error can arrive with HTTP 200, so prefer its code when numeric
   const inner = Number(body?.error?.code);
-  const code = Number.isFinite(inner) && inner >= 100 ? inner : status;
+  const upstream = Number(body?.error?.metadata?.provider_error_code);
+  const code = Number.isFinite(upstream) && upstream >= 100 ? upstream : Number.isFinite(inner) && inner >= 100 ? inner : status;
   if (code === 401 || code === 403)
     return `OpenRouter rejected the key. Check it at openrouter.ai/keys. (${msg})`;
   if (code === 402)

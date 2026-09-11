@@ -55,6 +55,12 @@ export interface RunRequest {
    * image leaves them out and says so in `sawImages`; it never pretends.
    */
   images?: ImageInput[];
+  /**
+   * "low": this call wants the model to write, not deliberate. Long-form output — a
+   * prep, a cover letter — on a reasoning model can spend the whole output budget
+   * thinking and hand back nothing. Providers with no such knob ignore it.
+   */
+  thinking?: "low";
 }
 
 export interface ImageInput {
