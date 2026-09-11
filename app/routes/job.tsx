@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Markdown } from "../components/Markdown";
 import { redirect } from "react-router";
 import { Form, Link, useNavigation, useFetcher, useSearchParams, useRevalidator } from "react-router";
 import type { Route } from "./+types/job";
@@ -799,7 +800,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 <strong>v{v.id}</strong> · {v.created_at.slice(0, 16).replace("T", " ")}
                 <a className="ghost-btn" style={{ marginLeft: "auto" }} href={`/version/${v.id}/cover.pdf`} target="_blank" rel="noreferrer">Download PDF ▸</a>
               </div>
-              <pre className="letter">{v.content_md}</pre>
+              <Markdown text={v.content_md || ""} className="letter-md" />
             </div>
           ))}
         </div>

@@ -1694,6 +1694,37 @@ test("board filters: the chips come from your keywords, not from a hardcoded sta
   assert.deepEqual(stackTagsFor("Figma", engBoard), []);
 });
 
+test("markdown: what the models write becomes a page, and nothing they write becomes a script", async () => {
+  const { renderMarkdown, inline } = await import("../app/markdown");
+
+  // The bug this replaces: the prep was shown in a <pre>, so the reader got literal
+  // "## Likely Interview Questions" and "**Project Management**" on screen.
+  const html = renderMarkdown(
+    "## Likely questions\n\n1. **Tell me about** a time you *led*.\n2. Second\n   - a detail\n\nA paragraph with `code` and 3 years.\n\n> quoted\n\n---\n\n```\nlet x = 1;\n```"
+  );
+  assert.match(html, /<h2>Likely questions<\/h2>/);
+  assert.match(html, /<ol><li><strong>Tell me about<\/strong> a time you <em>led<\/em>\.<\/li><li>Second<ul><li>a detail<\/li><\/ul><\/li><\/ol>/);
+  assert.match(html, /<p>A paragraph with <code>code<\/code> and 3 years\.<\/p>/, "a number in the prose is not a code placeholder");
+  assert.match(html, /<blockquote>quoted<\/blockquote>/);
+  assert.match(html, /<hr \/>/);
+  assert.match(html, /<pre><code>let x = 1;<\/code><\/pre>/);
+
+  // The text comes from a model. Whatever it writes, only this file's tags reach the page.
+  const hostile = renderMarkdown('<script>alert(1)</script> **bold** <img src=x onerror=alert(1)> [x](javascript:alert(1)) [ok](https://a.b/c)');
+  // every tag in the output is one this renderer writes; the input's tags are text
+  const tags = [...hostile.matchAll(/<\/?([a-z0-9]+)/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(tags)].sort(), ["a", "p", "strong"], `only the renderer's own tags: ${hostile}`);
+  assert.match(hostile, /&lt;script&gt;/, "it is shown, escaped, not executed");
+  assert.ok(!/href="javascript:/.test(hostile), "a javascript: link is not a link");
+  assert.match(hostile, /<strong>bold<\/strong>/);
+  assert.match(hostile, /<a href="https:\/\/a\.b\/c" target="_blank" rel="noreferrer">ok<\/a>/, "http links are kept");
+
+  // bold before italic, or ** reads as two italic markers
+  assert.equal(inline("**a** and *b*"), "<strong>a</strong> and <em>b</em>");
+  // an unclosed fence at the end of a truncated answer still renders, as code
+  assert.match(renderMarkdown("```\nunfinished"), /<pre><code>unfinished<\/code><\/pre>/);
+});
+
 test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {
   const { JOB_FIELDS, fieldById, fieldLabel, inField } = await import("../app/fields");
 
