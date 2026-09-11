@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { NavLink, Link } from "react-router";
+import { NavLink, Link, useLocation } from "react-router";
 import {
   Newspaper,
   TerminalSquare,
@@ -21,6 +21,7 @@ import {
   PanelLeftClose,
   ArrowUpCircle,
   type LucideIcon,
+  RefreshCw,
 } from "lucide-react";
 
 const GROUPS: { title: string; items: { to: string; label: string; Icon: LucideIcon; end?: boolean }[] }[] = [
@@ -58,6 +59,8 @@ export function Sidebar() {
   const [pinned, setPinned] = useState(false);
   const [theme, setTheme] = useState<"paper" | "night">("paper");
   const [pending, setPending] = useState(0);
+  const [stale, setStale] = useState(false);
+  const bootBuild = useRef<string | null>(null);
   const [update, setUpdate] = useState<{ behind: number; latest: string; current: string; subject: string } | null>(null);
   const [updating, setUpdating] = useState(false);
   const [problem, setProblem] = useState("");
@@ -72,12 +75,31 @@ export function Sidebar() {
     const tick = () =>
       fetch("/api/pending")
         .then((r) => r.json())
-        .then((d) => { if (alive) setPending(d.questions || 0); })
+        .then((d) => {
+          if (!alive) return;
+          setPending(d.questions || 0);
+          // The first answer says which server this page booted under. A later one
+          // from a different process means the code was replaced beneath the page —
+          // its buttons may now post to actions that no longer exist and do nothing.
+          if (d.build) {
+            if (!bootBuild.current) bootBuild.current = d.build;
+            else if (d.build !== bootBuild.current) setStale(true);
+          }
+        })
         .catch(() => {});
     tick();
     const t = setInterval(tick, 12000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  // A stale page reloads on its next navigation — the moment it would otherwise
+  // start running old route code against the new server — and says so until then.
+  // Not on the spot: a reload mid-sentence throws away whatever was being typed.
+  const here = useLocation();
+  const bootedAt = useRef(here.key);
+  useEffect(() => {
+    if (stale && here.key !== bootedAt.current) window.location.reload();
+  }, [stale, here.key]);
 
   // A release is not urgent, and the check reaches the network — twice an hour is
   // plenty to notice one within a working day.
@@ -198,6 +220,18 @@ export function Sidebar() {
       </nav>
 
       <div className="sb-bottom">
+        {stale && (
+          <button
+            className="sb-item"
+            onClick={() => window.location.reload()}
+            style={{ color: "var(--vermillion)" }}
+            title="The Ledger restarted with newer code since this page loaded. Its buttons may not work until you reload — click, or just open any link."
+          >
+            <span className="sb-ico"><RefreshCw size={18} strokeWidth={1.7} /></span>
+            <span className="sb-label">Reload for new build</span>
+            <span className="sb-badge" />
+          </button>
+        )}
         {(update || problem) && (
           <button
             className="sb-item"
