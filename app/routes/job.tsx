@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Markdown } from "../components/Markdown";
 import { redirect } from "react-router";
 import { Form, Link, useNavigation, useFetcher, useSearchParams, useRevalidator } from "react-router";
 import type { Route } from "./+types/job";
@@ -26,7 +27,10 @@ import { kbBuildSources, kbAllSkills, rankKbForJob, buildResumeFromKb, type Buil
 import { draftAnswer } from "../resume/ai.server";
 import { kbContext } from "../services/kb.server";
 import { KbBuilder } from "../components/KbBuilder";
-import { tailorResume, coverLetter, interviewPrep, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
+import { tailorResume, coverLetter, analyzeMatch, applicationAnswers, GENERIC_QUESTIONS, type JobCtx } from "../resume/ai.server";
+import { listSessions, createSession, deleteSession, generatePrep, STAGES as PREP_STAGES } from "../services/prep.server";
+import { FilePicker } from "../components/FilePicker";
+import { runnerForImages } from "../llm/runner.server";
 import { detectFormFields, questionFields, assistApply, lastAssist } from "../services/apply.server";
 import { loggedTask } from "../services/crawl.server";
 import { RefreshCw, Check, X, Circle, Sparkles, Trash2, ShieldAlert, Square } from "lucide-react";
@@ -74,7 +78,10 @@ export async function loader({ params }: Route.LoaderArgs) {
       job.id,
       getMeta(`match:${job.id}`) ? JSON.parse(getMeta(`match:${job.id}`)!).missing || [] : []
     ),
-    storedPrep: getMeta(`prep:${job.id}`),
+    prepSessions: listSessions(job.id),
+    prepStages: PREP_STAGES.map((st) => ({ value: st.id, label: st.label })),
+    // which runner would read a screenshot, if any — so the form can say so up front
+    prepSeer: (await runnerForImages())?.label ?? null,
     storedAnswers: getMeta(`answers:${job.id}`) ? JSON.parse(getMeta(`answers:${job.id}`)!) : null,
     applyActivity: jobApplyActivity(job.id),
     lastAssist: lastAssist(job.id),
@@ -236,15 +243,40 @@ export async function action({ request, params }: Route.ActionArgs) {
       setMeta(`match:${job.id}`, JSON.stringify(m.match));
       return { ok: true, msg: `Match analyzed (${m.match.score}).` };
     }
-    if (intent === "interview") {
-      if (!base) return { error: "Upload a base résumé first." };
-      const p = await loggedTask("prep", `Interview prep · ${job.company} — ${job.role}`, async (L) => {
-        L("step", "Generating likely questions + talking points…");
-        return interviewPrep(base, ctx(job));
+    if (intent === "prep-create") {
+      // the screenshots arrive as File entries under one field name
+      const files: { name: string; mime: string; buf: Buffer }[] = [];
+      for (const f of form.getAll("images")) {
+        if (!(f instanceof File) || !f.size) continue;
+        files.push({ name: f.name, mime: f.type, buf: Buffer.from(await f.arrayBuffer()) });
+      }
+      const made = createSession({
+        jobId: job.id,
+        stage: String(form.get("stage") || "other"),
+        title: String(form.get("title") || ""),
+        notes: String(form.get("notes") || ""),
+        files,
       });
-      setMeta(`prep:${job.id}`, p.text);
-      addEvent(job.id, "interview_prep", {});
-      return { ok: true, msg: "Interview prep generated." };
+      if ("error" in made) return { error: made.error };
+      const r = await loggedTask("prep", `Prep · ${job.company} — ${job.role}`, (L) => generatePrep(made.id, L));
+      if (!r.ok) return { error: r.error, prepSession: made.id };
+      return {
+        ok: true,
+        msg: files.length
+          ? r.sawImages
+            ? `Prepared — ${files.length} screenshot(s) read.`
+            : `Prepared from your notes and the posting. No runner on this machine could read the ${files.length} screenshot(s).`
+          : "Prepared.",
+      };
+    }
+    if (intent === "prep-regenerate") {
+      const sid = Number(form.get("session"));
+      const r = await loggedTask("prep", `Prep again · ${job.company} — ${job.role}`, (L) => generatePrep(sid, L));
+      return r.ok ? { ok: true, msg: "Prepared again." } : { error: r.error };
+    }
+    if (intent === "prep-delete") {
+      deleteSession(Number(form.get("session")));
+      return { ok: true, msg: "Session removed." };
     }
     if (intent === "draft-answers") {
       if (!base) return { error: "Upload a base résumé first." };
@@ -352,7 +384,7 @@ function PooledQuestion({ q, busy }: { q: any; busy: boolean }) {
 }
 
 export default function JobDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { job, events, versions, profiles, gaps, gapsCovered, defaultProfileId, storedMatch, storedPrep, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
+  const { job, events, versions, profiles, gaps, gapsCovered, defaultProfileId, storedMatch, prepSessions, prepStages, prepSeer, storedAnswers, applyActivity, lastAssist, styles, stages, stageLabels, defaultStyle, kbSources, kbSkills, kbSuggested } = loaderData;
   const assist = (actionData as any)?.assist || lastAssist;
   // Same as Settings: the tab lives in the URL, so a reload, a shared link or the back
   // button keeps you on the tab you were reading rather than snapping to Overview.
@@ -799,7 +831,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 <strong>v{v.id}</strong> · {v.created_at.slice(0, 16).replace("T", " ")}
                 <a className="ghost-btn" style={{ marginLeft: "auto" }} href={`/version/${v.id}/cover.pdf`} target="_blank" rel="noreferrer">Download PDF ▸</a>
               </div>
-              <pre className="letter">{v.content_md}</pre>
+              <Markdown text={v.content_md || ""} className="letter-md" />
             </div>
           ))}
         </div>
@@ -962,11 +994,120 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
       )}
 
       {tab === "Prep" && (
-        <div className="panel">
-          <h3>Interview prep</h3>
-          <Form method="post"><input type="hidden" name="intent" value="interview" /><button className="btn" disabled={busy}>{running === "interview" ? "Preparing…" : "Generate prep"}</button></Form>
-          {storedPrep ? <pre className="letter">{storedPrep}</pre> : <p className="hint" style={{ marginTop: 12 }}>No prep yet.</p>}
-        </div>
+        <>
+          <div className="panel">
+            <h3>Prepare for a round</h3>
+            <p className="hint">
+              One session per conversation &mdash; the screening call, the technical round, the final. Drop in
+              the invite, the recruiter&rsquo;s message or the brief as screenshots and it reads them; it answers
+              the questions it expects from your knowledge base, and says where the base has nothing.
+            </p>
+            <Form method="post" encType="multipart/form-data">
+              <input type="hidden" name="intent" value="prep-create" />
+              <div className="row2">
+                <div className="field">
+                  <label>Which round</label>
+                  <Select name="stage" options={prepStages} defaultValue={job.stage === "screening" ? "screening" : "technical"} />
+                </div>
+                <div className="field">
+                  <label>Call it</label>
+                  <input type="text" name="title" placeholder="Screening with Maria, Thursday 3pm" />
+                </div>
+              </div>
+              <div className="field">
+                <label>What you know about it</label>
+                <textarea
+                  name="notes"
+                  placeholder="Paste the invite, what the recruiter said, who is on the call, anything they told you it would cover…"
+                  style={{ minHeight: 90 }}
+                />
+              </div>
+              <div className="field">
+                <label>Screenshots</label>
+                <FilePicker name="images" accept="image/png,image/jpeg,image/webp,image/gif" label="Add screenshots…" multiple />
+                <p className="hint" style={{ marginTop: 6 }}>
+                  Up to six, 5 MB each.{" "}
+                  {prepSeer ? (
+                    <>They will be read by <strong>{prepSeer}</strong>; the session records that it did.</>
+                  ) : (
+                    <>
+                      <strong>Nothing on this machine can look at a picture yet</strong> &mdash; the prep would use your notes and the posting only.
+                      A local model that can: <code>ollama pull qwen2.5vl:7b</code>, then pick it in Settings &rarr; Local.
+                    </>
+                  )}
+                </p>
+              </div>
+              <button className="btn primary" disabled={busy}>
+                {running === "prep-create" ? "Preparing…" : "Prepare me"}
+              </button>
+            </Form>
+          </div>
+
+          {prepSessions.length === 0 ? (
+            <div className="panel">
+              <p className="hint">No sessions yet. The first one is usually the screening call.</p>
+            </div>
+          ) : (
+            prepSessions.map((ps: any) => (
+              <div className="panel prep-session" key={ps.id}>
+                <div className="prep-head">
+                  <div>
+                    <span className="badge warn">{prepStages.find((x: any) => x.value === ps.stage)?.label ?? "Other"}</span>
+                    <h3 style={{ display: "inline", marginLeft: 10 }}>{ps.title}</h3>
+                  </div>
+                  <div className="prep-meta">
+                    {ps.created_at.slice(0, 10)}
+                    {ps.runner ? ` · ${ps.runner}${ps.model ? ` · ${ps.model}` : ""}` : ""}
+                    {typeof ps.cost_usd === "number" ? ` · $${ps.cost_usd.toFixed(3)}` : ""}
+                  </div>
+                </div>
+
+                {ps.images.length > 0 && (
+                  <div className="prep-shots">
+                    {ps.images.map((im: any) => (
+                      <a key={im.n} href={`/prep/image/${ps.id}/${im.n}`} target="_blank" rel="noreferrer" title={im.name}>
+                        <img src={`/prep/image/${ps.id}/${im.n}`} alt={im.name} loading="lazy" />
+                      </a>
+                    ))}
+                    <span className={`prep-seen ${ps.vision ? "ok" : "no"}`}>
+                      {ps.prep_md
+                        ? ps.vision
+                          ? `read by ${ps.runner}`
+                          : "not read — no runner could look at the picture; prepared from your notes and the posting"
+                        : "not read yet"}
+                    </span>
+                  </div>
+                )}
+
+                {ps.notes && (
+                  <details className="prep-notes">
+                    <summary>Your notes</summary>
+                    <p>{ps.notes}</p>
+                  </details>
+                )}
+
+                {ps.prep_md ? (
+                  <Markdown text={ps.prep_md} />
+                ) : (
+                  <p className="hint" style={{ marginTop: 10 }}>Nothing prepared yet &mdash; generation failed. Try again below.</p>
+                )}
+
+                <div className="row2" style={{ marginTop: 12 }}>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="prep-regenerate" />
+                    <input type="hidden" name="session" value={ps.id} />
+                    <button className="ghost-btn" disabled={busy}>{running === "prep-regenerate" ? "Preparing…" : "Prepare again"}</button>
+                  </Form>
+                  <Form method="post" onSubmit={(e) => { if (!confirm("Remove this session and its screenshots?")) e.preventDefault(); }}>
+                    <input type="hidden" name="intent" value="prep-delete" />
+                    <input type="hidden" name="session" value={ps.id} />
+                    <button className="back-link" disabled={busy} style={{ color: "var(--vermillion)" }}>remove</button>
+                  </Form>
+                </div>
+              </div>
+            ))
+          )}
+        </>
       )}
 
       {tab === "Application" && (

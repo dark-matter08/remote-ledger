@@ -49,6 +49,24 @@ export interface RunRequest {
   tools?: ToolDef[];
   /** Full conversation, when a tool loop is driving. Overrides system + prompt. */
   messages?: ChatMessage[];
+  /**
+   * Pictures the model should look at alongside the prompt — a screenshot of an
+   * interview invite, a recruiter's message. An adapter that cannot show its model an
+   * image leaves them out and says so in `sawImages`; it never pretends.
+   */
+  images?: ImageInput[];
+  /**
+   * "low": this call wants the model to write, not deliberate. Long-form output — a
+   * prep, a cover letter — on a reasoning model can spend the whole output budget
+   * thinking and hand back nothing. Providers with no such knob ignore it.
+   */
+  thinking?: "low";
+}
+
+export interface ImageInput {
+  /** absolute path on this machine */
+  path: string;
+  mime: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 }
 
 export interface Usage {
@@ -69,6 +87,8 @@ export interface RunResult {
   callId?: number;
   /** Present when the model asked for tools rather than answering. */
   toolCalls?: ToolCall[];
+  /** True only when the images in the request actually reached the model. */
+  sawImages?: boolean;
 }
 
 export interface RunnerInfo {
@@ -90,6 +110,13 @@ export interface RunnerInfo {
    * browse still works from live pages.
    */
   tools?: boolean;
+  /**
+   * Can the model this runner will use look at a picture? A per-model fact, not a
+   * per-provider one: Ollama with qwen2.5 cannot, Ollama with qwen2.5vl can. Unknown
+   * reads as false, because claiming to have read a screenshot and not having done so
+   * is the one failure this flag exists to prevent.
+   */
+  vision?: boolean;
   detail?: string; // human note (version, why unavailable, etc.)
 }
 
@@ -99,10 +126,14 @@ export interface AdapterResult {
   model: string;
   /** What the model wants run before it will answer. Empty/absent = it is done. */
   toolCalls?: ToolCall[];
+  /** Set by adapters that were given images: did they go to the model? */
+  sawImages?: boolean;
 }
 
 export interface RunnerAdapter {
   id: string;
   info(): Promise<RunnerInfo>;
   run(req: RunRequest, model: string): Promise<AdapterResult>;
+  /** Whether this model, on this runner, can look at a picture. Absent = no. */
+  vision?(model: string): Promise<boolean>;
 }

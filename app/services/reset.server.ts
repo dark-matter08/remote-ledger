@@ -65,7 +65,7 @@ export const RESET_SCOPES: ScopeDef[] = [
     tables: [
       "jobs", "job_blocks", "applications", "application_events",
       "apply_sessions", "apply_session_jobs", "apply_logs", "apply_questions",
-      "answer_bank",
+      "answer_bank", "prep_sessions",
       // `meta` is not a jobs table — it holds a per-job match, answer set and assist
       // log keyed by job id, alongside crawl bookkeeping and a couple of preferences
       // that have nothing to do with any posting. Only the first two belong here.
@@ -76,7 +76,7 @@ export const RESET_SCOPES: ScopeDef[] = [
           "OR key IN ('last_crawl','prev_crawl','last_crawl_status','last_careers_crawl')",
       },
     ],
-    dirs: ["apply"],
+    dirs: ["apply", "prep"],
     countTable: "jobs",
     countLabel: "jobs",
   },

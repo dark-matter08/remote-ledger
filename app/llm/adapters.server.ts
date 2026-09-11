@@ -3,8 +3,9 @@
 //           own subscription/local model. Usage parsed when available, else estimated.
 //   - API:  direct HTTP with a BYO key — exact usage returned.
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AdapterResult, ChatMessage, RunnerAdapter, RunnerInfo, RunRequest, ToolCall, Usage } from "./types";
+import type { AdapterResult, ChatMessage, ImageInput, RunnerAdapter, RunnerInfo, RunRequest, ToolCall, Usage } from "./types";
 import { getSecret } from "../secrets.server";
 import { getSetting } from "../sqlite.server";
 import {
@@ -17,6 +18,29 @@ import {
   isFreeModelId,
   openRouterCatalog,
 } from "./openrouter.server";
+
+// --- images ----------------------------------------------------------------
+//
+// Every provider takes a picture a different way — content blocks, data URLs, inline
+// parts, a file path an agent reads for itself — and a text-only model takes it no
+// way at all. The rule shared by all of them: an adapter that did not get the image
+// in front of the model says `sawImages: false`. A prep written "from your screenshot"
+// by a model that never saw it is the failure worth this much plumbing.
+
+const b64 = (img: ImageInput) => readFileSync(img.path).toString("base64");
+const dataUrl = (img: ImageInput) => `data:${img.mime};base64,${b64(img)}`;
+
+/** The prompt, followed by where the pictures are — for agents that read files themselves. */
+function promptWithPaths(prompt: string, images: ImageInput[] | undefined): string {
+  if (!images?.length) return prompt;
+  return `${prompt}\n\nThe screenshots referred to above are saved at these paths. Read every one of them before answering:\n${images.map((i) => `- ${i.path}`).join("\n")}`;
+}
+
+/** A text-only model told about an image says so in one of these ways. */
+const IMAGE_REFUSED = /image|vision|multimodal|content type|invalid.*content|unsupported.*type|only supports text/i;
+
+/** Name-based fallback for local models where the server cannot be asked. */
+const VISION_NAME = /vl|vision|llava|gemma3|gemma-3|gemma-4|moondream|minicpm-v|pixtral|llama-4|scout|maverick|bakllava/i;
 
 // --- shell helpers ---------------------------------------------------------
 
@@ -91,15 +115,21 @@ class ClaudeCliAdapter implements RunnerAdapter {
       detail: "Uses your Claude Code subscription. Reports tokens + cost.",
     };
   }
+  // Claude Code reads a PNG the way it reads any file, and shows it to the model.
+  async vision(): Promise<boolean> {
+    return true;
+  }
   async run(req: RunRequest, model?: string): Promise<AdapterResult> {
     const args = ["-p", "--output-format", "json"];
     if (model && model !== "default") args.push("--model", model);
     if (req.system) args.push("--append-system-prompt", req.system);
-    if (req.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
+    const tools = [...(req.allowWeb ? ["WebSearch", "WebFetch"] : []), ...(req.images?.length ? ["Read"] : [])];
+    if (tools.length) args.push("--allowedTools", tools.join(","));
     const r = await exec("claude", args, {
-      input: req.prompt,
+      input: promptWithPaths(req.prompt, req.images),
       timeoutMs: 300000,
     });
+    const sawImages = !!req.images?.length;
     if (r.code !== 0 && !r.stdout) throw new Error(`claude exit ${r.code}: ${r.stderr.slice(0, 300)}`);
     // envelope: { result, usage:{input_tokens,output_tokens,cache_read_input_tokens}, total_cost_usd }
     try {
@@ -108,6 +138,7 @@ class ClaudeCliAdapter implements RunnerAdapter {
       return {
         text: typeof env.result === "string" ? env.result : r.stdout,
         model: env.model || "claude",
+        sawImages,
         usage: {
           inTok: u.input_tokens ?? 0,
           outTok: u.output_tokens ?? 0,
@@ -117,7 +148,7 @@ class ClaudeCliAdapter implements RunnerAdapter {
         },
       };
     } catch {
-      return { text: r.stdout.trim(), model: "claude", usage: { metered: false } };
+      return { text: r.stdout.trim(), model: "claude", sawImages, usage: { metered: false } };
     }
   }
 }
@@ -131,8 +162,17 @@ class GenericCliAdapter implements RunnerAdapter {
     private provider: string,
     private bin: string,
     private buildArgs: (req: RunRequest, model?: string) => string[],
-    private passViaStdin = true
+    private passViaStdin = true,
+    /**
+     * How this agent is shown a picture: a flag per file, a path in the prompt it
+     * reads for itself, or not at all. Cursor's CLI documents no way in, so it is
+     * "none" — and a request with images gets a truthful sawImages: false.
+     */
+    private imagesVia: "flag" | "prompt" | "none" = "none"
   ) {}
+  async vision(): Promise<boolean> {
+    return this.imagesVia !== "none";
+  }
   async info(): Promise<RunnerInfo> {
     return {
       id: this.id,
@@ -145,15 +185,19 @@ class GenericCliAdapter implements RunnerAdapter {
     };
   }
   async run(req: RunRequest, model?: string): Promise<AdapterResult> {
-    const args = this.buildArgs(req, model);
-    const text = [req.system ? `System:\n${req.system}\n\n` : "", req.prompt].join("");
+    const images = req.images?.length ? req.images : undefined;
+    const shown = !!images && this.imagesVia !== "none";
+    const prompt = shown && this.imagesVia === "prompt" ? promptWithPaths(req.prompt, images) : req.prompt;
+    const args = this.buildArgs({ ...req, prompt }, model);
+    if (shown && this.imagesVia === "flag") for (const i of images!) args.push("-i", i.path);
+    const text = [req.system ? `System:\n${req.system}\n\n` : "", prompt].join("");
     const r = await exec(this.bin, args, {
       input: this.passViaStdin ? text : undefined,
       timeoutMs: 300000,
     });
     if (r.code !== 0 && !r.stdout)
       throw new Error(`${this.bin} exit ${r.code}: ${r.stderr.slice(0, 300)}`);
-    return { text: r.stdout.trim(), model: this.bin, usage: { metered: false } };
+    return { text: r.stdout.trim(), model: this.bin, sawImages: shown, usage: { metered: false } };
   }
 }
 
@@ -173,9 +217,20 @@ class AnthropicApiAdapter implements RunnerAdapter {
       defaultModel: this.defaultModel,
     };
   }
+  // every Claude 3+ model reads images
+  async vision(): Promise<boolean> {
+    return true;
+  }
   async run(req: RunRequest, model: string): Promise<AdapterResult> {
     const key = getSecret("anthropic_api_key");
     if (!key) throw new Error("anthropic_api_key not set");
+    const images = req.images?.length ? req.images : undefined;
+    const content = images
+      ? [
+          ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mime, data: b64(i) } })),
+          { type: "text", text: req.prompt },
+        ]
+      : req.prompt;
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -188,7 +243,7 @@ class AnthropicApiAdapter implements RunnerAdapter {
         max_tokens: req.maxTokens ?? 4096,
         temperature: req.temperature ?? 0.4,
         system: req.system,
-        messages: [{ role: "user", content: req.prompt }],
+        messages: [{ role: "user", content }],
       }),
     });
     const j: any = await res.json();
@@ -197,6 +252,7 @@ class AnthropicApiAdapter implements RunnerAdapter {
     return {
       text,
       model,
+      sawImages: !!images,
       usage: {
         inTok: j.usage?.input_tokens ?? 0,
         outTok: j.usage?.output_tokens ?? 0,
@@ -356,17 +412,66 @@ class OpenAICompatAdapter implements RunnerAdapter {
         : {}),
     };
   }
+  /**
+   * Whether the model can look at a picture.
+   *
+   * Ollama can be asked: /api/show lists a model's capabilities, and "vision" is one
+   * of them. That answer is exact and beats guessing from the name. Elsewhere the name
+   * is all there is — OpenAI's current chat models all see; Groq's and Mistral's only
+   * some do, and the ones that do say so in the name.
+   */
+  async vision(model: string): Promise<boolean> {
+    if (this.provider === "ollama") return ollamaSees(this.baseUrl, model);
+    if (this.provider === "openai") return !/instruct|davinci|babbage|o1-mini|gpt-3\.5/i.test(model);
+    return VISION_NAME.test(model);
+  }
   async run(req: RunRequest, model: string): Promise<AdapterResult> {
     const key = this.keyName ? getSecret(this.keyName) : null;
     if (this.keyName && !key) throw new Error(`${this.keyName} not set`);
+    const images = req.images?.length ? req.images : undefined;
     // A tool loop supplies the whole conversation; everything else is one turn.
-    const messages = req.messages?.length
-      ? req.messages.map(toWireMessage)
-      : [
-          ...(req.system ? [{ role: "system", content: req.system }] : []),
-          { role: "user", content: req.prompt },
-        ];
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+    const build = (withImages: boolean) =>
+      req.messages?.length
+        ? req.messages.map(toWireMessage)
+        : [
+            ...(req.system ? [{ role: "system", content: req.system }] : []),
+            {
+              role: "user",
+              content:
+                withImages && images
+                  ? [...images.map((i) => ({ type: "image_url", image_url: { url: dataUrl(i) } })), { type: "text", text: req.prompt }]
+                  : req.prompt,
+            },
+          ];
+    // Sent with the pictures when the model is known to see. A model that turns out
+    // not to is asked again without them — and the result says they were not seen,
+    // rather than failing a prep over a screenshot that was only ever a bonus.
+    let withImages = !!images && (await this.vision(model));
+    let res = await this.post(key, model, req, build(withImages));
+    let j: any = await res.json();
+    if (!res.ok && withImages && IMAGE_REFUSED.test(JSON.stringify(j))) {
+      withImages = false;
+      res = await this.post(key, model, req, build(false));
+      j = await res.json();
+    }
+    if (!res.ok) throw new Error(explainProviderError(this.label, this.provider, res.status, j, model));
+    const msg = j.choices?.[0]?.message ?? {};
+    const text = msg.content ?? "";
+    return {
+      text,
+      toolCalls: parseToolCalls(msg),
+      model,
+      sawImages: withImages,
+      usage: {
+        inTok: j.usage?.prompt_tokens ?? 0,
+        outTok: j.usage?.completion_tokens ?? 0,
+        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        metered: this.provider !== "ollama",
+      },
+    };
+  }
+  private post(key: string | null, model: string, req: RunRequest, messages: any[]): Promise<Response> {
+    return fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -391,22 +496,32 @@ class OpenAICompatAdapter implements RunnerAdapter {
           : {}),
       }),
     });
-    const j: any = await res.json();
-    if (!res.ok) throw new Error(explainProviderError(this.label, this.provider, res.status, j, model));
-    const msg = j.choices?.[0]?.message ?? {};
-    const text = msg.content ?? "";
-    return {
-      text,
-      toolCalls: parseToolCalls(msg),
-      model,
-      usage: {
-        inTok: j.usage?.prompt_tokens ?? 0,
-        outTok: j.usage?.completion_tokens ?? 0,
-        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
-        metered: this.provider !== "ollama",
-      },
-    };
   }
+}
+
+/**
+ * Ask Ollama whether a model sees. Its /api/show lists capabilities on any recent
+ * build; an older daemon that does not is judged by the model's name instead.
+ */
+const ollamaSight = new Map<string, boolean>();
+async function ollamaSees(baseUrl: string, model: string): Promise<boolean> {
+  const hit = ollamaSight.get(model);
+  if (hit !== undefined) return hit;
+  let sees = VISION_NAME.test(model);
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/v1$/, "")}/api/show`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: model }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const j: any = await res.json();
+    if (Array.isArray(j?.capabilities)) sees = j.capabilities.includes("vision");
+  } catch {
+    // daemon down or too old to say — the name is the best available answer
+  }
+  ollamaSight.set(model, sees);
+  return sees;
 }
 
 // --- OpenRouter ------------------------------------------------------------
@@ -496,8 +611,15 @@ class OpenRouterAdapter implements RunnerAdapter {
     };
   }
 
+  // the catalogue says which models take images; a model it has not heard of is
+  // assumed not to, because "maybe" is not a basis for claiming to have read a screenshot
+  async vision(model: string): Promise<boolean> {
+    if (!cachedCatalog().length) await warmCatalog();
+    return !!cachedModel(model)?.vision;
+  }
+
   // primary + free fallbacks, so a 429 on the free pool is a detour, not a dead end
-  private modelChain(model: string, needsJson: boolean, needsTools = false): string[] {
+  private modelChain(model: string, needsJson: boolean, needsTools = false, needsVision = false): string[] {
     const chain = [model];
     const freeOnly = getSetting("openrouter_free_only") === "true";
     const configured = (getSetting("openrouter_fallbacks") || "")
@@ -517,6 +639,10 @@ class OpenRouterAdapter implements RunnerAdapter {
       // a model without tool support does not refuse a tool — it ignores it and
       // answers from memory, which is the failure this whole path exists to avoid
       if (needsTools && !m.tools) continue;
+      // and a fallback that cannot see would answer a request about a screenshot from
+      // the text alone. The free pools rate-limit one model at a time, so a chain of
+      // seeing models is what gets a prep past "temporarily rate-limited upstream".
+      if (needsVision && !m.vision) continue;
       chain.push(m.id);
     }
     return chain;
@@ -537,16 +663,76 @@ class OpenRouterAdapter implements RunnerAdapter {
     if (!cachedCatalog().length && isFreeModelId(model)) await warmCatalog();
 
     const known = cachedModel(model);
-    const chain = this.modelChain(model, !!req.json, !!req.tools?.length);
+    // pictures go only where the catalogue says they can be seen; the chain is then
+    // built from models that also can, so a detour is not a downgrade
+    const images = req.images?.length && (await this.vision(model)) ? req.images : undefined;
+    const chain = this.modelChain(model, !!req.json, !!req.tools?.length, !!images);
     const web = req.allowWeb ? webPlugin() : null;
     const messages = req.messages?.length
       ? req.messages.map(toWireMessage)
       : [
           ...(req.system ? [{ role: "system", content: req.system }] : []),
-          { role: "user", content: req.prompt },
+          {
+            role: "user",
+            content: images
+              ? [...images.map((i) => ({ type: "image_url", image_url: { url: dataUrl(i) } })), { type: "text", text: req.prompt }]
+              : req.prompt,
+          },
         ];
 
-    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    // A thinking model can spend the whole output budget on reasoning and hand back
+    // an empty answer, and OpenRouter reports that as success — its fallback chain only
+    // moves on an error. So the chain is walked here as well: an empty answer whose
+    // budget ran out is retried on the next model, and only when the chain is spent is
+    // it a failure. It was a free reasoning model doing exactly this, on the first prep
+    // with a screenshot, that made the case.
+    let tried = 0;
+    let remaining = chain;
+    let j: any;
+    let res: Response;
+    let used = model;
+    while (true) {
+      const first = remaining[0];
+      res = await this.post(key, first, remaining, messages, req, known, web);
+      j = await res.json().catch(() => null);
+      if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, first));
+      used = String(j.model || first);
+      if (!wroteNothing(j)) break;
+      tried++;
+      remaining = remaining.filter((m) => m !== used);
+      if (!remaining.length || tried >= 2)
+        throw new Error(
+          `"${used}" spent its whole output budget thinking and wrote nothing${tried > 1 ? ", and so did the fallback" : ""}. Pick a different model in Settings → OpenRouter, or raise the token limit.`
+        );
+    }
+
+    const message = j.choices?.[0]?.message ?? {};
+    const text = message.content ?? "";
+    const inTok = j.usage?.prompt_tokens ?? 0;
+    const outTok = j.usage?.completion_tokens ?? 0;
+    // OpenRouter reports the charge it actually made; fall back to catalogue rates,
+    // and leave it undefined if we know neither so the runner tries pricing.json
+    const cost =
+      typeof j.usage?.cost === "number" ? j.usage.cost : catalogCost(used, inTok, outTok) ?? undefined;
+
+    return {
+      text,
+      toolCalls: parseToolCalls(message),
+      model: used,
+      // seen only if they were sent AND the model that answered is one that sees
+      sawImages: !!images && (used === model || !!cachedModel(used)?.vision),
+      usage: {
+        inTok,
+        outTok,
+        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        costUsd: cost,
+        metered: true,
+      },
+    };
+  }
+
+  private post(key: string, model: string, chain: string[], messages: any[], req: RunRequest, known: any, web: any): Promise<Response> {
+    return fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -578,45 +764,40 @@ class OpenRouterAdapter implements RunnerAdapter {
             }
           : {}),
         ...(web ? { plugins: [web] } : {}), // billed per search, never on a free-only key
+        // a reasoning model asked for long-form prose is told to keep the thinking short;
+        // models without the knob ignore it
+        ...(req.thinking === "low" ? { reasoning: { effort: "low" } } : {}),
         usage: { include: true }, // return real, post-discount cost
       }),
     });
-
-    // a body that will not parse is still a failure — without this the unreadable
-    // `null` walks into the field reads below and surfaces as a bare TypeError
-    const j: any = await res.json().catch(() => null);
-    if (!res.ok || !j || j.error) throw new Error(openRouterError(res.status, j, model));
-
-    const used = String(j.model || model);
-    const message = j.choices?.[0]?.message ?? {};
-    const text = message.content ?? "";
-    const inTok = j.usage?.prompt_tokens ?? 0;
-    const outTok = j.usage?.completion_tokens ?? 0;
-    // OpenRouter reports the charge it actually made; fall back to catalogue rates,
-    // and leave it undefined if we know neither so the runner tries pricing.json
-    const cost =
-      typeof j.usage?.cost === "number" ? j.usage.cost : catalogCost(used, inTok, outTok) ?? undefined;
-
-    return {
-      text,
-      toolCalls: parseToolCalls(message),
-      model: used,
-      usage: {
-        inTok,
-        outTok,
-        cachedTok: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
-        costUsd: cost,
-        metered: true,
-      },
-    };
   }
 }
 
+/**
+ * An answer with no content, from a model that used its budget up — the shape a
+ * reasoning model leaves when the thinking ran to the limit. A model that stopped on
+ * its own with nothing to say is a different thing and is passed through as it is.
+ */
+function wroteNothing(j: any): boolean {
+  const choice = j?.choices?.[0];
+  const content = String(choice?.message?.content ?? "").trim();
+  if (content) return false;
+  if (choice?.message?.tool_calls?.length) return false;
+  const reasoning = Number(j?.usage?.completion_tokens_details?.reasoning_tokens ?? 0);
+  return choice?.finish_reason === "length" || reasoning > 0;
+}
+
 function openRouterError(status: number, body: any, model: string): string {
-  const msg = String(body?.error?.message || body?.error || "").slice(0, 300);
+  // "Provider returned error" is OpenRouter's wrapper; the upstream's own sentence —
+  // "temporarily rate-limited upstream, retry shortly" — is in metadata.raw, and is
+  // the one a person can act on
+  const raw = String(body?.error?.metadata?.raw || "").trim();
+  const wrapped = String(body?.error?.message || body?.error || "");
+  const msg = (raw && /provider returned error/i.test(wrapped) ? raw : wrapped).slice(0, 300);
   // a body-level error can arrive with HTTP 200, so prefer its code when numeric
   const inner = Number(body?.error?.code);
-  const code = Number.isFinite(inner) && inner >= 100 ? inner : status;
+  const upstream = Number(body?.error?.metadata?.provider_error_code);
+  const code = Number.isFinite(upstream) && upstream >= 100 ? upstream : Number.isFinite(inner) && inner >= 100 ? inner : status;
   if (code === 401 || code === 403)
     return `OpenRouter rejected the key. Check it at openrouter.ai/keys. (${msg})`;
   if (code === 402)
@@ -648,16 +829,26 @@ class GoogleApiAdapter implements RunnerAdapter {
       defaultModel: this.defaultModel,
     };
   }
+  // every Gemini chat model is multimodal
+  async vision(): Promise<boolean> {
+    return true;
+  }
   async run(req: RunRequest, model: string): Promise<AdapterResult> {
     const key = getSecret("google_api_key");
     if (!key) throw new Error("google_api_key not set");
+    const images = req.images?.length ? req.images : undefined;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         systemInstruction: req.system ? { parts: [{ text: req.system }] } : undefined,
-        contents: [{ role: "user", parts: [{ text: req.prompt }] }],
+        contents: [
+          {
+            role: "user",
+            parts: [...(images ?? []).map((i) => ({ inlineData: { mimeType: i.mime, data: b64(i) } })), { text: req.prompt }],
+          },
+        ],
         generationConfig: {
           temperature: req.temperature ?? 0.4,
           ...(req.json ? { responseMimeType: "application/json" } : {}),
@@ -672,6 +863,7 @@ class GoogleApiAdapter implements RunnerAdapter {
     return {
       text,
       model,
+      sawImages: !!images,
       usage: {
         inTok: j.usageMetadata?.promptTokenCount ?? 0,
         outTok: j.usageMetadata?.candidatesTokenCount ?? 0,
@@ -685,19 +877,21 @@ class GoogleApiAdapter implements RunnerAdapter {
 
 export const ADAPTERS: RunnerAdapter[] = [
   new ClaudeCliAdapter(),
+  // codex exec takes -i <file> per image; gemini reads a path named in the prompt;
+  // cursor-agent documents neither, so it is honest about not looking
   new GenericCliAdapter("codex-cli", "Codex (CLI)", "codex", "codex", (req, m) => [
     "exec",
     ...(m && m !== "default" ? ["--model", m] : []),
     req.prompt,
-  ], false),
+  ], false, "flag"),
   new GenericCliAdapter("cursor-cli", "Cursor Agent (CLI)", "cursor", "cursor-agent", (_req, m) => [
     "-p",
     ...(m && m !== "default" ? ["--model", m] : []),
-  ]),
+  ], true, "none"),
   new GenericCliAdapter("gemini-cli", "Gemini (CLI)", "google", "gemini", (_req, m) => [
     "-p",
     ...(m && m !== "default" ? ["--model", m] : []),
-  ]),
+  ], true, "prompt"),
   new AnthropicApiAdapter(),
   new OpenAICompatAdapter(
     "openai-api",

@@ -1,6 +1,7 @@
 // AI operations on a resume against a job: tailor (with anti-hallucination
 // guard), match/gap analysis, cover letter, interview prep.
 import { runLLM } from "../llm/runner.server";
+import type { ImageInput } from "../llm/types";
 import { HUMAN_STYLE, stripAiTells, cleanResumeProse } from "../llm/style";
 import { RUBRIC_VERSION, rubricPrompt, normaliseDimensions, scoreFromDimensions } from "./rubric";
 import { RESUME_JSON_SHAPE, type Resume, type MatchAnalysis, type TailorFlag } from "./types";
@@ -293,14 +294,108 @@ export async function draftSessionAnswers(
 
 // ---- interview prep -------------------------------------------------------
 
-export async function interviewPrep(base: Resume, job: JobCtx): Promise<{ text: string; callId?: number }> {
+/** One entry from the knowledge base, as the prep prompt sees it. */
+export interface PrepEvidence {
+  title: string;
+  role?: string | null;
+  when?: string | null;
+  summary: string;
+  tags: string[];
+  bullets: string[];
+  /** facts only you know, from the KB item's context field */
+  context?: string | null;
+}
+
+export interface PrepInput {
+  /** which round this is, in the user's words and by kind */
+  stage: string;
+  stageLabel: string;
+  title: string;
+  /** what the user knows about this round: pasted invite, recruiter's message, their own notes */
+  notes: string;
+  /** screenshots of the invite, the brief, the recruiter thread */
+  images: ImageInput[];
+  /** the knowledge base entries that bear on this posting, ranked, plus answers given before */
+  evidence: PrepEvidence[];
+  priorAnswers: { question: string; answer: string }[];
+  /** run on this runner rather than the default — the one that can see the images */
+  runnerId?: string;
+}
+
+/**
+ * Prepare for one round.
+ *
+ * The old prep produced questions and stopped: eight of them, a few STAR prompts,
+ * nothing to say back. This one answers them — from the knowledge base, naming the
+ * project or job each answer comes from, and saying plainly when the base has nothing
+ * to support one. The same rule as the résumé: nothing gets claimed that you did not
+ * put in.
+ *
+ * The screenshots are read first and reported back — who the interviewer is, the
+ * format, what they said they would cover — so a prep built on them can be checked
+ * against them, and a prep built without them (a runner that cannot see) says so.
+ */
+export async function interviewPrep(
+  base: Resume,
+  job: JobCtx,
+  input: PrepInput
+): Promise<{ text: string; callId?: number; sawImages: boolean; runner: string; model: string }> {
+  const evidence = input.evidence.length
+    ? input.evidence
+        .map(
+          (e, i) =>
+            `[${i + 1}] ${e.title}${e.role ? ` — ${e.role}` : ""}${e.when ? ` (${e.when})` : ""}\n` +
+            `    ${e.summary}\n` +
+            (e.tags.length ? `    skills: ${e.tags.join(", ")}\n` : "") +
+            e.bullets.map((b) => `    • ${b}`).join("\n") +
+            (e.context ? `\n    context: ${e.context}` : "")
+        )
+        .join("\n\n")
+    : "(the knowledge base has nothing that matches this posting yet)";
+
+  const prior = input.priorAnswers.length
+    ? input.priorAnswers.map((a) => `Q: ${a.question}\nA: ${a.answer}`).join("\n\n")
+    : "(none)";
+
+  const imagesNote = input.images.length
+    ? `${input.images.length} screenshot(s) are attached: the interview invite, the recruiter's message, the brief, or similar. READ THEM FIRST. Take from them everything that shapes this round — who is interviewing, their title, the format and length, the date, anything they said would be covered, any task or brief — and open the prep with what you read, so the candidate can check it against the original.`
+    : `No screenshots were attached. Work from the notes and the posting.`;
+
   const r = await runLLM({
     purpose: "interview-prep",
     jobId: job.id,
-    temperature: 0.5,
-    maxTokens: 2000,
-    system: "You are an interview coach. Output clean markdown.",
-    prompt: `RESUME (JSON):\n${JSON.stringify(base)}\n\nJOB:\n${jobBlock(job)}\n\nProduce: (1) a 3-sentence company/role brief, (2) 8 likely interview questions tailored to this JD and resume, (3) 3 STAR-story prompts drawn from the candidate's real experience, (4) 3 smart questions for the candidate to ask. Markdown with headers.`,
+    runnerId: input.runnerId,
+    temperature: 0.4,
+    maxTokens: 4500,
+    thinking: "low", // it is asked to write, at length; a thinking model can spend all of that budget thinking
+    images: input.images,
+    system:
+      "You are an interview coach who has read the candidate's actual work history and prepares them for one specific round. " +
+      "Every suggested answer must be built from the EVIDENCE provided — cite the numbered entry it draws on. " +
+      "Where the evidence has nothing that supports an answer, say so in one line and tell the candidate what to prepare themselves; never invent an experience. " +
+      "Output clean markdown with headers. No preamble." +
+      HUMAN_STYLE,
+    prompt:
+      `ROUND: ${input.stageLabel}${input.title ? ` — "${input.title}"` : ""} (kind: ${input.stage})\n\n` +
+      `${imagesNote}\n\n` +
+      `CANDIDATE'S NOTES ABOUT THIS ROUND:\n${input.notes.trim() || "(none)"}\n\n` +
+      `JOB:\n${jobBlock(job)}\n\n` +
+      `RESUME (JSON):\n${JSON.stringify(base)}\n\n` +
+      `EVIDENCE — the candidate's knowledge base, ranked by relevance to this posting:\n${evidence}\n\n` +
+      `ANSWERS THE CANDIDATE HAS GIVEN BEFORE (reuse where they fit):\n${prior}\n\n` +
+      `Write the prep for THIS round, in this order:\n` +
+      `## What this round is\nWhat you read from the screenshots and notes: interviewer, format, length, what they said they will cover. If nothing was provided, say what a ${input.stageLabel.toLowerCase()} at a company like this usually is, and mark it as an assumption.\n\n` +
+      `## What they will be listening for\n3–5 themes for this round, each tied to a line in the posting.\n\n` +
+      `## Likely questions, with your answers\n8–10 questions this round will actually ask. Under EACH, a suggested answer of 3–6 sentences in the candidate's voice, built from the evidence and citing it like [2]. Behavioural answers in STAR shape. Technical answers concrete: the decision, the trade-off, the number. Where the evidence does not cover a question, write "No evidence in your knowledge base for this — prepare it yourself, or add the project that shows it." instead of an answer.\n\n` +
+      `## Stories to have ready\n3 STAR stories from the evidence, each a short paragraph, each citing its entry.\n\n` +
+      `## Questions to ask them\n4 questions specific to what the screenshots and notes revealed about this round and this team, not generic ones.\n\n` +
+      `## Before the call\nA 5–7 item checklist for this kind of round.`,
   });
-  return { text: r.text.trim(), callId: r.callId };
+  return {
+    text: stripAiTells(r.text.trim()),
+    callId: r.callId,
+    sawImages: !!r.sawImages,
+    runner: r.runner,
+    model: r.model,
+  };
 }

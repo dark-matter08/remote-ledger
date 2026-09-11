@@ -1009,6 +1009,25 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--ochre); outline-off
 .ap-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .ap-controls .back-link { margin-left: auto; }
 
+/* A prep session: one round, its inputs, and what was prepared from them. */
+.prep-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.prep-head h3 { margin: 0; }
+.prep-meta { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); }
+.prep-shots { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0 4px; }
+.prep-shots img {
+  height: 64px; width: auto; max-width: 140px; object-fit: cover; display: block;
+  border: 1.5px solid var(--rule); background: var(--paper-2);
+  box-shadow: 4px 4px 0 -1px rgba(26,23,20,.12);
+}
+.prep-shots a:hover img { transform: translateY(-2px); }
+.prep-seen { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; margin-left: 6px; }
+.prep-seen.ok { color: var(--green); }
+.prep-seen.no { color: var(--vermillion); }
+.prep-notes { margin: 10px 0 0; }
+.prep-notes summary { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); cursor: pointer; }
+.prep-notes p { font-family: var(--serif); font-size: 14px; white-space: pre-wrap; margin: 8px 0 0; padding-left: 12px; border-left: 2px solid var(--rule-faint); }
+.prep-session .jd-rendered { margin-top: 12px; }
+
 /* The run, while it is happening.
    A proof sheet: one hairline-ruled line per step, the mark in the margin like a
    printer's tick. The running step is the only thing in vermillion, so where the
@@ -1251,6 +1270,13 @@ button.back-link { background: none; border: 0; padding: 0; cursor: pointer; }
 .jd-rendered::-webkit-scrollbar-thumb { background: var(--rule-faint); border: 2px solid transparent; background-clip: padding-box; }
 .jd-rendered::-webkit-scrollbar-thumb:hover { background: var(--ink); background-clip: padding-box; }
 .jd-rendered.jd-plain { white-space: pre-wrap; }
+/* prose that is the page's subject, not a reference panel: no cap, no inner scroll */
+.jd-rendered.md-free { max-height: none; overflow: visible; }
+.jd-rendered pre { font-family: var(--mono); font-size: 12px; line-height: 1.5; background: var(--paper-2); border: 1px solid var(--rule-faint); padding: 12px 14px; overflow: auto; margin: .8em 0; }
+.jd-rendered code { font-family: var(--mono); font-size: .92em; background: var(--paper-2); padding: 1px 4px; }
+.jd-rendered pre code { background: none; padding: 0; }
+.jd-rendered blockquote { margin: .8em 0; padding: 4px 0 4px 14px; border-left: 3px solid var(--vermillion); color: var(--ink-soft); font-style: italic; }
+.jd-rendered hr { border: 0; border-top: 1.5px solid var(--rule); margin: 1.2em 0; }
 .jd-rendered > :first-child { margin-top: 0; }
 .jd-rendered > :last-child { margin-bottom: 0; }
 .jd-rendered h1, .jd-rendered h2, .jd-rendered h3, .jd-rendered h4, .jd-rendered h5, .jd-rendered h6 {

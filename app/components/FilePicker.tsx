@@ -6,14 +6,24 @@ export function FilePicker({
   name,
   accept,
   label = "Choose PDF…",
+  multiple = false,
 }: {
   name: string;
   accept?: string;
   /** What the button says. A résumé and a migration file are not the same ask. */
   label?: string;
+  /** Several at once — the screenshots of one interview invite, say. */
+  multiple?: boolean;
 }) {
   const ref = useRef<HTMLInputElement>(null);
-  const [fname, setFname] = useState<string | null>(null);
+  const [names, setNames] = useState<string[]>([]);
+  const chosen = names.length
+    ? names.length <= 2
+      ? names.join(", ")
+      : `${names[0]}, ${names[1]} and ${names.length - 2} more`
+    : multiple
+      ? "no files chosen"
+      : "no file chosen";
   return (
     <div className="filepick">
       <input
@@ -21,13 +31,14 @@ export function FilePicker({
         type="file"
         name={name}
         accept={accept}
+        multiple={multiple}
         className="filepick-input"
-        onChange={(e) => setFname(e.target.files?.[0]?.name ?? null)}
+        onChange={(e) => setNames([...(e.target.files ?? [])].map((f) => f.name))}
       />
       <button type="button" className="filepick-btn" onClick={() => ref.current?.click()}>
         {label}
       </button>
-      <span className={`filepick-name ${fname ? "has" : ""}`}>{fname ?? "no file chosen"}</span>
+      <span className={`filepick-name ${names.length ? "has" : ""}`}>{chosen}</span>
     </div>
   );
 }

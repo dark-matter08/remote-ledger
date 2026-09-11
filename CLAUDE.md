@@ -10,7 +10,8 @@ Privacy: data + keys stay on the machine; only the chosen AI provider is called.
 - `app/secrets.server.ts` — encrypted BYO-key store (AES-256-GCM, local master key; env vars override).
 - `app/llm/` — runner layer. `types.ts`, `adapters.server.ts` (CLI: claude/codex/cursor/gemini;
   API: anthropic/openai/google/openrouter/groq/mistral/ollama), `runner.server.ts`
-  (dispatch + cost + budget + `llm_calls` logging), `pricing.server.ts`, + root `pricing.json`,
+  (dispatch + cost + budget + `llm_calls` logging; `RunRequest.images` for pictures, and
+  `RunResult.sawImages` says whether the model actually got them — an adapter never pretends), `pricing.server.ts`, + root `pricing.json`,
   `openrouter.server.ts` (catalogue: free-tier detection, price tiers, live cost, 6h disk cache).
 - `app/resume/` — `profiles.server.ts` (PDF→JSON parse, CRUD), `ai.server.ts` (tailor with
   anti-hallucination guard, match, cover, prep), `templates.server.ts` (4 styles),
@@ -34,6 +35,14 @@ Privacy: data + keys stay on the machine; only the chosen AI provider is called.
   and it **never submits** — a test asserts the file contains nothing that could. Logs to
   `crawl_runs`/`crawl_logs` with `type='autopilot'`; `activeCrawl()` filters to the real crawl
   types so it cannot block the scheduler.
+- `app/services/prep.server.ts` — interview prep, one session per round (screening, technical,
+  final…). A session keeps what you knew going in — notes and screenshots of the invite, under
+  `data/prep/<id>/` — and the prep written from it, which answers its questions from the knowledge
+  base and cites the entry each came from. Screenshots go to a runner that can look
+  (`runnerForImages()`); the session records whether the model actually saw them (`vision`).
+  The old single `meta prep:<job>` is folded into a session once, on start.
+- `app/markdown.ts` — model-written markdown to HTML. Own renderer, no library: input is escaped
+  first and only its own tags can reach the page. `components/Markdown.tsx` wraps it.
 - `app/services/portability.server.ts` — export/import for moving machines. Whole install or
   one profile, gzipped JSON. **The `secrets` table is never read**, so keys cannot travel; the
   file names what it omitted. Refuses a newer-version file rather than guessing at columns.
