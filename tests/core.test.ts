@@ -1835,6 +1835,13 @@ test("prep: one session per round, with its screenshots kept and its inputs chec
 
   // what the models cannot take is refused before anything is written
   assert.match((prep.createSession({ jobId, stage: "final", title: "", notes: "", files: [{ name: "brief.pdf", mime: "application/pdf", buf: png }] }) as any).error, /not an image/);
+  // ten screenshots is a real round's worth — a colleague's WhatsApp account of one ran to seven
+  const ten = Array.from({ length: 10 }, (_, i) => ({ name: `s${i}.png`, mime: "image/png", buf: png }));
+  const tenth = prep.createSession({ jobId, stage: "final", title: "ten", notes: "", files: ten });
+  assert.ok("id" in tenth, "ten is allowed");
+  assert.equal(prep.getSession((tenth as any).id)!.images.length, 10);
+  prep.deleteSession((tenth as any).id);
+  assert.match((prep.createSession({ jobId, stage: "final", title: "", notes: "", files: [...ten, ten[0]] }) as any).error, /At most 10/);
   assert.match((prep.createSession({ jobId, stage: "final", title: "", notes: "", files: [{ name: "huge.png", mime: "image/png", buf: Buffer.alloc(prep.MAX_IMAGE_BYTES + 1) }] }) as any).error, /5 MB/);
   assert.equal(prep.listSessions(jobId).length, 2, "a refused session leaves no row");
 

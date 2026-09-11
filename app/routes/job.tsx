@@ -1026,7 +1026,7 @@ export default function JobDetail({ loaderData, actionData }: Route.ComponentPro
                 <label>Screenshots</label>
                 <FilePicker name="images" accept="image/png,image/jpeg,image/webp,image/gif" label="Add screenshots…" multiple />
                 <p className="hint" style={{ marginTop: 6 }}>
-                  Up to six, 5 MB each.{" "}
+                  Up to ten, 5 MB each.{" "}
                   {prepSeer ? (
                     <>They will be read by <strong>{prepSeer}</strong>; the session records that it did.</>
                   ) : (

@@ -54,7 +54,10 @@ export const IMAGE_MIMES: Record<string, ImageInput["mime"]> = {
   "image/gif": "image/gif",
 };
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic's per-image limit, the lowest of the lot
-export const MAX_IMAGES = 6;
+// Ten, not six: a colleague's account of a round arrives as a run of WhatsApp
+// screenshots, and seven of them met the old cap on the first real use. Every provider
+// takes far more than this in one request; the cap is about the token bill, not the API.
+export const MAX_IMAGES = 10;
 
 export interface PrepImage {
   /** position in the session; also the file's name on disk, so a path is never user-supplied */
