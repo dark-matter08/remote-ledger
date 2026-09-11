@@ -45,11 +45,11 @@ type Block =
   | { kind: "code"; text: string }
   | { kind: "quote"; text: string }
   | { kind: "hr" }
-  | { kind: "list"; ordered: boolean; items: ListItem[] };
+  | { kind: "list"; ordered: boolean; start?: number; items: ListItem[] };
 
 interface ListItem {
   text: string;
-  children?: { ordered: boolean; items: ListItem[] };
+  children?: { ordered: boolean; start?: number; items: ListItem[] };
 }
 
 const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
@@ -99,6 +99,7 @@ export function parseBlocks(md: string): Block[] {
     if (li) {
       flushPara();
       const ordered = /\d/.test(li[2]);
+      const start = ordered ? parseInt(li[2], 10) : undefined;
       const items: ListItem[] = [];
       const baseIndent = li[1].length;
       let j = i;
@@ -110,7 +111,7 @@ export function parseBlocks(md: string): Block[] {
         } else if (m && items.length) {
           // deeper indent: a child of the item above
           const last = items[items.length - 1];
-          last.children ??= { ordered: /\d/.test(m[2]), items: [] };
+          last.children ??= { ordered: /\d/.test(m[2]), start: /\d/.test(m[2]) ? parseInt(m[2], 10) : undefined, items: [] };
           last.children.items.push({ text: m[3] });
           j++;
         } else if (lines[j].trim() && !LIST_RE.test(lines[j]) && items.length && /^\s+/.test(lines[j])) {
@@ -119,9 +120,16 @@ export function parseBlocks(md: string): Block[] {
           const tail = last.children?.items.length ? last.children.items[last.children.items.length - 1] : last;
           tail.text += " " + lines[j].trim();
           j++;
+        } else if (!lines[j].trim() && j + 1 < lines.length && LIST_RE.test(lines[j + 1])) {
+          // A blank line between items is still the same list. Models write numbered
+          // lists this way constantly, and breaking the list here rendered every item
+          // as "1." — five separate lists, each starting over.
+          const next = LIST_RE.exec(lines[j + 1])!;
+          if (next[1].length <= baseIndent && /\d/.test(next[2]) !== ordered) break; // a different kind of list follows
+          j++;
         } else break;
       }
-      blocks.push({ kind: "list", ordered, items });
+      blocks.push({ kind: "list", ordered, start, items });
       i = j - 1;
       continue;
     }
@@ -136,12 +144,13 @@ export function parseBlocks(md: string): Block[] {
   return blocks;
 }
 
-function renderList(l: { ordered: boolean; items: ListItem[] }): string {
+function renderList(l: { ordered: boolean; start?: number; items: ListItem[] }): string {
   const tag = l.ordered ? "ol" : "ul";
+  const start = l.ordered && l.start && l.start !== 1 ? ` start="${l.start}"` : "";
   const items = l.items
     .map((it) => `<li>${inline(it.text)}${it.children ? renderList(it.children) : ""}</li>`)
     .join("");
-  return `<${tag}>${items}</${tag}>`;
+  return `<${tag}${start}>${items}</${tag}>`;
 }
 
 /** Markdown to HTML. Only the tags this function writes can appear in the result. */
