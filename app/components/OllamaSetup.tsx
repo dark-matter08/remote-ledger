@@ -51,6 +51,20 @@ interface Pull {
 
 const CAPS: OllamaCapability[] = ["tools", "vision", "reasoning", "code", "embedding"];
 
+/**
+ * Ollama's pull errors in words that say what to do. "pull model manifest: file does
+ * not exist" is what it says for a tag it has never heard of — which is nearly always
+ * a typo, and the fix is to check the library page.
+ */
+function explainPull(error: string, model: string): string {
+  const base = model.split(":")[0];
+  if (/manifest.*does not exist|not found/i.test(error))
+    return `no model with that tag on ollama.com. Check the exact name and size at ollama.com/library/${base} — tags look like qwen3:32b, not qwen-3.8:27b.`;
+  if (/no space|disk/i.test(error)) return `not enough disk for it (${error}).`;
+  if (/connection|ECONNREFUSED|fetch failed/i.test(error)) return "Ollama stopped answering while pulling — start it again and pull once more; it resumes where it left off.";
+  return error;
+}
+
 export function OllamaSetup({ currentModel }: { currentModel: string }) {
   const poll = useFetcher<{ status: Status; pulls: Pull[] }>();
   const act = useFetcher<ActResult>();
@@ -75,6 +89,13 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
     remove: "Removing",
     use: "Switching",
   };
+  // Clear the box once the pull is under way, not on the click: text vanishing the
+  // instant a button is pressed, with nothing else changing, reads as a glitch.
+  useEffect(() => {
+    if (!busy && act.data?.intent === "pull" && act.data.ok && lastCustom && sameModel(String(act.data.model || ""), lastCustom)) setCustom("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, act.data]);
+
   const rowState = (id: string) => {
     if (inFlight && inFlight.model && sameModel(inFlight.model, id))
       return { pending: `${VERB[inFlight.intent] ?? "Working"}…` };
@@ -99,6 +120,21 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
     const t = setInterval(() => load.current("/api/ollama"), every);
     return () => clearInterval(t);
   }, [pulling, busy]);
+  // The moment an action answers, ask again. A pull that fails in under a second —
+  // a tag that does not exist — used to sit unseen for up to ten seconds, because the
+  // slow cadence was still in force and nothing on the page had a reason to refresh.
+  useEffect(() => {
+    if (!busy && act.data) load.current("/api/ollama");
+  }, [busy, act.data]);
+
+  // Pulls of names that are not on the shelf. A shelf row shows its own progress; a
+  // pasted name had no row, so a custom pull showed nothing while it ran and its
+  // failure landed in a panel at the foot of the page. It is shown under the box.
+  const customPulls = pulls.filter((p) => !OLLAMA_MODELS.some((m) => sameModel(m.id, p.model)));
+  const [lastCustom, setLastCustom] = useState<string | null>(null);
+  // the one just asked for; else whichever is running; else the most recent (the
+  // server lists them newest first)
+  const customLine = customPulls.find((p) => lastCustom && sameModel(p.model, lastCustom)) ?? customPulls.find((p) => !p.done) ?? customPulls[0];
 
   const installedNames = useMemo(() => (status?.models ?? []).map((m) => m.name), [status]);
   const isInstalled = (id: string) => installedNames.some((n) => sameModel(n, id));
@@ -347,11 +383,38 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
               className="ghost-btn"
               style={{ whiteSpace: "nowrap" }}
               disabled={busy || !custom.trim() || !status?.installed}
-              onClick={() => { run("pull", custom.trim()); setCustom(""); }}
+              onClick={() => { setLastCustom(custom.trim()); run("pull", custom.trim()); }}
             >
               <Download size={13} /> Pull
             </button>
           </div>
+          {inFlight?.intent === "pull" && lastCustom && sameModel(inFlight.model, lastCustom) && (
+            <p className="job-fine" style={{ marginTop: 8 }}>Starting…</p>
+          )}
+          {customLine && !customLine.error && !customLine.done && (
+            <div style={{ marginTop: 8 }}>
+              <div className="meter-row" style={{ marginTop: 0 }}>
+                <div className="meter">
+                  <div className="fill live" style={{ ["--target" as any]: `${customLine.percent ?? 0}%` }} />
+                </div>
+                <span className="meter-val">{customLine.percent === null ? "…" : `${customLine.percent}%`}</span>
+              </div>
+              <div className="job-fine">
+                <strong>{customLine.model}</strong> · {pullPhase(customLine.status)}
+                {customLine.total > 0 && <> · {prettyBytes(customLine.completed)} / {prettyBytes(customLine.total)}</>}
+              </div>
+            </div>
+          )}
+          {customLine?.done && !customLine.error && (
+            <p className="job-fine" style={{ marginTop: 8, color: "var(--green)" }}>
+              <strong>{customLine.model}</strong> is on disk — it is in the list below.
+            </p>
+          )}
+          {customLine?.error && (
+            <p className="job-fine" style={{ marginTop: 8, color: "var(--vermillion)" }}>
+              <strong>{customLine.model}</strong> — {explainPull(customLine.error, customLine.model)}
+            </p>
+          )}
           <p className="hint">The shelf above is a starting point, not the whole library.</p>
         </div>
       </div>
@@ -406,10 +469,12 @@ export function OllamaSetup({ currentModel }: { currentModel: string }) {
         </div>
       )}
 
-      {pulls.some((p) => p.error) && (
+      {/* shelf rows only show progress, so their failures are collected here; a custom
+          pull already says so under its own box */}
+      {pulls.some((p) => p.error && !customPulls.includes(p)) && (
         <div className="panel">
           <h3>Failed pulls</h3>
-          {pulls.filter((p) => p.error).map((p) => (
+          {pulls.filter((p) => p.error && !customPulls.includes(p)).map((p) => (
             <p key={p.model} className="hint"><strong>{p.model}</strong> — {p.error}</p>
           ))}
         </div>
