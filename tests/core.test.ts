@@ -2798,6 +2798,34 @@ test("no server-side child process may pop a console window on Windows", async (
   assert.deepEqual(offenders, [], `these spawn a visible console window on Windows:\n${offenders.join("\n")}`);
 });
 
+test("windows install: dropport is set up on its own, and Caddy does not depend on a package manager", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("scripts/ledger.mjs", "utf8");
+
+  // A friend's 0.2.0 install log had no dropport line at all. dropport was gated
+  // behind Caddy — `!ensureCaddy() || !ensureDropport()` — so a winget failure on
+  // Caddy meant dropport was never attempted, which reads as "not part of the install".
+  assert.ok(!/!ensureCaddy\(\)\s*\|\|\s*!ensureDropport\(\)/.test(src), "dropport must not be gated behind Caddy");
+  const drop = src.indexOf("const drop = ensureDropport();");
+  const caddy = src.indexOf("const caddy = await ensureCaddy();");
+  assert.ok(drop > 0 && caddy > drop, "dropport first, then Caddy, both attempted");
+  assert.match(src, /skipping the https address — \$\{!drop \? "dropport" : "Caddy"\}/, "and the log names which one stopped it");
+
+  // Caddy itself: winget is missing on older Windows 10 and fails quietly elsewhere.
+  // Caddy's own build server serves the bare .exe, so the last resort needs nothing.
+  assert.match(src, /caddyserver\.com\/api\/download\?os=windows&arch=\$\{arch\}/);
+  assert.match(src, /buf\[0\] !== 0x4d \|\| buf\[1\] !== 0x5a/, "a download is checked to be an executable before it is trusted");
+  assert.match(src, /if \(await downloadCaddy\(\)\) return ok/, "tried after the package managers, before giving up");
+
+  // "installed" means "can be run": on a vendored Node the global prefix is off PATH
+  assert.match(src, /function dropportBin\(\)/);
+  assert.match(src, /npm.*prefix.*-g/, "asks npm where it put it");
+
+  // and there is a way to reach dropport at all afterwards
+  assert.match(src, /case "proxy":/);
+  assert.match(readFileSync("cmd/installer/main.go", "utf8"), /proxy doctor/, "the installer's closing words name it");
+});
+
 test("starting at logon never stops to ask for a password", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync("scripts/serve.mjs", "utf8");
