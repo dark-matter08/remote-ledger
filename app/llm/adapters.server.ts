@@ -3,8 +3,8 @@
 //           own subscription/local model. Usage parsed when available, else estimated.
 //   - API:  direct HTTP with a BYO key — exact usage returned.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, win32 } from "node:path";
 import type { AdapterResult, ChatMessage, ImageInput, RunnerAdapter, RunnerInfo, RunRequest, ToolCall, Usage } from "./types";
 import { getSecret } from "../secrets.server";
 import { getSetting } from "../sqlite.server";
@@ -43,21 +43,71 @@ const IMAGE_REFUSED = /image|vision|multimodal|content type|invalid.*content|uns
 const VISION_NAME = /vl|vision|llava|gemma3|gemma-3|gemma-4|moondream|minicpm-v|pixtral|llama-4|scout|maverick|bakllava/i;
 
 // --- shell helpers ---------------------------------------------------------
+//
+// Three things here were written for a Unix shell and quietly failed on Windows,
+// where the installer puts most people: PATH was joined with ":" (Windows uses ";",
+// so every child got a PATH split at its drive letters); an agent was looked for
+// with `bash -lc command -v`, which needs Git Bash and cannot see a claude.exe
+// installed after the server started; and starting "claude" by bare name cannot run
+// the claude.cmd shim npm writes. Claude Code was installed, and the Runners table
+// said it was not.
 
-function augmentedPath(): string {
-  const extra = [
+const WIN = process.platform === "win32";
+
+/** Where installers put a CLI agent on a platform, whether or not PATH knows yet. */
+export function cliDirsFor(win: boolean, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (win) {
+    const j = win32.join;
+    const home = env.USERPROFILE || env.HOME || "";
+    return [
+      j(home, ".local", "bin"), // Claude Code's and Cursor's native installers
+      j(env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links"), // winget
+      j(env.APPDATA || "", "npm"), // npm -g shims
+      j(env.LOCALAPPDATA || "", "Programs", "codex", "bin"), // Codex's installer
+      j(env.ProgramFiles || "", "nodejs"),
+      dirname(process.execPath),
+    ].filter((d) => /^[a-z]:[\\/]/i.test(d)); // an unset env var leaves a relative junk path; only real drives count
+  }
+  return [
     dirname(process.execPath),
-    `${process.env.HOME}/.nvm/versions/node/v18.18.2/bin`,
-    `${process.env.HOME}/.nvm/versions/node/v22.22.2/bin`,
+    `${env.HOME}/.nvm/versions/node/v18.18.2/bin`,
+    `${env.HOME}/.nvm/versions/node/v22.22.2/bin`,
     "/opt/homebrew/bin",
     "/usr/local/bin",
-    `${process.env.HOME}/.local/bin`,
+    `${env.HOME}/.local/bin`,
     "/usr/bin",
     "/bin",
   ];
-  return [...new Set([...(process.env.PATH || "").split(":"), ...extra])]
-    .filter(Boolean)
-    .join(":");
+}
+
+/** PATH with the installers' directories appended — joined the way the platform joins it. */
+export function augmentedPathFor(win: boolean, env: NodeJS.ProcessEnv = process.env): string {
+  const sep = win ? ";" : ":";
+  return [...new Set([...(env.PATH || "").split(sep), ...cliDirsFor(win, env)])].filter(Boolean).join(sep);
+}
+
+const cliDirs = () => cliDirsFor(WIN);
+const augmentedPath = () => augmentedPathFor(WIN);
+
+/**
+ * What to actually spawn for a resolved command.
+ *
+ * On Windows an npm global install is a `.cmd` shim, and a child started without a
+ * shell cannot run one. The shim is one line — `"%_prog%" "%dp0%\node_modules\…\cli.js" %*` —
+ * so the JavaScript it points at is run with this server's own Node, which carries
+ * every argument through intact. That matters: a system prompt is several lines,
+ * and cmd.exe cannot pass a newline inside an argument. cmd.exe is the last resort
+ * only for a shim that does not have that shape.
+ */
+export function spawnable(cmd: string, args: string[], win = WIN): { file: string; args: string[]; verbatim?: boolean } {
+  if (!win || !/\.(cmd|bat)$/i.test(cmd)) return { file: cmd, args };
+  try {
+    const shim = readFileSync(cmd, "utf8");
+    const m = /"%dp0%\\([^"]+\.[cm]?js)"/i.exec(shim);
+    if (m) return { file: process.execPath, args: [win32.join(dirname(cmd), m[1]), ...args] };
+  } catch {}
+  const q = (a: string) => `"${a.replace(/"/g, '\\"')}"`;
+  return { file: "cmd.exe", args: ["/d", "/s", "/c", `${q(cmd)} ${args.map(q).join(" ")}`], verbatim: true };
 }
 
 function exec(
@@ -66,13 +116,15 @@ function exec(
   opts: { input?: string; timeoutMs?: number } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolveP) => {
+    const sp = spawnable(cmd, args);
     // windowsHide: the server is started detached and so has no console of its own.
     // Windows gives a console-mode child a brand new *visible* window when the parent
     // has none, so every one of these flashed a black window on screen — several times
     // a minute, since the status endpoints are polled. It is not optional here.
-    const child = spawn(cmd, args, {
+    const child = spawn(sp.file, sp.args, {
       env: { ...process.env, PATH: augmentedPath() },
       windowsHide: true,
+      ...(sp.verbatim ? { windowsVerbatimArguments: true } : {}),
     });
     let stdout = "",
       stderr = "";
@@ -95,9 +147,54 @@ function exec(
   });
 }
 
+const WIN_EXTS = [".exe", ".cmd", ".bat"];
+const cliFound = new Map<string, { at: number; path: string | null }>();
+const FIND_TTL_MS = 10_000; // the settings page asks on every render
+
+/**
+ * The absolute path of an installed CLI agent, or null.
+ *
+ * The installers' directories are checked directly first, because the server's PATH
+ * was fixed when it started — at logon, on Windows — and an agent installed since
+ * then is not on it. Then the platform's own lookup: `where.exe`, which honours
+ * PATHEXT and so finds a .cmd shim; or a login shell's `command -v`, which picks up
+ * whatever the user's profile adds (nvm, mostly).
+ */
+export async function findCli(bin: string): Promise<string | null> {
+  const hit = cliFound.get(bin);
+  if (hit && Date.now() - hit.at < FIND_TTL_MS) return hit.path;
+
+  let found: string | null = null;
+  if (WIN) {
+    for (const dir of cliDirs()) {
+      for (const ext of WIN_EXTS) {
+        const p = join(dir, bin + ext);
+        if (existsSync(p)) { found = p; break; }
+      }
+      if (found) break;
+    }
+    if (!found) {
+      const r = await exec("where.exe", [bin], { timeoutMs: 8000 });
+      const first = r.stdout.split(/\r?\n/).map((l) => l.trim()).find((l) => l && /\.(exe|cmd|bat)$/i.test(l));
+      if (r.code === 0 && first) found = first;
+    }
+  } else {
+    const r = await exec("bash", ["-lc", `command -v ${bin}`], { timeoutMs: 8000 });
+    const p = r.stdout.trim().split("\n").pop()?.trim();
+    if (r.code === 0 && p) found = p;
+    if (!found) {
+      for (const dir of cliDirs()) {
+        const p = join(dir, bin);
+        if (existsSync(p)) { found = p; break; }
+      }
+    }
+  }
+  cliFound.set(bin, { at: Date.now(), path: found });
+  return found;
+}
+
 async function which(cmd: string): Promise<boolean> {
-  const r = await exec("bash", ["-lc", `command -v ${cmd}`], { timeoutMs: 8000 });
-  return r.code === 0 && r.stdout.trim().length > 0;
+  return (await findCli(cmd)) !== null;
 }
 
 // --- Claude Code CLI (rich: reports usage + cost) --------------------------
@@ -125,7 +222,7 @@ class ClaudeCliAdapter implements RunnerAdapter {
     if (req.system) args.push("--append-system-prompt", req.system);
     const tools = [...(req.allowWeb ? ["WebSearch", "WebFetch"] : []), ...(req.images?.length ? ["Read"] : [])];
     if (tools.length) args.push("--allowedTools", tools.join(","));
-    const r = await exec("claude", args, {
+    const r = await exec((await findCli("claude")) || "claude", args, {
       input: promptWithPaths(req.prompt, req.images),
       timeoutMs: 300000,
     });
@@ -191,7 +288,7 @@ class GenericCliAdapter implements RunnerAdapter {
     const args = this.buildArgs({ ...req, prompt }, model);
     if (shown && this.imagesVia === "flag") for (const i of images!) args.push("-i", i.path);
     const text = [req.system ? `System:\n${req.system}\n\n` : "", prompt].join("");
-    const r = await exec(this.bin, args, {
+    const r = await exec((await findCli(this.bin)) || this.bin, args, {
       input: this.passViaStdin ? text : undefined,
       timeoutMs: 300000,
     });
@@ -945,12 +1042,18 @@ export async function streamClaude(opts: {
   signal?: AbortSignal;
   onEvent: (ev: any) => void;
 }): Promise<{ text: string; usage: Partial<Usage> }> {
+  const claudeBin = (await findCli("claude")) || "claude";
   return new Promise((resolveP, reject) => {
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
     if (opts.model && opts.model !== "default") args.push("--model", opts.model);
     if (opts.system) args.push("--append-system-prompt", opts.system);
     if (opts.allowWeb) args.push("--allowedTools", "WebSearch,WebFetch");
-    const child = spawn("claude", args, { env: { ...process.env, PATH: augmentedPath() }, windowsHide: true });
+    const sp = spawnable(claudeBin, args);
+    const child = spawn(sp.file, sp.args, {
+      env: { ...process.env, PATH: augmentedPath() },
+      windowsHide: true,
+      ...(sp.verbatim ? { windowsVerbatimArguments: true } : {}),
+    });
     let timedOut = false;
     let aborted = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs ?? 600000);

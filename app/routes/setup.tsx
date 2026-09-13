@@ -86,6 +86,8 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   return {
     runners,
+    // which machine this is: the install lines for the agents differ per platform
+    os: process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux",
     modelOptions,
     keys: KEY_FIELDS.map((k) => ({ ...k, set: hasSecret(k.name) })),
     defaultRunner: getSetting("default_runner") || "",
@@ -351,6 +353,7 @@ export default function Setup({ loaderData, actionData }: Route.ComponentProps) 
             defaultRunner={d.defaultRunner}
             models={d.models}
             busy={busy}
+            os={d.os as any}
           />
         )}
 

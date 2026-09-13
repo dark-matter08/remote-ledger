@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { useState } from "react";
-import { Form, redirect, useNavigation, useSearchParams } from "react-router";
+import { Form, Link, redirect, useNavigation, useSearchParams } from "react-router";
 import type { Route } from "./+types/settings";
 import { Shell } from "../components/Shell";
 import { Select } from "../components/Select";
@@ -646,7 +646,21 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
                     <td>{r.kind.toUpperCase()}</td>
                     {/* a local runner can be installed and simply not started, which is
                         neither a missing key nor a missing install */}
-                    <td>{r.available ? <span className="badge ok">Ready</span> : <span className="badge off">{r.needsKey ? "Needs key" : r.kind === "api" ? "Not running" : "Not installed"}</span>}</td>
+                    <td>
+                      {r.available ? (
+                        <span className="badge ok">Ready</span>
+                      ) : (
+                        <>
+                          <span className="badge off">{r.needsKey ? "Needs key" : r.kind === "api" ? "Not running" : "Not installed"}</span>
+                          {/* the install lines live in the wizard, per platform — one place to keep right */}
+                          {r.kind === "cli" && (
+                            <div className="job-fine" style={{ marginTop: 4 }}>
+                              <Link to="/setup?step=1" className="back-link">how to install →</Link>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </td>
                     <td>{settings.models[r.id] || r.defaultModel || "—"}</td>
                   </tr>
                 ))}
