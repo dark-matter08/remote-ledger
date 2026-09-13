@@ -118,6 +118,10 @@ func main() {
 		ui.Say("")
 		ui.Say("To update or restart it later, from anywhere:")
 		ui.Say("  %s restart", launcher)
+		// dropport lives under the vendored Node too, so this is the only way to reach
+		// its commands — "dropport doctor" in a terminal says "not recognized"
+		ui.Say("If the https address is not working:")
+		ui.Say("  %s proxy doctor", launcher)
 	}
 	ui.Say("")
 	addr := finalAddress(appDir)

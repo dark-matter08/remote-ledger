@@ -197,7 +197,28 @@ function caddyOnDisk() {
   return true;
 }
 
-function ensureCaddy() {
+/** Caddy straight from caddyserver.com, into the user's own Programs folder. */
+async function downloadCaddy() {
+  const arch = process.arch === "arm64" ? "arm64" : "amd64";
+  const dir = resolve(process.env.LOCALAPPDATA || "", "Programs", "Caddy");
+  const dest = resolve(dir, "caddy.exe");
+  step(`Downloading Caddy from caddyserver.com (windows/${arch}, about 40 MB)`);
+  try {
+    const res = await fetch(`https://caddyserver.com/api/download?os=windows&arch=${arch}`, { redirect: "follow" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    // a Windows executable starts with "MZ"; an error page does not, and is far smaller
+    if (buf.length < 5_000_000 || buf[0] !== 0x4d || buf[1] !== 0x5a) throw new Error(`not an executable (${buf.length} bytes)`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(dest, buf);
+    return caddyOnDisk(); // which also puts it on PATH for everything that follows
+  } catch (e) {
+    warn(`the download failed: ${e.message}`);
+    return false;
+  }
+}
+
+async function ensureCaddy() {
   if (have("caddy") || caddyOnDisk()) return ok("Caddy is installed");
 
   step("Installing Caddy (it serves the https address)");
@@ -225,6 +246,12 @@ function ensureCaddy() {
       run("choco", ["install", "caddy", "-y"]);
       if (have("caddy") || caddyOnDisk()) return ok("Caddy installed");
     }
+    // None of those is a given on someone else's machine — winget is missing on older
+    // Windows 10, and can fail without saying why. Caddy's own build server serves the
+    // bare executable, so this needs nothing the machine may not have: no package
+    // manager, no unzip, no administrator. And with Caddy gone, dropport was never
+    // attempted either — a whole https address lost to one winget hiccup.
+    if (await downloadCaddy()) return ok("Caddy installed");
   } else if (!MAC) {
     // Each of these asks for a password; announce it rather than surprising anyone.
     say("  this needs your password, to install a system package");
@@ -239,17 +266,48 @@ function ensureCaddy() {
   return false;
 }
 
+/**
+ * Where a global npm install put dropport, when PATH does not say.
+ *
+ * With the vendored Node the global prefix is a folder nothing else knows about — on
+ * Windows the folder node.exe sits in, elsewhere the one above its bin. A successful
+ * install used to be reported as "installed" and then `dropport add` failed two lines
+ * later because the command could not be found.
+ */
+function dropportBin() {
+  const prefix = capture("npm", ["prefix", "-g"])?.trim();
+  if (!prefix) return null;
+  const p = WIN ? resolve(prefix, "dropport.cmd") : resolve(prefix, "bin", "dropport");
+  return existsSync(p) ? p : null;
+}
+
 function ensureDropport() {
   if (have("dropport")) return ok("dropport is installed");
+  const known = dropportBin();
+  if (known) {
+    process.env.PATH = `${dirname(known)}${delimiter}${process.env.PATH || ""}`;
+    return ok(`dropport is installed (${known})`);
+  }
   step("Installing dropport (it gives the app its web address)");
   const pm = packageManager() === "pnpm" ? "pnpm" : "npm";
   const args = pm === "pnpm" ? ["add", "-g", "dropport"] : ["install", "-g", "dropport"];
-  if (run(pm, args)) return ok("dropport installed");
   // a global install can be refused outright, and the registry can briefly lag a release
-  if (run(pm, pm === "pnpm" ? ["add", "-g", "github:dark-matter08/dropport"] : ["install", "-g", "github:dark-matter08/dropport"]))
-    return ok("dropport installed from source");
-  warn("could not install dropport automatically.");
-  say(`    Run this once, then try again:  ${pm} install -g dropport`);
+  const installed =
+    run(pm, args) ||
+    run(pm, pm === "pnpm" ? ["add", "-g", "github:dark-matter08/dropport"] : ["install", "-g", "github:dark-matter08/dropport"]);
+  if (!installed) {
+    warn("could not install dropport automatically.");
+    say(`    Run this once, then try again:  ${pm} install -g dropport`);
+    return false;
+  }
+  // "installed" means "can be run", not "npm exited 0"
+  if (have("dropport")) return ok("dropport installed");
+  const bin = dropportBin();
+  if (bin) {
+    process.env.PATH = `${dirname(bin)}${delimiter}${process.env.PATH || ""}`;
+    return ok(`dropport installed (${bin})`);
+  }
+  warn("dropport was installed but cannot be found to run — `npm prefix -g` points nowhere usable.");
   return false;
 }
 
@@ -259,7 +317,7 @@ function ensureDropport() {
  * both the routes and the proxy itself are already there after a reboot — there is
  * nothing for this script to arrange beyond running it once.
  */
-function setupDropport() {
+async function setupDropport() {
   // The installer offers the https address as a choice, and a choice you cannot
   // decline is a label. Everything still works without it — the app just answers on
   // a port instead of a name.
@@ -267,8 +325,15 @@ function setupDropport() {
     step("Skipping the https address, as asked");
     return null;
   }
-  if (!ensureCaddy() || !ensureDropport()) {
-    warn("skipping the https address — the app still runs, just with a port in the URL.");
+  // dropport first and on its own: it is an npm package and needs nothing else, and
+  // having it means `ledger proxy doctor` can say what is wrong later. It used to be
+  // gated behind Caddy, so a failed Caddy install left no dropport line in the log at
+  // all — which reads as "it was never part of the install".
+  const drop = ensureDropport();
+  const caddy = await ensureCaddy();
+  if (!drop || !caddy) {
+    warn(`skipping the https address — ${!drop ? "dropport" : "Caddy"} is not available. The app still runs, just with a port in the URL.`);
+    if (drop && !caddy) say("    Once Caddy is installed, run `npm run ledger restart` and the address is set up then.");
     return null;
   }
 
@@ -380,7 +445,7 @@ async function start() {
     process.exit(1);
   }
 
-  let address = setupDropport();
+  let address = await setupDropport();
   // `dropport up` can fail on a machine where the proxy is already serving the name —
   // a reload that did not take, a permission prompt declined on a second run. The
   // address answering is the only thing that settles whether it works, so ask it
@@ -480,6 +545,7 @@ The Remote Ledger
   npm run ledger logs      watch what it is doing
   npm run ledger trust     fix the browser's certificate warning
   npm run ledger doctor    what start will find, without changing anything
+  npm run ledger proxy …   dropport's own commands (proxy doctor, proxy status, proxy trust)
 
 Address: ${DOMAIN} (set LEDGER_DOMAIN to change it, PORT for the port).
 `;
@@ -515,6 +581,21 @@ switch (ACTION) {
   case "doctor":
     doctor();
     break;
+  case "proxy": {
+    // dropport's own commands, through the Node this install owns. Nothing is on PATH
+    // on a vendored install, so `dropport doctor` in a terminal says "not recognized"
+    // while dropport is sitting right there.
+    if (!have("dropport")) {
+      const bin = dropportBin();
+      if (bin) process.env.PATH = `${dirname(bin)}${delimiter}${process.env.PATH || ""}`;
+    }
+    caddyOnDisk(); // a Caddy this script downloaded is not on PATH either
+    if (!have("dropport")) {
+      warn("dropport is not installed — run `npm run ledger start` first.");
+      process.exit(1);
+    }
+    process.exit(run("dropport", process.argv.slice(3)) ? 0 : 1);
+  }
   default:
     say(HELP);
 }
