@@ -2028,6 +2028,52 @@ test("adapters: a picture reaches the model in its own format, or the answer say
   }
 });
 
+test("windows: a CLI agent is found where its installer put it, and run without a shell", async () => {
+  const { augmentedPathFor, cliDirsFor, spawnable } = await import("../app/llm/adapters.server");
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const { resolve: r } = await import("node:path");
+
+  // The bug this replaces, first of three: PATH was joined with ":" on every platform.
+  // On Windows that splits "C:\Windows\system32;C:\Windows" at its drive letters and
+  // hands every child a PATH of garbage — so nothing spawned could be found.
+  const winEnv = { PATH: "C:\\Windows\\system32;C:\\Windows", USERPROFILE: "C:\\Users\\nde", APPDATA: "C:\\Users\\nde\\AppData\\Roaming", LOCALAPPDATA: "C:\\Users\\nde\\AppData\\Local", ProgramFiles: "C:\\Program Files" };
+  const winPath = augmentedPathFor(true, winEnv);
+  assert.ok(winPath.startsWith("C:\\Windows\\system32;C:\\Windows;"), `keeps the original PATH whole: ${winPath}`);
+  assert.ok(!winPath.includes(":C:"), "never splits at a drive letter");
+  assert.ok(winPath.includes("C:\\Users\\nde\\.local\\bin"), "Claude Code's native installer directory");
+  assert.ok(winPath.includes("C:\\Users\\nde\\AppData\\Roaming\\npm"), "npm's global shims");
+  assert.ok(winPath.includes("WinGet\\Links"), "winget's links");
+  assert.ok(augmentedPathFor(false, { PATH: "/usr/bin:/bin", HOME: "/home/x" }).includes(":/opt/homebrew/bin"), "unix still joined with :");
+
+  // an env var that is not set must not turn into a relative junk path
+  const bare = cliDirsFor(true, { USERPROFILE: "" });
+  assert.ok(bare.every((d) => /^[a-z]:\\/i.test(d)), `only real drives: ${bare.join(" | ")}`);
+
+  // Third: spawn("claude") cannot run the claude.cmd shim npm writes. The shim names
+  // the JavaScript it wraps; that file is run with our own Node, which carries a
+  // multi-line system prompt through intact — cmd.exe cannot pass a newline in an
+  // argument at all.
+  const dir = r(TEST_DIR, "npm"); mkdirSync(dir, { recursive: true });
+  const shimPath = r(dir, "claude.cmd");
+  writeFileSync(shimPath, '@ECHO off\r\nSETLOCAL\r\n"%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n');
+  const sp = spawnable(shimPath, ["-p", "--append-system-prompt", "line one\nline two"], true);
+  assert.equal(sp.file, process.execPath, "runs the shim's JavaScript with this Node");
+  assert.match(sp.args[0], /node_modules\\@anthropic-ai\\claude-code\\cli\.js$/);
+  assert.deepEqual(sp.args.slice(1), ["-p", "--append-system-prompt", "line one\nline two"], "arguments untouched");
+  assert.equal(sp.verbatim, undefined);
+
+  // a .exe is spawned as it is; nothing changes on unix
+  assert.deepEqual(spawnable("C:\\Users\\nde\\.local\\bin\\claude.exe", ["-p"], true), { file: "C:\\Users\\nde\\.local\\bin\\claude.exe", args: ["-p"] });
+  assert.deepEqual(spawnable("/opt/homebrew/bin/claude", ["-p"], false), { file: "/opt/homebrew/bin/claude", args: ["-p"] });
+
+  // a shim of another shape falls back to cmd.exe, quoted, as the last resort
+  const odd = r(dir, "odd.cmd"); writeFileSync(odd, "@echo off\r\nsomething else\r\n");
+  const fb = spawnable(odd, ["--x", 'say "hi"'], true);
+  assert.equal(fb.file, "cmd.exe");
+  assert.equal(fb.verbatim, true);
+  assert.ok(fb.args.at(-1)!.includes('"--x" "say \\"hi\\""'), fb.args.at(-1));
+});
+
 test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {
   const { JOB_FIELDS, fieldById, fieldLabel, inField } = await import("../app/fields");
 
