@@ -8,6 +8,30 @@ same repository and land in the same pull request. A version cannot ship without
 
 ---
 
+## v0.2.2 — the https address on Windows, without a package manager
+
+A Windows install ended with the app on a port, no https address, and no sign of
+dropport anywhere in the log. dropport was only attempted once Caddy had installed,
+and Caddy's install leaned on winget — missing on older Windows 10, quiet about
+failing elsewhere. One hiccup there and the whole address was silently dropped.
+
+**dropport is set up on its own** now, before Caddy rather than behind it, and
+"installed" means it can be found and run, not that npm exited cleanly. **Caddy no
+longer needs a package manager:** after winget, scoop and chocolatey, the setup
+downloads the executable straight from Caddy's own build server into your Programs
+folder — no administrator, no unzip. And the log says which of the two stopped the
+address, if one did.
+
+**`ledger proxy …`** gives you dropport's own commands on an install that keeps its
+Node private — `ledger.cmd proxy doctor` says why the address is not working, `proxy
+status` what it is serving. The installer's closing words name it.
+
+If you installed 0.2.0 or 0.2.1 and have no https address, run the installer again
+or `ledger.cmd restart`: the setup is re-run from the current code and picks up where
+it stopped.
+
+---
+
 ## v0.2.1 — a score you can check, prep for every round, and Windows that finds your agent
 
 **A match score you can check.** Match used to hand back one number with nothing

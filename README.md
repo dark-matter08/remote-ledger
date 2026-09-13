@@ -8,7 +8,11 @@ your résumé per posting using an AI subscription you already pay for *or* your
 API key, renders the PDFs, and tracks the whole pipeline — worked like a copilot and
 set as a hand-made **Heritage Press** broadsheet.
 
-**New in v0.2.1** — a [match score you can check](docs/V0.2.1.md) and a minimum that gates
+**New in v0.2.2** — the https address on Windows no longer depends on winget: Caddy comes
+straight from caddyserver.com when nothing else will, and `ledger.cmd proxy doctor` reaches
+dropport on an install that keeps its Node private.
+
+**v0.2.1** — a [match score you can check](docs/V0.2.1.md) and a minimum that gates
 autopilot; **applying in batches**; and **interview prep per round**, which reads screenshots of
 the invite and answers its questions from your knowledge base. Windows installs now find an
 installed Claude Code. See the [changelog](CHANGELOG.md).
