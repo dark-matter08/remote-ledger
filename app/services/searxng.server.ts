@@ -16,9 +16,10 @@
 //      but nothing works" cause.
 //   3. It needs a secret_key. Without one it refuses to start.
 import { execFile, spawn } from "node:child_process";
+import { findCli } from "../llm/adapters.server";
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { resolve } from "node:path";
+import { resolve, delimiter } from "node:path";
 import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 
@@ -27,6 +28,9 @@ const pexecFile = promisify(execFile);
 // Machine-wide rather than inside the repo: it is ~250MB of checkout and wheels, and
 // one copy should serve every checkout of the Ledger on this machine.
 export const SEARXNG_HOME = resolve(homedir(), ".remote-ledger", "searxng");
+// Tools the Ledger fetched for itself — today, uv. Its own folder, so a machine with no
+// package manager still gets there, and nothing global is touched or read.
+export const LEDGER_BIN = resolve(homedir(), ".remote-ledger", "bin");
 const SRC = resolve(SEARXNG_HOME, "src");
 const VENV = resolve(SEARXNG_HOME, "venv");
 const SETTINGS = resolve(SEARXNG_HOME, "settings.yml");
@@ -34,6 +38,8 @@ const PID_FILE = resolve(SEARXNG_HOME, "searxng.pid");
 // written only after the environment is proven to import; a half-finished install
 // leaves a venv and a checkout behind, and both of those look like success
 const MARKER = resolve(SEARXNG_HOME, "installed.json");
+// Windows only: a stand-in for one Unix module SearXNG imports, see pwdShim().
+const SHIM = resolve(SEARXNG_HOME, "shim");
 export const SEARXNG_LOG = resolve(SEARXNG_HOME, "searxng.log");
 const REPO = "https://github.com/searxng/searxng.git";
 
@@ -65,21 +71,26 @@ const PY_PREFIXES = (process.env.LEDGER_PYTHON_DIRS || "")
     MAC
       ? ["/opt/homebrew/bin", "/usr/local/bin"]
       : WIN
-        ? []
+        ? // python.org's installer, per-user then all-users; uv's own downloads live elsewhere
+          [resolve(process.env.LOCALAPPDATA || "", "Programs", "Python"), resolve(process.env.ProgramFiles || "", "Python")]
         : ["/usr/bin", "/usr/local/bin", resolve(homedir(), ".local", "bin")]
   );
 
-const venvPython = () => resolve(VENV, "bin", "python");
+// A venv on Windows keeps its interpreter under Scripts\, not bin/. Getting this wrong
+// meant an install that had succeeded reported "not installed" forever on Windows.
+export const venvPythonFor = (win: boolean, venv = VENV) => (win ? resolve(venv, "Scripts", "python.exe") : resolve(venv, "bin", "python"));
+const venvPython = () => venvPythonFor(WIN);
 
-async function which(bin: string): Promise<string | null> {
-  try {
-    const { stdout } = await pexecFile("/usr/bin/which", [bin], { windowsHide: true });
-    const p = stdout.trim();
-    return p && existsSync(p) ? p : null;
-  } catch {
-    return null;
-  }
-}
+/**
+ * An installed tool, by absolute path.
+ *
+ * This ran /usr/bin/which — a file that does not exist on Windows — so on Windows
+ * nothing was ever found: not uv after the user installed it, not the git the Ledger's
+ * own installer had put there. The Install button stayed disabled while the page
+ * showed the very command the person had just run. The runner layer's finder looks
+ * where installers actually put things, on every platform.
+ */
+const which = (bin: string, fresh = false) => findCli(bin, { fresh });
 
 // Asking an interpreter its version costs a process, and the Search tab polls status
 // every 15s. Keyed by absolute path, so a python installed mid-session is a new key
@@ -110,6 +121,18 @@ function pythonCandidates(): string[] {
   const add = (p: string) => {
     if (!out.includes(p) && existsSync(p)) out.push(p);
   };
+  if (WIN) {
+    // %LOCALAPPDATA%\Programs\Python\Python312\python.exe, newest we know of first
+    for (const v of PY_PREFERRED) for (const dir of PY_PREFIXES) add(resolve(dir, `Python3${v}`, "python.exe"));
+    for (const dir of PY_PREFIXES) {
+      let names: string[] = [];
+      try {
+        names = readdirSync(dir);
+      } catch {}
+      for (const n of names.filter((n) => /^Python3\d+$/.test(n)).sort()) add(resolve(dir, n, "python.exe"));
+    }
+    return out;
+  }
   for (const v of PY_PREFERRED) for (const dir of PY_PREFIXES) add(resolve(dir, `python3.${v}`));
   // Anything else installed, including versions newer than we know about. Without this
   // a machine whose only interpreter is /usr/bin/python3.14 looks empty.
@@ -159,6 +182,44 @@ export function pythonInstallCommand(): string {
   if (MAC) return "brew install uv";
   if (WIN) return "winget install --id=astral-sh.uv -e";
   return "curl -LsSf https://astral.sh/uv/install.sh | sh";
+}
+
+/**
+ * Fetch uv into the Ledger's own folder, touching nothing else.
+ *
+ * The person was being told to install uv themselves, with a command for their
+ * platform — and on Windows, having done exactly that, still saw the button disabled.
+ * uv's own installer takes UV_UNMANAGED_INSTALL: a directory to put the binary in,
+ * with no PATH edit, no shell profile, no self-updater. That is the whole ask — one
+ * install, in the folder the app uses, that nothing global has to know about.
+ */
+export async function ensureUv(onStep?: (s: InstallStep) => void): Promise<string | null> {
+  const found = await which("uv");
+  if (found) return found;
+  mkdirSync(LEDGER_BIN, { recursive: true });
+  const step = `Fetching uv into ${LEDGER_BIN} — it supplies Python ${PY_VERSION}; nothing else on the machine is touched`;
+  try {
+    const timeout = 5 * 60 * 1000;
+    if (WIN) {
+      await pexecFile(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `$env:UV_UNMANAGED_INSTALL='${LEDGER_BIN}'; irm https://astral.sh/uv/install.ps1 | iex`],
+        { timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }
+      );
+    } else {
+      await pexecFile("sh", ["-c", `curl -LsSf https://astral.sh/uv/install.sh | UV_UNMANAGED_INSTALL='${LEDGER_BIN}' sh`], {
+        timeout,
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+    }
+  } catch (e: any) {
+    onStep?.({ step, ok: false, output: String(e?.stderr || e?.message || e).slice(-1200) });
+    return null;
+  }
+  const uv = await which("uv", true);
+  onStep?.({ step, ok: !!uv, output: uv ? uv : `the installer finished but nothing is at ${LEDGER_BIN}` });
+  return uv;
 }
 
 export interface SearxngStatus {
@@ -249,7 +310,9 @@ export async function searxngStatus(): Promise<SearxngStatus> {
     pythonVersion: py ? `3.${py.minor}` : null,
     pythonTooNew: !!py?.tooNew,
     pythonInstall: hasUv || (py && !py.tooNew) ? null : pythonInstallCommand(),
-    canInstall: !!hasGit && (!!hasUv || !!python),
+    // uv is fetched by the install itself when missing, so git is the one thing the
+    // machine has to bring — and the Ledger's own installer puts it there
+    canInstall: !!hasGit,
     version: installed ? readVersion() : null,
   };
 }
@@ -322,16 +385,16 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
     onStep?.(s);
     return s.ok;
   };
-  const run = async (bin: string, args: string[], step: string, cwd?: string) => {
+  const run = async (bin: string, args: string[], step: string, cwd?: string, env: Record<string, string> = {}) => {
     try {
       const { stdout, stderr } = await pexecFile(bin, args, {
         cwd,
         timeout: 20 * 60 * 1000,
-      windowsHide: true,
+        windowsHide: true,
         maxBuffer: 16 * 1024 * 1024,
         // a clean environment: inheriting VIRTUAL_ENV or a PATH pointing into another
         // project's venv is how this ends up installing somewhere surprising
-        env: { ...process.env, VIRTUAL_ENV: "", PYTHONHOME: "", PYTHONPATH: "" },
+        env: { ...process.env, VIRTUAL_ENV: "", PYTHONHOME: "", PYTHONPATH: "", ...env },
       });
       return push({ step, ok: true, output: `${stdout}\n${stderr}`.trim().slice(-1200) });
     } catch (e: any) {
@@ -358,7 +421,7 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
   const reqs = resolve(SRC, "requirements.txt");
   if (!existsSync(reqs)) return { ok: !push({ step: "requirements.txt", ok: false, output: "not found in the checkout" }), steps };
 
-  const uv = await which("uv");
+  const uv = (await which("uv")) || (await ensureUv(push));
   if (uv) {
     if (!(await run(uv, ["venv", "--python", PY_VERSION, VENV], `Creating an isolated Python ${PY_VERSION}`)))
       return { ok: false, steps };
@@ -389,8 +452,11 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
       return { ok: false, steps };
   }
 
-  // prove the environment can actually load it before calling the install a success
-  if (!(await run(venvPython(), ["-c", "import searx, msgspec, flask; print(searx.__file__)"], "Checking it imports", SRC)))
+  // prove the environment can actually load it before calling the install a success —
+  // on Windows including the pwd stand-in, without which the web app cannot import
+  pwdShim();
+  const probe = WIN ? "import searx, msgspec, flask, pwd; print(searx.__file__)" : "import searx, msgspec, flask; print(searx.__file__)";
+  if (!(await run(venvPython(), ["-c", probe], "Checking it imports", SRC, { PYTHONPATH: pythonPath() })))
     return { ok: false, steps };
 
   writeFileSync(SETTINGS, settingsYaml(searxngPort()));
@@ -398,6 +464,45 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
   writeFileSync(MARKER, new Date().toISOString());
   return { ok: true, steps };
 }
+
+/**
+ * SearXNG does not support Windows, and on the whole web path that comes down to one
+ * line: searx/valkeydb.py does `import pwd` at module level, a Unix-only module, and
+ * searx/webapp.py imports valkeydb unconditionally — so on Windows the server dies
+ * with ModuleNotFoundError before it has read a setting. The only *use* of pwd is in
+ * the except branch of a Valkey connection attempt, and no Valkey is configured here,
+ * so it is never reached. A stand-in with the same shape is enough, put ahead of the
+ * checkout on PYTHONPATH. Checked against the tree on 2026-09-13: nothing else on the
+ * web path (fcntl, grp, resource, os.fork, setsid) is Unix-only.
+ */
+export const PWD_SHIM_PY = [
+      "# Stand-in for the Unix pwd module, which Windows does not have. SearXNG imports it",
+      "# in searx/valkeydb.py at module level and only uses it to name the user in a log",
+      "# line after a failed Valkey connection - which cannot happen here, since no Valkey",
+      "# is configured. Written by The Remote Ledger; nothing else reads it.",
+      "import os",
+      "from collections import namedtuple",
+      "",
+      'struct_passwd = namedtuple("struct_passwd", "pw_name pw_passwd pw_uid pw_gid pw_gecos pw_dir pw_shell")',
+      "",
+      "",
+      "def getpwuid(uid):",
+      '    return struct_passwd(os.environ.get("USERNAME", "user"), "x", uid, 0, "", os.path.expanduser("~"), "")',
+      "",
+      "",
+      "def getpwnam(name):",
+      '    return struct_passwd(name, "x", 0, 0, "", os.path.expanduser("~"), "")',
+      "",
+    ].join("\n");
+
+function pwdShim(): void {
+  if (!WIN) return;
+  mkdirSync(SHIM, { recursive: true });
+  writeFileSync(resolve(SHIM, "pwd.py"), PWD_SHIM_PY);
+}
+
+/** What Python must see: the checkout, and on Windows the stand-in ahead of it. */
+const pythonPath = () => (WIN ? `${SHIM}${delimiter}${SRC}` : SRC);
 
 /** Start it in the background and wait until it actually answers. */
 export async function startSearxng(waitMs = 40000): Promise<boolean> {
@@ -407,6 +512,7 @@ export async function startSearxng(waitMs = 40000): Promise<boolean> {
 
   // settings.yml can go missing or predate a port change; it is cheap to rewrite
   if (!existsSync(SETTINGS)) writeFileSync(SETTINGS, settingsYaml(port));
+  pwdShim();
 
   const out = openSync(SEARXNG_LOG, "a");
   const child = spawn(venvPython(), ["-m", "searx.webapp"], {
@@ -422,7 +528,7 @@ export async function startSearxng(waitMs = 40000): Promise<boolean> {
       VIRTUAL_ENV: VENV,
       PYTHONHOME: "",
       // the package is not installed into site-packages, it is run from the checkout
-      PYTHONPATH: SRC,
+      PYTHONPATH: pythonPath(),
     },
   });
   child.unref();

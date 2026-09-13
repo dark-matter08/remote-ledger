@@ -139,17 +139,16 @@ export function SearchSetup() {
               <p className="hint">
                 {s.hasUv
                   ? "uv is installed, so this pins its own Python 3.12 and takes about a minute."
-                  : s.python
-                    ? `Using ${s.python}${s.pythonVersion ? ` (Python ${s.pythonVersion})` : ""} with a virtualenv.${
-                        s.pythonTooNew
-                          ? " That is newer than SearXNG pins for, so the install may fail on a missing wheel. You can try it anyway, or install uv and it will fetch its own Python 3.12:"
-                          : " Installing uv would make this faster."
-                      }`
-                    : "No Python found. Install uv and it will fetch its own Python 3.12:"}
-                {!s.hasGit && " git is required and was not found."}
+                  : "uv is not installed, so the install fetches it first — into the Ledger's own folder, touching nothing else on the machine — and it supplies Python 3.12 from there."}
+                {!s.hasGit && " git is required and was not found — the Ledger's installer normally provides it."}
               </p>
-              {/* the command for THIS machine — Homebrew is not an instruction you can follow on Linux */}
-              {s.pythonInstall && <pre className="jd-rendered" style={{ padding: 10, marginTop: -4 }}>{s.pythonInstall}</pre>}
+              {/* installing uv yourself is an option, not a prerequisite — the command for THIS
+                  machine, since Homebrew is not an instruction you can follow on Linux */}
+              {!s.hasUv && s.pythonInstall && (
+                <p className="hint" style={{ marginTop: -4 }}>
+                  Or install uv yourself first: <code>{s.pythonInstall}</code>
+                </p>
+              )}
               <button className="btn" disabled={busy || installing || !s.canInstall} onClick={() => run("install")}>
                 <Download size={13} /> {installing ? "Installing…" : "Install SearXNG"}
               </button>
