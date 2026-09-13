@@ -394,7 +394,9 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
         maxBuffer: 16 * 1024 * 1024,
         // a clean environment: inheriting VIRTUAL_ENV or a PATH pointing into another
         // project's venv is how this ends up installing somewhere surprising
-        env: { ...process.env, VIRTUAL_ENV: "", PYTHONHOME: "", PYTHONPATH: "", ...env },
+        // uv gives a download 30 s before it calls the install failed. That is a wheel
+        // on a slow line, and it happened on a fast one — give it minutes.
+        env: { ...process.env, VIRTUAL_ENV: "", PYTHONHOME: "", PYTHONPATH: "", UV_HTTP_TIMEOUT: "300", ...env },
       });
       return push({ step, ok: true, output: `${stdout}\n${stderr}`.trim().slice(-1200) });
     } catch (e: any) {
@@ -407,11 +409,20 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
   const git = await which("git");
   if (!git) return { ok: !push({ step: "git", ok: false, output: "git is not installed." }), steps };
 
-  if (!existsSync(resolve(SRC, ".git"))) {
-    if (!(await run(git, ["clone", "--depth", "1", REPO, SRC], "Cloning SearXNG"))) return { ok: false, steps };
-  } else {
-    await run(git, ["pull", "--ff-only"], "Updating the checkout", SRC);
-  }
+  // Only searx/ and the root files are checked out. The repository also carries
+  // deployment templates under utils/, one of them named `searxng.conf:socket` — and a
+  // colon cannot be in an NTFS filename, so Git on Windows refused the whole checkout:
+  // "clone succeeded, but checkout failed", with the button lit and nothing runnable.
+  // Nothing outside searx/ and requirements.txt is needed to run the web app.
+  //
+  // The same narrowing repairs the checkout that failed halfway: sparse-checkout
+  // re-applies the tree with the offending paths excluded, and `checkout -f` puts the
+  // rest in place. Nothing under src/ is ever edited by hand, so -f loses nothing.
+  const fresh = !existsSync(resolve(SRC, ".git"));
+  if (fresh && !(await run(git, ["clone", "--depth", "1", "--no-checkout", REPO, SRC], "Cloning SearXNG"))) return { ok: false, steps };
+  if (!(await run(git, ["sparse-checkout", "set", "searx"], "Keeping only what runs (searx/ and the root files)", SRC))) return { ok: false, steps };
+  if (!(await run(git, ["checkout", "-f"], fresh ? "Checking out" : "Repairing the checkout", SRC))) return { ok: false, steps };
+  if (!fresh) await run(git, ["pull", "--ff-only"], "Updating the checkout", SRC);
 
   // Deliberately NOT `pip install -e .`. SearXNG's setup.py imports the package to
   // read its version, and the package imports msgspec — so an editable install fails

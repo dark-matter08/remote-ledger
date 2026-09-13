@@ -2842,6 +2842,14 @@ test("searxng on windows: found where it was installed, python where the venv ke
   assert.match(src, /UV_UNMANAGED_INSTALL/, "uv's own 'install here, touch nothing' switch");
   assert.match(src, /canInstall: !!hasGit,/, "git is the one thing the machine must bring");
 
+  // The repository carries a file named searxng.conf:socket under utils/ — a colon
+  // cannot be in an NTFS filename, so a full clone fails its checkout on Windows.
+  // Only searx/ is checked out, and the same narrowing repairs a half-done clone.
+  assert.match(src, /"clone", "--depth", "1", "--no-checkout"/, "clone without checking out");
+  assert.match(src, /"sparse-checkout", "set", "searx"/, "then only searx/");
+  assert.match(src, /"checkout", "-f"\]/, "and materialise or repair the tree");
+  assert.ok(!/\["clone", "--depth", "1", REPO/.test(src), "never a full checkout");
+
   // a venv on Windows keeps its interpreter under Scripts\, not bin/
   assert.match(sx.venvPythonFor(true, "C:\\x\\venv"), /Scripts[\\/]python\.exe$/);
   assert.match(sx.venvPythonFor(false, "/x/venv"), /bin\/python$/);
