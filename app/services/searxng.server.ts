@@ -420,6 +420,14 @@ export async function installSearxng(onStep?: (s: InstallStep) => void): Promise
   // rest in place. Nothing under src/ is ever edited by hand, so -f loses nothing.
   const fresh = !existsSync(resolve(SRC, ".git"));
   if (fresh && !(await run(git, ["clone", "--depth", "1", "--no-checkout", REPO, SRC], "Cloning SearXNG"))) return { ok: false, steps };
+  // Narrowing the checkout was not enough on Windows. Git validates every path as it
+  // builds the index — is_valid_win32_path() in compat/mingw.c rejects a colon
+  // outright — and a sparse checkout still records every file in the index, so the
+  // repair failed on the same name. That function's first line skips the whole check
+  // when core.protectNTFS is off. Off, for this one repository: the tree is pinned
+  // upstream, and the working tree is limited to searx/, so the name is never written.
+  if (WIN && !(await run(git, ["config", "core.protectNTFS", "false"], "Allowing one upstream filename Windows cannot hold (it is never written to disk)", SRC)))
+    return { ok: false, steps };
   if (!(await run(git, ["sparse-checkout", "set", "searx"], "Keeping only what runs (searx/ and the root files)", SRC))) return { ok: false, steps };
   if (!(await run(git, ["checkout", "-f"], fresh ? "Checking out" : "Repairing the checkout", SRC))) return { ok: false, steps };
   if (!fresh) await run(git, ["pull", "--ff-only"], "Updating the checkout", SRC);
