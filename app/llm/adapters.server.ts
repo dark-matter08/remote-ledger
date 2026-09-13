@@ -60,15 +60,19 @@ export function cliDirsFor(win: boolean, env: NodeJS.ProcessEnv = process.env): 
     const j = win32.join;
     const home = env.USERPROFILE || env.HOME || "";
     return [
-      j(home, ".local", "bin"), // Claude Code's and Cursor's native installers
+      j(home, ".remote-ledger", "bin"), // what the Ledger fetched for itself (uv), touching nothing else
+      j(home, ".local", "bin"), // Claude Code's, Cursor's and uv's native installers
       j(env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links"), // winget
       j(env.APPDATA || "", "npm"), // npm -g shims
       j(env.LOCALAPPDATA || "", "Programs", "codex", "bin"), // Codex's installer
+      j(env.ProgramFiles || "", "Git", "cmd"), // Git for Windows, which the Ledger's installer puts here
+      j(env.LOCALAPPDATA || "", "Programs", "Git", "cmd"), // …or here, for a per-user install
       j(env.ProgramFiles || "", "nodejs"),
       dirname(process.execPath),
     ].filter((d) => /^[a-z]:[\\/]/i.test(d)); // an unset env var leaves a relative junk path; only real drives count
   }
   return [
+    `${env.HOME}/.remote-ledger/bin`, // what the Ledger fetched for itself
     dirname(process.execPath),
     `${env.HOME}/.nvm/versions/node/v18.18.2/bin`,
     `${env.HOME}/.nvm/versions/node/v22.22.2/bin`,
@@ -160,9 +164,9 @@ const FIND_TTL_MS = 10_000; // the settings page asks on every render
  * PATHEXT and so finds a .cmd shim; or a login shell's `command -v`, which picks up
  * whatever the user's profile adds (nvm, mostly).
  */
-export async function findCli(bin: string): Promise<string | null> {
+export async function findCli(bin: string, opts: { fresh?: boolean } = {}): Promise<string | null> {
   const hit = cliFound.get(bin);
-  if (hit && Date.now() - hit.at < FIND_TTL_MS) return hit.path;
+  if (!opts.fresh && hit && Date.now() - hit.at < FIND_TTL_MS) return hit.path;
 
   let found: string | null = null;
   if (WIN) {

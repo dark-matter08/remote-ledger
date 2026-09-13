@@ -2826,6 +2826,40 @@ test("windows install: dropport is set up on its own, and Caddy does not depend 
   assert.match(readFileSync("cmd/installer/main.go", "utf8"), /proxy doctor/, "the installer's closing words name it");
 });
 
+test("searxng on windows: found where it was installed, python where the venv keeps it, and one Unix module stood in for", async () => {
+  const sx = await import("../app/services/searxng.server");
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { resolve: r } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+
+  // The bug this replaces: tools were looked for with /usr/bin/which — a file that does
+  // not exist on Windows — so uv and git were never found there. The Install button
+  // stayed disabled while the page showed the very command the person had just run.
+  const src = readFileSync("app/services/searxng.server.ts", "utf8");
+  assert.ok(!/execFile\("\/usr\/bin\/which"/.test(src), "no Unix-only lookup");
+  assert.match(src, /findCli\(bin, \{ fresh \}\)/, "the shared finder, which knows Windows");
+  // and uv is fetched by the install, into the Ledger's own folder, when it is missing
+  assert.match(src, /UV_UNMANAGED_INSTALL/, "uv's own 'install here, touch nothing' switch");
+  assert.match(src, /canInstall: !!hasGit,/, "git is the one thing the machine must bring");
+
+  // a venv on Windows keeps its interpreter under Scripts\, not bin/
+  assert.match(sx.venvPythonFor(true, "C:\\x\\venv"), /Scripts[\\/]python\.exe$/);
+  assert.match(sx.venvPythonFor(false, "/x/venv"), /bin\/python$/);
+
+  // SearXNG's web app imports searx.valkeydb, which does `import pwd` — Unix only. The
+  // stand-in must load and have the shape valkeydb's one use expects.
+  const shim = r(TEST_DIR, "pwd.py");
+  writeFileSync(shim, sx.PWD_SHIM_PY);
+  let py: string | null = null;
+  for (const c of ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]) {
+    try { execFileSync(c, ["--version"], { stdio: "ignore" }); py = c; break; } catch {}
+  }
+  if (py) {
+    const out = execFileSync(py, ["-c", `import importlib.util as u; s=u.spec_from_file_location("pwd_shim", ${JSON.stringify(shim)}); m=u.module_from_spec(s); s.loader.exec_module(m); p=m.getpwuid(501); print(p.pw_name, p.pw_uid, type(p.pw_dir).__name__)`], { encoding: "utf8" }).trim();
+    assert.match(out, /^\S+ 501 str$/, `getpwuid returns a passwd-shaped record: ${out}`);
+  }
+});
+
 test("starting at logon never stops to ask for a password", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync("scripts/serve.mjs", "utf8");
