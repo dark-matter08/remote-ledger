@@ -2848,6 +2848,12 @@ test("searxng on windows: found where it was installed, python where the venv ke
   assert.match(src, /"clone", "--depth", "1", "--no-checkout"/, "clone without checking out");
   assert.match(src, /"sparse-checkout", "set", "searx"/, "then only searx/");
   assert.match(src, /"checkout", "-f"\]/, "and materialise or repair the tree");
+  // ...which was still not enough: Git validates every index entry with
+  // is_valid_win32_path(), colon included, and a sparse checkout still indexes every
+  // file. That function returns early when core.protectNTFS is off.
+  const cfg = src.indexOf('"config", "core.protectNTFS", "false"');
+  assert.ok(cfg > 0 && cfg < src.indexOf('"sparse-checkout", "set", "searx"'), "protectNTFS is turned off before the tree is built");
+  assert.match(src.slice(cfg - 40, cfg), /WIN &&/, "and only on Windows");
   assert.ok(!/\["clone", "--depth", "1", REPO/.test(src), "never a full checkout");
 
   // a venv on Windows keeps its interpreter under Scripts\, not bin/
