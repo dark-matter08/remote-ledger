@@ -8,6 +8,62 @@ same repository and land in the same pull request. A version cannot ship without
 
 ---
 
+## v0.2.1 — a score you can check, prep for every round, and Windows that finds your agent
+
+**A match score you can check.** Match used to hand back one number with nothing
+behind it — 82 for one posting, 68 for another, and no way to say what the difference
+meant. It now scores five things separately (the must-have skills, seniority, domain,
+eligibility, nice-to-haves), quotes the posting for each, and adds them up in code. You
+can see why it is 62 rather than being told that it is.
+
+**A minimum that can act on it.** Settings → Scheduler takes a minimum match score.
+Autopilot checks it right after the match and before the three steps that cost money;
+below the line it stops, keeps the match, and offers *Apply anyway*. Turn on advise mode
+first and it tells you what it *would* have stopped for a week before it stops anything.
+
+**Applying in batches.** The Auto-Apply page can run autopilot over a selection, applying
+the minimum to each posting and collecting the ones it skipped for you to force one by
+one — and it says what the batch will cost before it starts, priced from this machine's
+own past calls.
+
+**Interview prep, one session per round.** There was one prep per job, and preparing for
+the technical round overwrote the screening one. Each round is its own session now:
+name it, say what you know, and drop in screenshots of the invite, the recruiter's
+thread or a colleague's account — up to ten. They are read by a runner that can look at
+a picture, and the prep opens with what it read so you can check it against the
+original. The questions come with answers, drawn from your knowledge base and citing
+the entry each one comes from; where the base has nothing, the prep says so and tells
+you what to prepare, rather than inventing an experience.
+
+**Autopilot shows its work.** Starting it used to freeze the button for ten minutes while
+a browser opened on its own with nothing on screen to explain it. It now returns at
+once, ticks off each step as it lands, and can be stopped; close the tab and it keeps
+going, and picks the watch back up when you return.
+
+### Fixed
+
+- **On Windows, Claude Code was installed and the Ledger said it was not.** Three faults
+  from a Unix-shaped runner layer — PATH joined with the wrong separator, a search that
+  needed Git Bash, and no way to run npm's `.cmd` shim. Agents are now found where their
+  installers put them. The wizard also stopped telling Windows users to run `npm` (the
+  app's own Node is private to it): it gives `winget install Anthropic.ClaudeCode` and
+  the other vendors' installers instead, per platform.
+- **The quick filters above the board** were three hardcoded engineering categories,
+  whoever you were. They are now built from your own keywords, counted against the
+  postings on screen.
+- **Job boards read "never checked"** while the crawl log showed them being mined; only
+  feed-backed companies were ever marked. Every source records that it was read, and the
+  table tells "never" from "checked, found nothing".
+- **The job page forgot its tab** on reload; it is in the address bar now, like Settings.
+- **A tab left open across an update** kept running old code — its buttons did nothing.
+  It now notices the new build, says so in the rail, and reloads on its next move.
+- **Model-written text** (the prep, cover letters) showed raw `##` and `**`; it is typeset.
+- **OpenRouter** now says the provider's own words instead of "Provider returned error",
+  keeps a picture-capable model in the fallback chain when a screenshot is attached, and
+  moves on when a reasoning model spends its whole budget thinking and writes nothing.
+
+---
+
 ## v0.2.0 — more than one search, and a button that does the whole application
 
 **Job profiles.** One search per line of work. If you are applying as an engineer *and*
