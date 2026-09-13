@@ -30,33 +30,105 @@ export interface RunnerRow {
 
 interface Opt { value: string; label: string }
 
+export type Os = "darwin" | "win32" | "linux";
+
+interface Install {
+  /** the line to run, on this platform */
+  cmd: string;
+  /** a second way, when the first needs something the machine may not have */
+  alt?: string;
+  docs: string;
+  note: string;
+}
+
 /**
- * How each agent is normally installed.
+ * How each agent is installed, per platform.
  *
  * Printed rather than run: this is a global install on someone's machine and they
  * should see the line before it happens. The docs link is there because these
  * commands are the vendors' to change, not ours.
+ *
+ * Per platform, because the old table said `npm install -g` for everything, on every
+ * OS. The installer fetches its own private Node for the app, so on a Windows machine
+ * "npm" is not a command the person has — the line could not be run. Each vendor
+ * now ships a native installer, and two of them are on winget, which every Windows
+ * 10/11 machine already has; those are the lines shown. Gemini's CLI is npm-only and
+ * not on winget, so on Windows it is honestly two lines: a system Node first.
+ *
+ * Verified against each vendor's own docs and the winget-pkgs manifests on 2026-09-13.
  */
-const CLI_INSTALL: Record<string, { cmd: string; docs: string; note: string }> = {
-  "claude-cli": {
-    cmd: "npm install -g @anthropic-ai/claude-code",
-    docs: "https://docs.claude.com/en/docs/claude-code/setup",
-    note: "Included with a Claude Pro or Max subscription. Searches the web, which is what the job crawl needs.",
+export const CLI_INSTALL: Record<Os, Record<string, Install>> = {
+  win32: {
+    "claude-cli": {
+      cmd: "winget install Anthropic.ClaudeCode",
+      alt: "irm https://claude.ai/install.ps1 | iex",
+      docs: "https://code.claude.com/docs/en/setup",
+      note: "Included with a Claude Pro or Max subscription. Searches the web, which is what the job crawl needs.",
+    },
+    "codex-cli": {
+      cmd: "winget install OpenAI.Codex",
+      alt: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"',
+      docs: "https://github.com/openai/codex",
+      note: "Included with a ChatGPT Plus or Pro subscription.",
+    },
+    "cursor-cli": {
+      cmd: "irm 'https://cursor.com/install?win32=true' | iex",
+      docs: "https://cursor.com/docs/cli/installation",
+      note: "Included with a Cursor subscription. Run the line in PowerShell.",
+    },
+    "gemini-cli": {
+      cmd: "winget install OpenJS.NodeJS.LTS",
+      alt: "npm install -g @google/gemini-cli",
+      docs: "https://github.com/google-gemini/gemini-cli",
+      note: "Free tier with a Google account. Not on winget: it needs a system Node first, then the npm line in a new terminal.",
+    },
   },
-  "codex-cli": {
-    cmd: "npm install -g @openai/codex",
-    docs: "https://github.com/openai/codex",
-    note: "Included with a ChatGPT Plus or Pro subscription.",
+  darwin: {
+    "claude-cli": {
+      cmd: "brew install --cask claude-code",
+      alt: "curl -fsSL https://claude.ai/install.sh | bash",
+      docs: "https://code.claude.com/docs/en/setup",
+      note: "Included with a Claude Pro or Max subscription. Searches the web, which is what the job crawl needs.",
+    },
+    "codex-cli": {
+      cmd: "brew install --cask codex",
+      alt: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+      docs: "https://github.com/openai/codex",
+      note: "Included with a ChatGPT Plus or Pro subscription.",
+    },
+    "cursor-cli": {
+      cmd: "curl https://cursor.com/install -fsS | bash",
+      docs: "https://cursor.com/docs/cli/installation",
+      note: "Included with a Cursor subscription.",
+    },
+    "gemini-cli": {
+      cmd: "brew install gemini-cli",
+      alt: "npm install -g @google/gemini-cli",
+      docs: "https://github.com/google-gemini/gemini-cli",
+      note: "Free tier available with a Google account.",
+    },
   },
-  "cursor-cli": {
-    cmd: "curl https://cursor.com/install -fsS | bash",
-    docs: "https://cursor.com/docs/cli",
-    note: "Included with a Cursor subscription.",
-  },
-  "gemini-cli": {
-    cmd: "npm install -g @google/gemini-cli",
-    docs: "https://github.com/google-gemini/gemini-cli",
-    note: "Free tier available with a Google account.",
+  linux: {
+    "claude-cli": {
+      cmd: "curl -fsSL https://claude.ai/install.sh | bash",
+      docs: "https://code.claude.com/docs/en/setup",
+      note: "Included with a Claude Pro or Max subscription. Searches the web, which is what the job crawl needs.",
+    },
+    "codex-cli": {
+      cmd: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+      docs: "https://github.com/openai/codex",
+      note: "Included with a ChatGPT Plus or Pro subscription.",
+    },
+    "cursor-cli": {
+      cmd: "curl https://cursor.com/install -fsS | bash",
+      docs: "https://cursor.com/docs/cli/installation",
+      note: "Included with a Cursor subscription.",
+    },
+    "gemini-cli": {
+      cmd: "npm install -g @google/gemini-cli",
+      docs: "https://github.com/google-gemini/gemini-cli",
+      note: "Free tier with a Google account. Needs a system Node (nodejs.org, or your package manager) — the app's own Node is private to it.",
+    },
   },
 };
 
@@ -222,6 +294,7 @@ export function RunnerChoice({
   defaultRunner,
   models,
   busy,
+  os = "linux",
 }: {
   runners: RunnerRow[];
   modelOptions: Record<string, Opt[]>;
@@ -229,7 +302,10 @@ export function RunnerChoice({
   defaultRunner: string;
   models: Record<string, string>;
   busy: boolean;
+  /** which machine this is, so the install lines are ones it can run */
+  os?: Os;
 }) {
+  const installs = CLI_INSTALL[os] ?? CLI_INSTALL.linux;
   const avail = runners.filter((r) => r.available);
   const clis = runners.filter((r) => r.kind === "cli");
   const test = useFetcher<{ ok: boolean; msg: string; answer?: string; cost?: number; metered?: boolean }>();
@@ -295,7 +371,7 @@ export function RunnerChoice({
             <thead><tr><th>Agent</th><th>On this machine</th><th>If it is not</th></tr></thead>
             <tbody>
               {clis.map((r) => {
-                const inst = CLI_INSTALL[r.id];
+                const inst = installs[r.id];
                 return (
                   <tr key={r.id}>
                     <td>
@@ -309,6 +385,12 @@ export function RunnerChoice({
                       ) : inst ? (
                         <>
                           <CopyLine text={inst.cmd} />
+                          {inst.alt && (
+                            <div className="job-fine" style={{ margin: "4px 0 2px" }}>
+                              {r.id === "gemini-cli" && os === "win32" ? "then, in a new terminal:" : "or:"}
+                            </div>
+                          )}
+                          {inst.alt && <CopyLine text={inst.alt} />}
                           <a href={inst.docs} target="_blank" rel="noreferrer" className="back-link">
                             {r.label.replace(" (CLI)", "")} install docs →
                           </a>

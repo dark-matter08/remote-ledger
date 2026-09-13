@@ -2074,6 +2074,33 @@ test("windows: a CLI agent is found where its installer put it, and run without 
   assert.ok(fb.args.at(-1)!.includes('"--x" "say \\"hi\\""'), fb.args.at(-1));
 });
 
+test("install lines: a Windows machine is never told to run npm for an agent that has an installer", async () => {
+  const { CLI_INSTALL } = await import("../app/components/RunnerChoice");
+
+  // The bug this replaces: one table, `npm install -g` for everything, on every OS.
+  // The app's installer fetches a private Node, so on Windows "npm" is not a command
+  // the person has. The lines shown were ones they could not run.
+  for (const id of ["claude-cli", "codex-cli", "cursor-cli"]) {
+    const w = CLI_INSTALL.win32[id];
+    assert.ok(w, `${id} has a Windows line`);
+    assert.ok(!/^npm /.test(w.cmd), `${id} on Windows must not start with npm: ${w.cmd}`);
+  }
+  // the winget ids that actually exist in microsoft/winget-pkgs (checked 2026-09-13)
+  assert.equal(CLI_INSTALL.win32["claude-cli"].cmd, "winget install Anthropic.ClaudeCode");
+  assert.equal(CLI_INSTALL.win32["codex-cli"].cmd, "winget install OpenAI.Codex");
+  // Gemini's CLI is not on winget and is npm-only, so Windows is honestly two steps:
+  // a system Node, then npm — never the app's own private Node
+  assert.match(CLI_INSTALL.win32["gemini-cli"].cmd, /^winget install OpenJS\.NodeJS/);
+  assert.match(CLI_INSTALL.win32["gemini-cli"].alt!, /^npm install -g @google\/gemini-cli/);
+
+  // every platform covers every agent, with a docs link that is the vendor's
+  for (const os of ["darwin", "win32", "linux"] as const)
+    for (const id of ["claude-cli", "codex-cli", "cursor-cli", "gemini-cli"]) {
+      const i = CLI_INSTALL[os][id];
+      assert.ok(i?.cmd && /^https:\/\//.test(i.docs), `${os}/${id}`);
+    }
+});
+
 test("fields: every shipped field is usable, and 'other' defers to your own words", async () => {
   const { JOB_FIELDS, fieldById, fieldLabel, inField } = await import("../app/fields");
 
