@@ -3482,3 +3482,92 @@ test("a batch says what it will cost before you start it", async () => {
 
   db.prepare("DELETE FROM llm_calls").run();
 });
+
+test("verify: challenge footers cannot replace a job URL, even with HTTP 200", async () => {
+  const { resolveLive, FIND_APPLY, isChallengePage } = await import("../app/services/scrape.server");
+  const { runInNewContext } = await import("node:vm");
+  const start = "https://himalayas.app/companies/lemon-io/jobs/senior-react-native-developer";
+  const footer = "https://www.cloudflare.com/?utm_source=challenge&utm_campaign=m";
+  const links = [
+    { href: footer, innerText: "Performance & security by Cloudflare" },
+    { href: "https://example.com", innerText: "Company website" },
+  ];
+  const pick = () => runInNewContext(`(${FIND_APPLY.toString()})()`, {
+    location: new URL(start), URL,
+    document: { querySelectorAll: () => links },
+  });
+  assert.equal(pick(), "", "a random outbound link is not an application");
+  links.push({ href: "https://jobs.example.com/apply/123", innerText: "Apply now" });
+  assert.equal(pick(), links[2].href);
+  assert.equal(isChallengePage(footer, "Cloudflare", "A large marketing homepage"), true);
+  assert.equal(isChallengePage("https://boards.greenhouse.io/cloudflare/jobs/123", "Engineer", "Build with Cloudflare"), false);
+  for (const status of [200, 403]) {
+    let followed = 0;
+    let closed = false;
+    const browser = { newPage: async () => ({
+      goto: async () => ({ status: () => status }),
+      url: () => start,
+      waitForTimeout: async () => {},
+      evaluate: async (fn: Function) => {
+        if (fn === FIND_APPLY) { followed++; return footer; }
+        if (fn.name === "PICK_JD") return { title: "Just a moment...", bodyText: "Verifying you are human. ".repeat(30), text: "Challenge", html: "" };
+        return 500;
+      },
+      close: async () => { closed = true; },
+    }) };
+    const result = await resolveLive(browser, start);
+    assert.equal(result.ok, false);
+    assert.equal(result.finalUrl, start);
+    assert.equal(result.boardOnly, undefined, "keepOnBoard must not accept a challenge");
+    assert.equal(result.jdText, "");
+    assert.equal(followed, 0, "check status/challenge before extracting links");
+    assert.equal(closed, true);
+  }
+});
+
+test("verify: fetch fallback rejects a challenge URL with a large HTTP 200 homepage", async () => {
+  const { resolveLive } = await import("../app/services/scrape.server");
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => ({ status: 200, url: "https://www.cloudflare.com/?utm_source=challenge", text: async () => `<body>${"Marketing content ".repeat(100)}</body>` })) as any;
+  try {
+    const result = await resolveLive(null, "https://himalayas.app/jobs/example");
+    assert.equal(result.ok, false);
+    assert.equal(result.jdText, "");
+    assert.match(result.reason, /challenge/);
+  } finally { globalThis.fetch = original; }
+});
+
+test("mac install: Caddy downloads the native binary without Homebrew and survives a fresh PATH", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { runInNewContext } = await import("node:vm");
+  const src = readFileSync("scripts/ledger.mjs", "utf8");
+  const code = src.slice(src.indexOf("function caddyOnDisk()"), src.indexOf("/**\n * Where a global npm install"));
+  for (const arch of ["x64", "arm64"]) {
+    const files = new Map<string, Buffer>();
+    let requested = "";
+    const proc = { arch, env: { PATH: "/usr/bin:/bin" } };
+    const buf = Buffer.alloc(5_000_001);
+    buf.writeUInt32LE(0xfeedfacf, 0);
+    buf.writeUInt32LE(arch === "x64" ? 0x01000007 : 0x0100000c, 4);
+    const context = {
+      MAC: true, WIN: false, process: proc, Buffer, AbortSignal,
+      resolve, dirname: (p: string) => p.slice(0, p.lastIndexOf("/")), delimiter: ":", homedir: () => "/home/friend",
+      existsSync: (p: string) => files.has(p), mkdirSync: () => {}, chmodSync: () => {},
+      writeFileSync: (p: string, b: Buffer) => files.set(p, b),
+      renameSync: (a: string, b: string) => { files.set(b, files.get(a)!); files.delete(a); },
+      rmSync: (p: string) => files.delete(p),
+      have: () => false, run: () => { throw new Error("must not invoke brew"); },
+      spawnSync: () => ({ status: 0 }), step: () => {}, say: () => {}, ok: () => true, warn: () => false,
+      fetch: async (url: string) => { requested = url; return { ok: true, arrayBuffer: async () => buf }; },
+    };
+    assert.equal(await runInNewContext(`${code}; ensureCaddy()`, context), true);
+    assert.equal(requested, `https://caddyserver.com/api/download?os=darwin&arch=${arch === "x64" ? "amd64" : "arm64"}`);
+    proc.env.PATH = "/usr/bin:/bin";
+    assert.equal(runInNewContext(`${code}; caddyOnDisk()`, context), true);
+    assert.match(proc.env.PATH, /^\/home\/friend\/\.remote-ledger\/bin:/);
+    files.clear();
+    buf.writeUInt32LE(0, 0);
+    assert.equal(await runInNewContext(`${code}; ensureCaddy()`, context), false, "reject an invalid binary");
+    assert.equal(files.size, 0);
+  }
+});

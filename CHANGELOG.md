@@ -8,6 +8,28 @@ same repository and land in the same pull request. A version cannot ship without
 
 ---
 
+## v0.2.3 — correct application links and Mac setup without Homebrew
+
+**Security pages no longer become job applications.** A blocked Himalayas page
+could send the crawler to Cloudflare's footer link, which it then saved as the
+application URL and job description. The crawler now rejects security challenges
+before following links and requires evidence that an outbound link is an application.
+This prevents new corrupted entries; existing saved URLs and descriptions are not
+automatically repaired.
+
+**Caddy installs directly on Intel and Apple Silicon Macs.** Setup downloads the
+native binary from Caddy's official server into `~/.remote-ledger/bin`, checks its
+architecture and that it runs, and finds it again on later setup and proxy commands.
+Homebrew is no longer required for this step. Node remains private to the app and
+dropport installs through npm. Node selection's macOS-version compatibility is a
+separate unresolved issue; this release does not change it.
+
+This release also includes the recent Windows SearXNG installation fixes and
+feedback for pasted local-model names. Existing installs can run their `ledger`
+launcher with `restart`, or run the installer again, to receive the updated setup.
+
+---
+
 ## v0.2.2 — the https address on Windows, without a package manager
 
 A Windows install ended with the app on a port, no https address, and no sign of

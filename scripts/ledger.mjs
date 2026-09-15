@@ -13,9 +13,9 @@
 // real hostname and a trusted certificate in front of a port. What was missing was
 // the step that does both, in the right order, and installs what is not there yet.
 import { spawnSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync } from "node:fs";
 import { delimiter, dirname, resolve, join } from "node:path";
-import { platform } from "node:os";
+import { homedir, platform } from "node:os";
 import { winSafe } from "./win.mjs";
 
 const ACTION = (process.argv[2] || "help").toLowerCase();
@@ -175,22 +175,21 @@ function installDeps({ force = false } = {}) {
 
 /** Caddy does the proxying and the certificates; dropport is a wrapper around it. */
 /**
- * Where the Windows installers put caddy.exe.
+ * Find our private macOS Caddy or the standard Windows install locations.
  *
  * winget updates the PATH for *future* processes, so a caddy installed a moment ago
  * is invisible to `where` in this one. Same trap that made the installer report git
  * as missing right after installing it.
  */
 function caddyOnDisk() {
-  if (!WIN) return false;
-  const candidates = [
+  const candidates = MAC ? [resolve(homedir(), ".remote-ledger", "bin", "caddy")] : WIN ? [
     // winget's "Command line alias added" lands here
     resolve(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "caddy.exe"),
     resolve(process.env.USERPROFILE || "", "scoop", "shims", "caddy.exe"),
     "C:\\ProgramData\\chocolatey\\bin\\caddy.exe",
     resolve(process.env.ProgramFiles || "C:\\Program Files", "Caddy", "caddy.exe"),
     resolve(process.env.LOCALAPPDATA || "", "Programs", "Caddy", "caddy.exe"),
-  ];
+  ] : [];
   const found = candidates.find((p) => p && existsSync(p));
   if (!found) return false;
   process.env.PATH = `${dirname(found)}${delimiter}${process.env.PATH || ""}`;
@@ -218,12 +217,40 @@ async function downloadCaddy() {
   }
 }
 
+/** Official native macOS binary, independent of Homebrew and writable without sudo. */
+async function downloadMacCaddy() {
+  if (!["x64", "arm64"].includes(process.arch)) return warn(`unsupported Caddy architecture: ${process.arch}`);
+  const arch = process.arch === "x64" ? "amd64" : "arm64";
+  const dir = resolve(homedir(), ".remote-ledger", "bin");
+  const dest = resolve(dir, "caddy");
+  const partial = `${dest}.download`;
+  step(`Downloading Caddy from caddyserver.com (darwin/${arch})`);
+  try {
+    const res = await fetch(`https://caddyserver.com/api/download?os=darwin&arch=${arch}`, { signal: AbortSignal.timeout(120000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    // Native 64-bit Mach-O, including the requested CPU type; reject HTML/error pages.
+    const cpu = arch === "amd64" ? 0x01000007 : 0x0100000c;
+    if (buf.length < 5_000_000 || buf.readUInt32LE(0) !== 0xfeedfacf || buf.readUInt32LE(4) !== cpu) throw new Error("not the requested macOS executable");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(partial, buf);
+    chmodSync(partial, 0o755);
+    const check = spawnSync(partial, ["version"], { encoding: "utf8", timeout: 15000 });
+    if (check.status !== 0) throw new Error(`Caddy cannot run on this Mac: ${check.error?.message || check.stderr || "version check failed"}`);
+    renameSync(partial, dest);
+    return caddyOnDisk();
+  } catch (e) {
+    rmSync(partial, { force: true });
+    return warn(`the download failed: ${e.message}`);
+  }
+}
+
 async function ensureCaddy() {
   if (have("caddy") || caddyOnDisk()) return ok("Caddy is installed");
 
   step("Installing Caddy (it serves the https address)");
-  if (MAC && have("brew")) {
-    if (run("brew", ["install", "caddy"])) return ok("Caddy installed");
+  if (MAC) {
+    if (await downloadMacCaddy()) return ok("Caddy installed");
   } else if (WIN) {
     // winget ships with Windows 10 and 11; scoop and chocolatey are common enough to
     // be worth trying before giving up.
@@ -262,7 +289,7 @@ async function ensureCaddy() {
 
   warn("could not install Caddy automatically.");
   say("    Install it once, then run this command again:");
-  say(MAC ? "      brew install caddy" : WIN ? "      winget install CaddyServer.Caddy" : "      see https://caddyserver.com/docs/install");
+  say(MAC ? "      download the macOS binary at https://caddyserver.com/download" : WIN ? "      winget install CaddyServer.Caddy" : "      see https://caddyserver.com/docs/install");
   return false;
 }
 

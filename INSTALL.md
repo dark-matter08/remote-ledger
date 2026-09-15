@@ -103,6 +103,13 @@ completely.
 
 ## Running its commands afterwards
 
+On Macs, Caddy is downloaded directly from its official server into
+`~/.remote-ledger/bin/caddy`, for Intel or Apple Silicon as appropriate. Homebrew
+is not required. The installer checks that Caddy runs before setting up the proxy.
+Node is private to the app, and dropport installs through that Node's npm; you do
+not need to install those separately. Use the `ledger` launcher below to manage
+this installation, since its private tools are not added to your shell's PATH.
+
 The Ledger brings its own copy of Node and does not put it on your PATH, so `npm`
 commands will not work in a normal terminal. Use the launcher the installer leaves
 behind, which knows where everything is:

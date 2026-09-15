@@ -20,6 +20,17 @@ export interface Scraped {
   error?: string;
 }
 
+// Challenge pages are transport failures, never job descriptions or apply links.
+export function isChallengePage(url: string, title: string, text: string): boolean {
+  try {
+    const u = new URL(url);
+    if (/(^|\.)cloudflare\.com$/i.test(u.hostname) && u.searchParams.get("utm_source") === "challenge") return true;
+    if (u.pathname.startsWith("/cdn-cgi/challenge-platform/")) return true;
+  } catch { /* invalid URLs are handled by the caller */ }
+  return /^(just a moment|attention required|security verification)[.!…\s]*(?:\|.*)?$/i.test(title.trim()) ||
+    /verify (?:that )?you are human|performing security verification|checking (?:your browser|if the site connection is secure)|enable javascript and cookies to continue/i.test(text.slice(0, 6000));
+}
+
 function clean(text: string): string {
   return text
     .replace(/\r/g, "")
@@ -119,7 +130,7 @@ async function fetchFallback(url: string): Promise<Scraped> {
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<[^>]+>/g, " ")
       .replace(/&[a-z]+;/gi, " ");
-    return { title, text: clean(text), html: sanitizeJdHtml(bodyHtml), ok: res.ok };
+    return { title, text: clean(text), html: sanitizeJdHtml(bodyHtml), ok: res.ok && !isChallengePage(res.url || url, title, clean(text)) };
   } catch (e: any) {
     return { title: "", text: "", html: "", ok: false, error: e.message };
   }
@@ -204,7 +215,7 @@ async function scrapeWithBrowser(browser: any, url: string): Promise<Scraped> {
     await waitForContent(page, renderWaitFor(url) * 3); // SPA portals paint after load
     const data = await page.evaluate(PICK_JD);
     const text = clean((data.meta ? data.meta + "\n\n" : "") + data.text);
-    return { title: data.title, text, html: sanitizeJdHtml(data.html), ok: text.length > 60 };
+    return { title: data.title, text, html: sanitizeJdHtml(data.html), ok: text.length > 60 && !isChallengePage(page.url(), data.title, data.bodyText) };
   } finally {
     await page.close().catch(() => {});
   }
@@ -328,7 +339,7 @@ export function isCareersIndex(u: string): boolean {
 }
 
 // Runs in the browser: pick the best outbound "Apply" link on an aggregator page.
-const FIND_APPLY = () => {
+export const FIND_APPLY = () => {
   const here = location.hostname.replace(/^www\./, "");
   const ats = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|breezy\.hr|smartrecruiters\.com|jobvite\.com|bamboohr\.com|myworkdayjobs\.com|workday|recruitee\.com|teamtailor\.com|pinpointhq\.com|join\.com|rippling\.com|icims\.com)/i;
   let best = "";
@@ -339,8 +350,11 @@ const FIND_APPLY = () => {
     let host = "";
     try { host = new URL(href).hostname.replace(/^www\./, ""); } catch { continue; }
     const txt = (a.innerText || a.textContent || "").trim().toLowerCase();
+    // External alone is not evidence: challenge footers and social links are external too.
+    if (/(^|\.)cloudflare\.com$/i.test(host) && new URL(href).searchParams.get("utm_source") === "challenge") continue;
+    if (!ats.test(host) && !/\bapply\b/.test(txt) && !/apply|application/i.test(new URL(href).pathname)) continue;
     let s = 0;
-    if (ats.test(href)) s += 8;
+    if (ats.test(host)) s += 8;
     if (host !== here && host.indexOf("remotive") < 0) s += 3;
     if (/\bapply\b/.test(txt)) s += 5;
     if (/apply|application/i.test(href)) s += 2;
@@ -390,6 +404,9 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
         bodyText = cap.bodyText || "";
         jdText = cap.text || cap.bodyText || "";
         jdHtml = cap.html || "";
+        if (status >= 400 || isChallengePage(finalUrl, cap.title || "", bodyText)) {
+          return { ok: false, status, finalUrl, reason: status >= 400 ? `HTTP ${status}` : "blocked by a security challenge", hops, jdText: "", jdHtml: "" };
+        }
         // if still on an aggregator, try to find the outbound apply link before giving up
         if (AGGREGATOR.test(hostOf(finalUrl))) {
           const applyHref = await page.evaluate(FIND_APPLY);
@@ -415,6 +432,10 @@ export async function resolveLive(browser: any, startUrl: string, onLog?: (s: st
         bodyText = raw.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
         jdText = bodyText;
         jdHtml = bodyHtml;
+        const title = raw.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || "";
+        if (status >= 400 || isChallengePage(finalUrl, title, bodyText)) {
+          return { ok: false, status, finalUrl, reason: status >= 400 ? `HTTP ${status}` : "blocked by a security challenge", hops, jdText: "", jdHtml: "" };
+        }
         if (AGGREGATOR.test(hostOf(finalUrl))) {
           const m = raw.match(/href=["']([^"']*(?:greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|myworkdayjobs\.com)[^"']*)["']/i);
           if (m && m[1] && m[1] !== cur) { hops.push(finalUrl); cur = m[1]; continue; }
